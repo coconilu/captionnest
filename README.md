@@ -16,7 +16,7 @@ We should start now.
 | 输入 | Windows 文件选择器 |
 | 源语言 | Faster-Whisper 自动检测，不向用户暴露手动选项 |
 | 目标语言 | 简体中文（默认）、英语、韩语 |
-| 输出 | `<视频名>.<目标语言>.srt`，只生成一个双语字幕 |
+| 输出 | `<视频名>.srt`，只生成一个双语字幕 |
 | 翻译 | Codex Spark、LM Studio、DeepSeek/OpenAI-compatible |
 | 媒体解码 | PyAV wheel 内置媒体库，不要求用户安装 `ffmpeg.exe` |
 | 运行模式 | CPU 开箱即用；CUDA 为可选加速 |

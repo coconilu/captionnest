@@ -173,9 +173,6 @@ class ProcessingPipeline:
         if _language_key(transcription.language) == _language_key(record.request.target_language):
             raise ValueError("检测到的源语言与目标语言相同，请选择其他目标语言")
 
-        output_dir = record.source.path.parent
-        output_stem = record.source.path.stem
-
         record.update(
             stage=JobStage.TRANSLATING,
             progress=62,
@@ -195,7 +192,7 @@ class ProcessingPipeline:
             on_progress=on_translation_progress,
         )
         record.update(stage=JobStage.WRITING, progress=95, message="正在写入双语字幕")
-        subtitle_path = output_dir / f"{output_stem}.{record.request.target_language.value}.srt"
+        subtitle_path = record.source.path.with_suffix(".srt")
         await asyncio.to_thread(
             write_bilingual_srt,
             subtitle_path,

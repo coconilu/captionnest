@@ -59,7 +59,7 @@ def test_windows_open_folder_uses_explorer_parameter_array(
 ) -> None:
     folder = tmp_path / "output"
     folder.mkdir()
-    subtitle = folder / "movie.zh-CN.srt"
+    subtitle = folder / "movie.srt"
     subtitle.write_text("subtitle", encoding="utf-8")
     executable = r"C:\Windows\explorer.exe"
     captured: dict[str, object] = {}

@@ -64,7 +64,7 @@ def test_path_pipeline_writes_one_bilingual_subtitle_next_to_video(
 
     asyncio.run(pipeline.run(record))
 
-    subtitle = tmp_path / "movie.zh-CN.srt"
+    subtitle = tmp_path / "movie.srt"
     assert record.subtitle_path == str(subtitle)
     assert list(tmp_path.glob("*.srt")) == [subtitle]
     assert "こんにちは\n你好" in subtitle.read_text(encoding="utf-8-sig")
