@@ -1,0 +1,127 @@
+name: Windows Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: '在完成安装/运行/退出/卸载人工冒烟后发布当前 tag'
+        required: true
+        type: boolean
+        default: false
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows-x64:
+    runs-on: windows-latest
+    timeout-minutes: 180
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\packaging\build\vcpkg-binary-cache
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out pinned vcpkg baseline
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: db4723bd0a99eab031f1a3dee4336dca43049c87
+          path: packaging/build/vcpkg
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.12'
+          enable-cache: true
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@v4
+        with:
+          path: packaging/build/vcpkg-binary-cache
+          key: vcpkg-windows-x64-${{ hashFiles('packaging/media-runtime/vcpkg.json') }}
+      - name: Bootstrap pinned vcpkg
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          & .\packaging\build\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to bootstrap pinned vcpkg.' }
+      - run: npm ci
+        working-directory: web
+      - run: uv sync --extra asr --extra desktop --extra dev --locked
+      - name: Build and install LGPL media wheel
+        shell: pwsh
+        run: |
+          $Python = (Resolve-Path '.venv\Scripts\python.exe').Path
+          .\scripts\build-media-wheel.ps1 `
+            -VcpkgRoot 'packaging\build\vcpkg' `
+            -PythonExecutable $Python
+          "CAPTIONNEST_BUILD_PYTHON=$Python" | Add-Content -LiteralPath $env:GITHUB_ENV
+      - name: Lint Python
+        shell: pwsh
+        run: '& $env:CAPTIONNEST_BUILD_PYTHON -m ruff check .'
+      - name: Test Python with release media runtime
+        shell: pwsh
+        run: '& $env:CAPTIONNEST_BUILD_PYTHON -m pytest'
+      - run: npm run lint
+        working-directory: web
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+      - name: Verify project and tag versions
+        shell: pwsh
+        run: |
+          $Expected = if ($env:GITHUB_REF -like 'refs/tags/*') { $env:GITHUB_REF_NAME.TrimStart('v') } else { '' }
+          .\scripts\check-version-consistency.ps1 -ExpectedVersion $Expected
+      - name: Build NSIS and checksum
+        shell: pwsh
+        run: .\scripts\build-desktop.ps1 -PythonExecutable $env:CAPTIONNEST_BUILD_PYTHON
+      - name: Stage release candidate
+        shell: pwsh
+        run: |
+          $Stage = 'packaging\dist\release-candidate'
+          if (Test-Path -LiteralPath $Stage) {
+            Remove-Item -LiteralPath $Stage -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path $Stage -Force | Out-Null
+          $Nsis = 'src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis'
+          Copy-Item -Path "$Nsis\CaptionNest_*_x64-setup.exe" -Destination $Stage
+          Copy-Item -Path "$Nsis\CaptionNest_*_x64-setup.exe.sha256" -Destination $Stage
+          Copy-Item -LiteralPath 'packaging\dist\FFMPEG_BUILD_INFO.txt' -Destination $Stage
+          Copy-Item `
+            -LiteralPath 'packaging\dist\media-wheel\MEDIA_WHEEL_PROVENANCE.json' `
+            -Destination $Stage
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: captionnest-windows-x64
+          if-no-files-found: error
+          path: packaging/dist/release-candidate/*
+  publish:
+    needs: windows-x64
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_release && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - name: Download validated candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: captionnest-windows-x64
+          path: release-artifacts
+      - name: Attach manually approved tag release artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          fail_on_unmatched_files: true
+          files: |
+            release-artifacts/CaptionNest_*_x64-setup.exe
+            release-artifacts/CaptionNest_*_x64-setup.exe.sha256
+            release-artifacts/FFMPEG_BUILD_INFO.txt
+            release-artifacts/MEDIA_WHEEL_PROVENANCE.json
