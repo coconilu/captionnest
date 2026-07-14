@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ctypes
 import importlib
 import importlib.util
 import os
@@ -123,17 +122,6 @@ class EnvironmentService:
         try:
             ctranslate2 = importlib.import_module("ctranslate2")
             if int(ctranslate2.get_cuda_device_count()) > 0:
-                missing_libraries = self._missing_cuda_libraries()
-                if missing_libraries:
-                    return AccelerationStatus(
-                        status="cuda_unavailable",
-                        device="cpu",
-                        cuda_available=False,
-                        message=(
-                            "检测到 NVIDIA 显卡，但缺少 CUDA 12 / cuDNN 9 运行库，"
-                            "将使用 CPU"
-                        ),
-                    )
                 return AccelerationStatus(
                     status="cuda_ready",
                     device="cuda",
@@ -161,22 +149,6 @@ class EnvironmentService:
             cuda_available=False,
             message="当前使用 CPU，无需额外安装 GPU 环境",
         )
-
-    @staticmethod
-    def _missing_cuda_libraries() -> list[str]:
-        if os.name == "nt":
-            loader = ctypes.WinDLL
-            names = ("cublas64_12.dll", "cudnn64_9.dll")
-        else:
-            loader = ctypes.CDLL
-            names = ("libcublas.so.12", "libcudnn.so.9")
-        missing: list[str] = []
-        for name in names:
-            try:
-                loader(name)
-            except OSError:
-                missing.append(name)
-        return missing
 
     def _check_codex(self) -> CodexStatus:
         self._refresh_windows_path()

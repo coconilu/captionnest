@@ -92,16 +92,9 @@ def test_codex_status_is_check_failed_when_process_cannot_start(
     assert result.install_url == EnvironmentService.CODEX_INSTALL_URL
 
 
-@pytest.mark.parametrize(
-    ("missing_libraries", "expected_status", "expected_available"),
-    [([], "cuda_ready", True), (["cudnn64_9.dll"], "cuda_unavailable", False)],
-)
-def test_cuda_requires_both_device_and_runtime_libraries(
+def test_cuda_device_reported_by_ctranslate2_is_ready(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    missing_libraries: list[str],
-    expected_status: str,
-    expected_available: bool,
 ) -> None:
     fake_ctranslate2 = SimpleNamespace(get_cuda_device_count=lambda: 1)
     monkeypatch.setattr(
@@ -109,13 +102,8 @@ def test_cuda_requires_both_device_and_runtime_libraries(
         "import_module",
         lambda name: fake_ctranslate2 if name == "ctranslate2" else None,
     )
-    monkeypatch.setattr(
-        EnvironmentService,
-        "_missing_cuda_libraries",
-        staticmethod(lambda: missing_libraries),
-    )
-
     result = _service(tmp_path)._check_acceleration()  # noqa: SLF001
 
-    assert result.status == expected_status
-    assert result.cuda_available is expected_available
+    assert result.status == "cuda_ready"
+    assert result.device == "cuda"
+    assert result.cuda_available is True
