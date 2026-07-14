@@ -28,9 +28,9 @@ We should start now.
 
 ## 普通用户安装
 
-> **当前发布状态：阻断。** 官方 PyAV 18 Windows wheel 虽自报 LGPL，但实际包含 x264/x265 配置与 DLL，默认发行门禁会拒绝构建。公开 Release 前必须换成可追溯的 LGPL-only、decode-only wheel，或完成完整 GPL 发行闭环。
+> **当前构建状态：已跑通。** `Windows Release` workflow 会从锁定的 PyAV 18.0.0 源码构建自有 wheel，并链接锁定的 LGPL FFmpeg 8.1.2；官方 PyPI wheel 仍会因携带 x264/x265 被门禁拒绝。GitHub Actions 生成的候选安装包已经完成校验和、安装、启动、退出和卸载冒烟，正式 GitHub Release 尚未发布。
 
-门禁通过后，可从正式 Release 下载 Windows x64 的 `CaptionNest_*_x64-setup.exe`。安装器设计为：
+合并构建流程并创建版本 tag 后，可从正式 Release 下载 Windows x64 的 `CaptionNest_*_x64-setup.exe`。安装器设计为：
 
 - 只安装到当前用户，不需要管理员权限；
 - 内置 WebView2 bootstrapper；

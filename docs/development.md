@@ -10,7 +10,7 @@
 
 系统 `ffmpeg.exe` 不是依赖。Faster-Whisper 通过 PyAV wheel 解码媒体；GPU 是可选能力。
 
-> 当前锁定的 PyAV 18 Windows wheel 含 x264/x265，许可证门禁会有意阻止 sidecar 打包，因此 `desktop:dev` 与 `desktop:build` 在替换为合规媒体 wheel 前都会停止。API / Web 调试和全部源码测试不受影响；不要为方便开发把 `-AllowGpl` 写入默认脚本。
+> PyPI 的官方 PyAV 18 Windows wheel 含 x264/x265，许可证门禁仍会有意阻止它进入 sidecar。正式 `Windows Release` workflow 会先构建并安装锁定的 LGPL 媒体 wheel；本地构建安装包时请按 [媒体运行时说明](../packaging/media-runtime/README.md) 准备相同 wheel。API / Web 调试和源码测试不受影响；不要为方便开发把 `-AllowGpl` 写入默认脚本。
 
 ## 初始化与调试
 

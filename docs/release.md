@@ -4,12 +4,13 @@
 
 | 产物 | 支持状态 |
 |---|---|
-| Windows x64 NSIS | 已配置 |
+| Windows x64 NSIS | 已在 GitHub Actions 构建并完成安装/卸载冒烟 |
 | 当前用户安装、无管理员权限 | 已配置 `currentUser` |
 | WebView2 bootstrapper | 已内置 `embedBootstrapper` |
 | Python/Faster-Whisper/PyAV sidecar | PyInstaller onedir |
 | SHA-256 | 构建脚本与 Release workflow 自动生成 |
-| PyAV/FFmpeg 许可证门禁 | 默认 fail closed；当前官方 PyAV 18 Windows wheel 会因 x264/x265 被拒绝 |
+| PyAV/FFmpeg 许可证门禁 | 默认 fail closed；正式 workflow 构建锁定的 LGPL FFmpeg 8.1.2 + PyAV 18.0.0 wheel |
+| 构建证据 | 随产物提供 `FFMPEG_BUILD_INFO.txt` 与 `MEDIA_WHEEL_PROVENANCE.json` |
 | Authenticode | **尚未配置** |
 | 自动更新 | **尚未启用**；没有签名元数据前不得开启 |
 
@@ -27,21 +28,25 @@ flowchart TD
     F --> G["上传 Release"]
 ```
 
-本机构建：
+推荐构建入口是 GitHub Actions 的 `Windows Release`。推送 `v*` tag 或手动运行 workflow 后，它会依次完成锁定媒体 wheel 构建、许可证门禁、测试、NSIS 封装和候选产物上传。首次构建 FFmpeg 较慢，后续构建使用 vcpkg binary cache。
+
+等价的本机构建需要先 bootstrap 与 `packaging/media-runtime/vcpkg.json` 相同 baseline 的 vcpkg：
 
 ```powershell
 npm ci --prefix web
 uv sync --extra asr --extra desktop --extra dev --locked
-uv run --extra asr --extra dev pytest
+$Python = (Resolve-Path '.venv\Scripts\python.exe').Path
+.\scripts\build-media-wheel.ps1 -VcpkgRoot C:\path\to\vcpkg -PythonExecutable $Python
+& $Python -m pytest
 npm --prefix web run lint
-npm --prefix web run desktop:build
+.\scripts\build-desktop.ps1 -PythonExecutable $Python
 ```
 
 `scripts/build-desktop.ps1` 会依次生成媒体许可证证据、sidecar、NSIS 和校验和。门禁会同时检查 FFmpeg 配置、自报许可证和 PyAV wheel 实际携带的 DLL。检测到 `--enable-nonfree` 会无条件中止；检测到 `--enable-gpl` 或已知 GPL 外部库配置/DLL 时默认中止；无法读取完整元数据或无法在 Windows 上枚举 bundled DLL 时同样中止，避免把检测失败误当作许可通过。
 
 版本号由 `scripts/check-version-consistency.ps1` 统一核对 Python、Web、Tauri 和 Cargo 四处声明。推送 `v*` tag 只构建并保存候选产物；完成干净 Windows 的安装、运行、退出和卸载冒烟后，发行负责人必须在该 tag 上手动运行 `Windows Release`，勾选 `publish_release`，并通过 `release` environment 审批后才会附加到 GitHub Release。
 
-当前官方 PyAV 18.0.0 Windows wheel 自报 LGPL，但构建配置和实际 DLL 包含 x264/x265，因此正式构建按设计失败。这不是误报，也不能通过删除证据文件或只采信自报许可证绕过。首选方案是构建并锁定可追溯的 LGPL-only、decode-only wheel。
+官方 PyAV 18.0.0 Windows wheel 自报 LGPL，但构建配置和实际 DLL 包含 x264/x265，因此仍会按设计失败。这不是误报，也不能通过删除证据文件或只采信自报许可证绕过。正式 workflow 不使用该 wheel，而是从已校验哈希的 PyAV 源码构建 wheel，链接由锁定 vcpkg baseline 生成且未启用 GPL/nonfree/x264/x265 的 FFmpeg，并保存 wheel、源码和构建输入的哈希证据。
 
 只有发行负责人已完成最终组合产物的 GPL 许可证、对应源代码、修改记录、构建与再链接义务审查，才能单独执行以下检查：
 
