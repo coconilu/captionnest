@@ -57,13 +57,17 @@ jobs:
             throw "Checked out $BaseSha, but origin/main is $RemoteMain. Run the workflow again."
           }
 
-          & gh release view $Tag --repo $env:GITHUB_REPOSITORY *> $null
-          if ($LASTEXITCODE -eq 0) {
+          $ReleaseListJson = & gh release list --repo $env:GITHUB_REPOSITORY --limit 1000 --json tagName
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to query existing releases.' }
+          $Releases = $ReleaseListJson | ConvertFrom-Json
+          $ReleaseExists = @($Releases).tagName -contains $Tag
+          if ($ReleaseExists) {
             throw "Release $Tag already exists. Use a new version."
           }
 
-          & git show-ref --verify --quiet "refs/tags/$Tag"
-          $TagExists = $LASTEXITCODE -eq 0
+          $MatchingTags = @(& git tag --list $Tag)
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to query existing tags.' }
+          $TagExists = $MatchingTags -contains $Tag
           if ($TagExists) {
             $TagSha = (& git rev-list -n 1 $Tag).Trim()
             if ($TagSha -ne $BaseSha) {

@@ -34,6 +34,17 @@ def test_release_workflow_owns_the_complete_release_transaction() -> None:
     assert 'git push origin "refs/tags/$env:RELEASE_TAG"' in workflow
 
 
+def test_release_validation_does_not_fail_when_release_and_tag_are_missing() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+
+    assert "gh release view" not in workflow
+    assert "git show-ref --verify" not in workflow
+    assert "gh release list" in workflow
+    assert "git tag --list" in workflow
+    assert "$ReleaseExists = @($Releases).tagName -contains $Tag" in workflow
+    assert "$TagExists = $MatchingTags -contains $Tag" in workflow
+
+
 def test_generated_release_notes_have_chinese_categories_and_fixed_safety_text() -> None:
     workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
     notes_config = (ROOT / ".github" / "release.yml").read_text(encoding="utf-8")
