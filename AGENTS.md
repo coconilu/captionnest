@@ -8,6 +8,6 @@
 - Codex Spark 通过本机 `codex exec` 和现有 ChatGPT 登录调用，不得伪装成 OpenAI API。
 - LM Studio 与 DeepSeek 走 OpenAI-compatible `/chat/completions` 接口。
 - 时间轴由程序持有；模型只翻译稳定 ID 对应的文本。
-- 输出中文字幕默认写入源视频同目录，格式为 `<视频名>.zh-CN.srt`。
+- 输出双语字幕默认写入源视频同目录，格式为 `<视频名>.srt`，目标语言不写入文件名。
 - 所有外部进程调用必须使用参数数组，禁止拼接 shell 命令。
 - 提交前运行 Python 测试、前端 lint/build，并验证真实浏览器核心流程。

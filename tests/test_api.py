@@ -11,9 +11,7 @@ from sublingo_local.models import JobStage, JobStatus
 
 class FakePipeline:
     async def run(self, record):  # type: ignore[no-untyped-def]
-        record.subtitle_path = str(
-            record.source.path.with_suffix(f".{record.request.target_language.value}.srt")
-        )
+        record.subtitle_path = str(record.source.path.with_suffix(".srt"))
         record.detected_language = "en"
         record.update(
             status=JobStatus.COMPLETED,
@@ -73,7 +71,7 @@ def test_health_capabilities_upload_and_job_do_not_echo_api_key(tmp_path: Path) 
         assert job.json()["progress"] == 100
         assert job.json()["target_language"] == "ko"
         assert job.json()["detected_language"] == "en"
-        assert job.json()["subtitle_path"].endswith("lesson.ko.srt")
+        assert job.json()["subtitle_path"].endswith("lesson.srt")
         assert "source_subtitle_path" not in job.json()
         assert "translated_subtitle_path" not in job.json()
         assert secret not in job.text

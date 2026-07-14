@@ -55,7 +55,7 @@ def test_chunking_and_apply_translation_preserve_timeline() -> None:
 
 
 def test_bilingual_srt_writes_source_above_translation_atomically(tmp_path: Path) -> None:
-    path = tmp_path / "movie.zh-CN.srt"
+    path = tmp_path / "movie.srt"
     source = [
         SubtitleSegment(id="seg-000001", start_ms=100, end_ms=500, text="Hello, world."),
         SubtitleSegment(id="seg-000002", start_ms=600, end_ms=900, text="Goodbye."),
