@@ -25,11 +25,61 @@ function Get-TomlVersion([string]$Path, [string]$Section) {
     return $VersionMatch.Groups[1].Value
 }
 
+function Get-TomlPackageVersion([string]$Path, [string]$PackageName) {
+    $Content = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+    $Packages = [Regex]::Matches(
+        $Content,
+        '(?ms)^\[\[package\]\]\s*(.*?)(?=^\[\[package\]\]|\z)'
+    )
+    $Versions = @(
+        $Packages | ForEach-Object {
+            $Block = $_.Groups[1].Value
+            $Name = [Regex]::Match($Block, '(?m)^name\s*=\s*["'']([^"'']+)["'']\s*$')
+            if ($Name.Success -and $Name.Groups[1].Value -eq $PackageName) {
+                $Version = [Regex]::Match(
+                    $Block,
+                    '(?m)^version\s*=\s*["'']([^"'']+)["'']\s*$'
+                )
+                if (-not $Version.Success) {
+                    throw "Missing version for package $PackageName in $Path"
+                }
+                $Version.Groups[1].Value
+            }
+        }
+    )
+    if ($Versions.Count -ne 1) {
+        throw "Expected one package $PackageName in $Path; found $($Versions.Count)"
+    }
+    return $Versions[0]
+}
+
+function Get-JsonVersion([string]$Path, [string]$Pattern, [string]$Label) {
+    $Content = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+    $Matches = [Regex]::Matches($Content, $Pattern)
+    if ($Matches.Count -ne 1) {
+        throw "Expected one $Label version in $Path; found $($Matches.Count)"
+    }
+    return $Matches[0].Groups['version'].Value
+}
+
+$PackageLockPath = Join-Path $Root 'web\package-lock.json'
+$PackageLockVersion = Get-JsonVersion `
+    $PackageLockPath `
+    '(?ms)\A\{\s*"name"\s*:\s*"captionnest-web"\s*,\s*"version"\s*:\s*"(?<version>[^"]+)"' `
+    'WebLock'
+$PackageLockRootVersion = Get-JsonVersion `
+    $PackageLockPath `
+    '(?ms)"packages"\s*:\s*\{\s*""\s*:\s*\{\s*"name"\s*:\s*"captionnest-web"\s*,\s*"version"\s*:\s*"(?<version>[^"]+)"' `
+    'WebLockRoot'
 $Versions = [ordered]@{
     Python = Get-TomlVersion (Join-Path $Root 'pyproject.toml') 'project'
+    PythonLock = Get-TomlPackageVersion (Join-Path $Root 'uv.lock') 'captionnest'
     Web = (Get-Content -LiteralPath (Join-Path $Root 'web\package.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version
+    WebLock = $PackageLockVersion
+    WebLockRoot = $PackageLockRootVersion
     Tauri = (Get-Content -LiteralPath (Join-Path $Root 'src-tauri\tauri.conf.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version
     Cargo = Get-TomlVersion (Join-Path $Root 'src-tauri\Cargo.toml') 'package'
+    CargoLock = Get-TomlPackageVersion (Join-Path $Root 'src-tauri\Cargo.lock') 'captionnest-desktop'
 }
 
 $UniqueVersions = @($Versions.Values | Sort-Object -Unique)

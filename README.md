@@ -28,9 +28,9 @@ We should start now.
 
 ## 普通用户安装
 
-> **当前构建状态：已跑通。** `Windows Release` workflow 会从锁定的 PyAV 18.0.0 源码构建自有 wheel，并链接锁定的 LGPL FFmpeg 8.1.2；官方 PyPI wheel 仍会因携带 x264/x265 被门禁拒绝。GitHub Actions 生成的候选安装包已经完成校验和、安装、启动、退出和卸载冒烟，正式 GitHub Release 尚未发布。
+> **当前构建状态：已发布。** [CaptionNest v0.1.0](https://github.com/coconilu/captionnest/releases/tag/v0.1.0) 已提供 Windows x64 安装包。`Windows Release` workflow 会从锁定的 PyAV 18.0.0 源码构建自有 wheel，并链接锁定的 LGPL FFmpeg 8.1.2；官方 PyPI wheel 仍会因携带 x264/x265 被门禁拒绝。
 
-合并构建流程并创建版本 tag 后，可从正式 Release 下载 Windows x64 的 `CaptionNest_*_x64-setup.exe`。安装器设计为：
+可从正式 Release 下载 Windows x64 的 `CaptionNest_*_x64-setup.exe`。后续版本由维护者在 GitHub Actions 输入版本号后一键完成版本更新、测试、安装冒烟、tag 和 Release。安装器设计为：
 
 - 只安装到当前用户，不需要管理员权限；
 - 内置 WebView2 bootstrapper；
