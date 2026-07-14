@@ -1,0 +1,20 @@
+{
+  "name": "captionnest-media-runtime",
+  "version-string": "0.1.0",
+  "builtin-baseline": "db4723bd0a99eab031f1a3dee4336dca43049c87",
+  "dependencies": [
+    {
+      "name": "ffmpeg",
+      "default-features": false,
+      "features": [
+        "avcodec",
+        "avdevice",
+        "avfilter",
+        "avformat",
+        "swresample",
+        "swscale",
+        "zlib"
+      ]
+    }
+  ]
+}

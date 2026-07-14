@@ -1,0 +1,1 @@
+{"main-window":{"identifier":"main-window","description":"CaptionNest 主窗口的最小桌面权限","local":true,"windows":["main"],"permissions":["core:default","dialog:default","opener:default"]}}

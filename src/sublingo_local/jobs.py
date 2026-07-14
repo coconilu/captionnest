@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import re
-import tempfile
 import threading
 import uuid
 from collections.abc import Callable
@@ -10,7 +8,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .asr import ASRProvider, FasterWhisperProvider
-from .media import ensure_supported_video, extract_audio
+from .media import ensure_supported_video
+from .model_manager import ModelManager
 from .models import (
     JobCreateRequest,
     JobStage,
@@ -20,13 +19,26 @@ from .models import (
     LogLevel,
     ResolvedSource,
     SourceKind,
+    TargetLanguage,
     utc_now,
 )
 from .storage import UploadStore
-from .subtitles import apply_translations, segments_to_translation_items, write_srt
+from .subtitles import segments_to_translation_items, write_bilingual_srt
 from .translation import TranslationService, create_translation_provider
 
 ASRFactory = Callable[[], ASRProvider]
+
+
+def _language_key(language: str | TargetLanguage) -> str:
+    normalized = str(language).strip().lower().replace("_", "-")
+    return {
+        "zh": "zh",
+        "zh-cn": "zh",
+        "zh-hans": "zh",
+        "cmn": "zh",
+        "eng": "en",
+        "kor": "ko",
+    }.get(normalized, normalized)
 
 
 def _redact(value: str, secrets: tuple[str, ...]) -> str:
@@ -48,8 +60,7 @@ class JobRecord:
     detected_language: str | None = None
     created_at: object = field(default_factory=utc_now)
     updated_at: object = field(default_factory=utc_now)
-    source_subtitle_path: str | None = None
-    translated_subtitle_path: str | None = None
+    subtitle_path: str | None = None
     error: str | None = None
     logs: list[LogEntry] = field(default_factory=list)
     _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
@@ -90,6 +101,10 @@ class JobRecord:
             self.logs = self.logs[-200:]
             self.updated_at = utc_now()
 
+    def clear_api_key(self) -> None:
+        with self._lock:
+            self.request.translation.api_key = None
+
     def to_view(self) -> JobView:
         with self._lock:
             return JobView(
@@ -99,62 +114,67 @@ class JobRecord:
                 progress=self.progress,
                 source_name=self.source.name,
                 source_kind=self.source.kind,
-                source_language=self.request.source_language,
                 detected_language=self.detected_language,
+                target_language=self.request.target_language,
                 translation_provider=self.request.translation.provider,
                 created_at=self.created_at,
                 updated_at=self.updated_at,
-                source_subtitle_path=self.source_subtitle_path,
-                translated_subtitle_path=self.translated_subtitle_path,
+                subtitle_path=self.subtitle_path,
                 error=self.error,
                 logs=list(self.logs),
             )
 
 
 class ProcessingPipeline:
-    def __init__(self, temp_root: Path, *, asr_factory: ASRFactory | None = None) -> None:
+    def __init__(
+        self,
+        temp_root: Path,
+        *,
+        asr_factory: ASRFactory | None = None,
+        model_manager: ModelManager | None = None,
+    ) -> None:
         self.temp_root = temp_root
         self.temp_root.mkdir(parents=True, exist_ok=True)
-        self.asr_factory = asr_factory or FasterWhisperProvider
+        if asr_factory is not None:
+            self.asr_factory = asr_factory
+        elif model_manager is not None:
+            self.asr_factory = lambda: FasterWhisperProvider(model_manager)
+        else:
+            self.asr_factory = FasterWhisperProvider
 
     async def run(self, record: JobRecord) -> None:
         record.update(
             status=JobStatus.RUNNING,
             stage=JobStage.EXTRACTING,
             progress=3,
-            message="正在提取 16 kHz 单声道音频",
+            message="正在准备媒体文件（内置解码器，无需 FFmpeg）",
         )
-        with tempfile.TemporaryDirectory(prefix="job-", dir=self.temp_root) as temp_dir:
-            audio_path = Path(temp_dir) / "audio.wav"
-            await asyncio.to_thread(extract_audio, record.source.path, audio_path)
-            record.update(
-                stage=JobStage.TRANSCRIBING,
-                progress=12,
-                message=f"正在使用 Faster-Whisper {record.request.asr.model} 识别",
-            )
+        record.update(
+            stage=JobStage.TRANSCRIBING,
+            progress=12,
+            message=f"正在使用 Faster-Whisper {record.request.asr.model} 识别",
+        )
 
-            asr = self.asr_factory()
+        asr = self.asr_factory()
 
-            def on_asr_progress(value: float) -> None:
-                record.update(progress=12 + round(max(0.0, min(1.0, value)) * 48))
+        def on_asr_progress(value: float) -> None:
+            record.update(progress=12 + round(max(0.0, min(1.0, value)) * 48))
 
-            transcription = await asyncio.to_thread(
-                asr.transcribe,
-                audio_path,
-                language=record.request.source_language,
-                settings=record.request.asr,
-                on_progress=on_asr_progress,
-            )
+        transcription = await asyncio.to_thread(
+            asr.transcribe,
+            record.source.path,
+            language="auto",
+            settings=record.request.asr,
+            on_progress=on_asr_progress,
+        )
 
         record.detected_language = transcription.language
         record.update(message=f"识别完成：{len(transcription.segments)} 条字幕")
-        language_suffix = re.sub(r"[^a-zA-Z0-9_-]", "", transcription.language) or "source"
+        if _language_key(transcription.language) == _language_key(record.request.target_language):
+            raise ValueError("检测到的源语言与目标语言相同，请选择其他目标语言")
+
         output_dir = record.source.path.parent
         output_stem = record.source.path.stem
-        if record.request.output.write_source_srt:
-            source_path = output_dir / f"{output_stem}.{language_suffix}.srt"
-            await asyncio.to_thread(write_srt, source_path, transcription.segments)
-            record.source_subtitle_path = str(source_path)
 
         record.update(
             stage=JobStage.TRANSLATING,
@@ -171,13 +191,18 @@ class ProcessingPipeline:
         translated = await service.translate(
             source_items,
             source_language=transcription.language,
+            target_language=record.request.target_language,
             on_progress=on_translation_progress,
         )
-        translated_segments = apply_translations(transcription.segments, translated)
-        record.update(stage=JobStage.WRITING, progress=95, message="正在写入中文字幕")
-        translated_path = output_dir / f"{output_stem}.zh-CN.srt"
-        await asyncio.to_thread(write_srt, translated_path, translated_segments)
-        record.translated_subtitle_path = str(translated_path)
+        record.update(stage=JobStage.WRITING, progress=95, message="正在写入双语字幕")
+        subtitle_path = output_dir / f"{output_stem}.{record.request.target_language.value}.srt"
+        await asyncio.to_thread(
+            write_bilingual_srt,
+            subtitle_path,
+            transcription.segments,
+            translated,
+        )
+        record.subtitle_path = str(subtitle_path)
         record.update(
             status=JobStatus.COMPLETED,
             stage=JobStage.COMPLETED,
@@ -207,7 +232,7 @@ class JobManager:
         record = JobRecord(id=uuid.uuid4().hex, request=request, source=source)
         record.update(message="任务已加入队列")
         self._jobs[record.id] = record
-        task = asyncio.create_task(self._run(record), name=f"sublingo-job-{record.id}")
+        task = asyncio.create_task(self._run(record), name=f"captionnest-job-{record.id}")
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         return record.to_view()
@@ -225,6 +250,8 @@ class JobManager:
             raise
         except Exception as exc:
             record.fail(exc)
+        finally:
+            record.clear_api_key()
 
     def get(self, job_id: str) -> JobView:
         try:
@@ -241,4 +268,3 @@ class JobManager:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-

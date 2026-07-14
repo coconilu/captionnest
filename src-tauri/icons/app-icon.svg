@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">CaptionNest app icon</title>
+  <defs>
+    <linearGradient id="captionnest-bg" x1="72" y1="48" x2="448" y2="472" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#064b59"/>
+      <stop offset="1" stop-color="#032f3b"/>
+    </linearGradient>
+    <linearGradient id="captionnest-cyan" x1="76" y1="118" x2="428" y2="410" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#08d4ed"/>
+      <stop offset="1" stop-color="#18e0f5"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="496" height="496" rx="112" fill="url(#captionnest-bg)"/>
+  <path
+    d="M122 124h268c38 0 62 26 62 64v136c0 38-24 64-62 64h-82l-52 52-52-52h-82c-38 0-62-26-62-64V188c0-38 24-64 62-64Z"
+    fill="none"
+    stroke="url(#captionnest-cyan)"
+    stroke-width="30"
+    stroke-linejoin="round"
+  />
+  <rect x="137" y="208" width="238" height="34" rx="17" fill="#fff1d2"/>
+  <rect x="137" y="278" width="278" height="34" rx="17" fill="#13daf1"/>
+</svg>

@@ -18,6 +18,12 @@ class TranslationProviderName(StrEnum):
     DEEPSEEK = "deepseek"
 
 
+class TargetLanguage(StrEnum):
+    ZH_CN = "zh-CN"
+    EN = "en"
+    KO = "ko"
+
+
 class SourceKind(StrEnum):
     PATH = "path"
     UPLOAD = "upload"
@@ -49,7 +55,7 @@ class LogLevel(StrEnum):
 
 
 class ASRSettings(BaseModel):
-    model: str = "large-v3"
+    model: str = "small"
     device: Literal["auto", "cpu", "cuda"] = "auto"
     compute_type: str = "auto"
     vad_filter: bool = True
@@ -89,25 +95,12 @@ class TranslationSettings(BaseModel):
         return self
 
 
-class OutputSettings(BaseModel):
-    write_source_srt: bool = True
-
-
 class JobCreateRequest(BaseModel):
     video_path: str | None = None
     upload_id: str | None = None
-    source_language: str = "auto"
+    target_language: TargetLanguage = TargetLanguage.ZH_CN
     asr: ASRSettings = Field(default_factory=ASRSettings)
     translation: TranslationSettings = Field(default_factory=TranslationSettings)
-    output: OutputSettings = Field(default_factory=OutputSettings)
-
-    @field_validator("source_language")
-    @classmethod
-    def language_supported(cls, value: str) -> str:
-        value = value.strip().lower()
-        if value not in {"auto", "ja", "en"}:
-            raise ValueError("首版仅支持 auto、ja 或 en")
-        return value
 
     @model_validator(mode="after")
     def exactly_one_source(self) -> JobCreateRequest:
@@ -156,13 +149,12 @@ class JobView(BaseModel):
     progress: int = Field(ge=0, le=100)
     source_name: str
     source_kind: SourceKind
-    source_language: str
     detected_language: str | None = None
+    target_language: TargetLanguage
     translation_provider: TranslationProviderName
     created_at: datetime
     updated_at: datetime
-    source_subtitle_path: str | None = None
-    translated_subtitle_path: str | None = None
+    subtitle_path: str | None = None
     error: str | None = None
     logs: list[LogEntry] = Field(default_factory=list)
 

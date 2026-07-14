@@ -1,4 +1,4 @@
-# SubLingo Local development guidance
+# CaptionNest development guidance
 
 - 用户界面和文档默认使用简体中文。
 - Python 代码放在 `src/sublingo_local/`，测试放在 `tests/`。
@@ -11,4 +11,3 @@
 - 输出中文字幕默认写入源视频同目录，格式为 `<视频名>.zh-CN.srt`。
 - 所有外部进程调用必须使用参数数组，禁止拼接 shell 命令。
 - 提交前运行 Python 测试、前端 lint/build，并验证真实浏览器核心流程。
-

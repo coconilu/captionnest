@@ -1,11 +1,13 @@
 [build-system]
-requires = ["setuptools>=69"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "sublingo-local"
+name = "captionnest"
 version = "0.1.0"
 description = "Local-first video transcription and Chinese subtitle translation service"
+readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.109,<1",
@@ -17,6 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 asr = ["faster-whisper>=1.1,<2"]
+desktop = ["pyinstaller>=6.11,<7"]
 dev = [
   "pytest>=7.4,<9",
   "pytest-asyncio>=0.23,<1",
@@ -24,10 +27,11 @@ dev = [
 ]
 
 [project.scripts]
-sublingo-local = "sublingo_local.__main__:main"
+captionnest = "sublingo_local.__main__:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,5 +1,5 @@
-export type SourceLanguage = 'auto' | 'ja' | 'en'
-export type AsrModel = 'large-v3' | 'large-v3-turbo'
+export type TargetLanguage = 'zh-CN' | 'en' | 'ko'
+export type AsrModel = 'small' | 'medium' | 'large-v3-turbo' | 'large-v3'
 export type TranslationProvider = 'codex_spark' | 'lmstudio' | 'deepseek'
 export type JobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
 export type JobStage =
@@ -32,13 +32,12 @@ export interface JobView {
   progress: number
   source_name: string
   source_kind: 'path' | 'upload'
-  source_language: string
   detected_language: string | null
+  target_language: TargetLanguage
   translation_provider: TranslationProvider
   created_at: string
   updated_at: string
-  source_subtitle_path: string | null
-  translated_subtitle_path: string | null
+  subtitle_path: string | null
   error: string | null
   logs: JobLog[]
 }
@@ -54,7 +53,8 @@ export interface BackendCapabilities {
     installed?: boolean
     cuda_available?: boolean
     models?: string[]
-    languages?: string[]
+    source_language?: 'auto'
+    target_languages?: TargetLanguage[]
   }
   translation?: {
     providers?: Array<{
@@ -65,7 +65,7 @@ export interface BackendCapabilities {
     }>
   }
   tools?: {
-    ffmpeg?: boolean
+    media_decoder?: boolean
     codex?: boolean
     nvidia_smi?: boolean
     system_file_picker?: boolean
@@ -77,7 +77,7 @@ export interface BackendCapabilities {
 export interface JobRequest {
   video_path?: string
   upload_id?: string
-  source_language: SourceLanguage
+  target_language: TargetLanguage
   asr: {
     model: AsrModel
     device: 'cuda' | 'cpu'
@@ -91,7 +91,63 @@ export interface JobRequest {
     endpoint?: string
     api_key?: string
   }
-  output: {
-    write_source_srt: boolean
+}
+
+export type EnvironmentComponentStatus = 'ready' | 'missing' | 'broken' | 'failed'
+export type ModelStatus = 'ready' | 'missing' | 'downloading' | 'damaged'
+export type CodexStatus = 'not_installed' | 'not_logged_in' | 'ready' | 'check_failed'
+
+export interface EnvironmentView {
+  runtime: {
+    status: 'ready' | 'failed'
+    version: string | null
+    message: string | null
   }
+  asr: {
+    status: EnvironmentComponentStatus
+    provider: string | null
+    version: string | null
+    message: string | null
+  }
+  model: {
+    status: ModelStatus
+    name: string | null
+    path: string | null
+    message: string | null
+  }
+  acceleration: {
+    status: 'cpu' | 'cuda_ready' | 'cuda_unavailable'
+    device: 'cpu' | 'cuda'
+    cuda_available: boolean
+    message: string | null
+  }
+  codex: {
+    status: CodexStatus
+    version: string | null
+    install_url: string | null
+    message: string | null
+  }
+  tools: {
+    media: {
+      status: EnvironmentComponentStatus
+      provider: string | null
+      version: string | null
+      message: string | null
+    }
+  }
+}
+
+export interface ModelItem {
+  id: string
+  label: string
+  status: ModelStatus
+  path: string | null
+  message: string | null
+  progress: number | null
+  recommended_for: 'cpu' | 'cuda' | 'quality'
+}
+
+export interface ModelCatalog {
+  items: ModelItem[]
+  model_root: string
 }

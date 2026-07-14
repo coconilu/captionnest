@@ -1,19 +1,22 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 
 import { createJob, pickVideo } from './api/client'
 import { AppHeader } from './components/AppHeader'
+import { EnvironmentPanel } from './components/EnvironmentPanel'
 import { SettingsPanel, type SettingsValue } from './components/SettingsPanel'
 import { SourcePicker, type SelectedSource } from './components/SourcePicker'
 import { TaskConsole } from './components/TaskConsole'
 import { WorkflowProgress } from './components/WorkflowProgress'
 import { useBackendStatus } from './hooks/useBackendStatus'
+import { useEnvironmentStatus } from './hooks/useEnvironmentStatus'
 import { useJobPolling } from './hooks/useJobPolling'
+import { useModelCatalog } from './hooks/useModelCatalog'
 import { fileNameFromPath } from './lib/format'
 import type { JobRequest, JobView } from './types/api'
 
 const initialSettings: SettingsValue = {
-  sourceLanguage: 'auto',
-  asrModel: 'large-v3',
+  targetLanguage: 'zh-CN',
+  asrModel: 'small',
   useCuda: true,
   provider: 'codex_spark',
   lmstudioEndpoint: 'http://127.0.0.1:1234/v1',
@@ -21,13 +24,33 @@ const initialSettings: SettingsValue = {
   deepseekEndpoint: 'https://api.deepseek.com',
   deepseekModel: 'deepseek-v4-flash',
   deepseekApiKey: '',
-  writeSourceSrt: true,
 }
 
 const ACTIVE_STATUSES = new Set(['queued', 'running'])
 
 export function App() {
-  const backend = useBackendStatus()
+  const {
+    connected,
+    checking: backendChecking,
+    capabilities,
+    error: backendError,
+    refresh: refreshBackend,
+  } = useBackendStatus()
+  const {
+    data: environment,
+    checking: environmentChecking,
+    error: environmentError,
+    refresh: refreshEnvironment,
+  } = useEnvironmentStatus()
+  const {
+    items: models,
+    model_root: modelRoot,
+    checking: modelsChecking,
+    downloadingId,
+    error: modelsError,
+    refresh: refreshModels,
+    startDownload,
+  } = useModelCatalog()
   const [source, setSource] = useState<SelectedSource | null>(null)
   const [settings, setSettings] = useState(initialSettings)
   const [initialJob, setInitialJob] = useState<JobView | null>(null)
@@ -36,13 +59,13 @@ export function App() {
   const [actionError, setActionError] = useState<string | null>(null)
   const { job, pollError } = useJobPolling(initialJob)
   const taskActive = Boolean(job && ACTIVE_STATUSES.has(job.status)) || startBusy
-  const cudaAvailable = Boolean(backend.capabilities.asr?.cuda_available)
-
-  useEffect(() => {
-    if (!cudaAvailable && !backend.checking && settings.useCuda) {
-      setSettings((current) => ({ ...current, useCuda: false }))
-    }
-  }, [backend.checking, cudaAvailable, settings.useCuda])
+  const cudaAvailable = environment?.acceleration.cuda_available
+    ?? Boolean(capabilities.asr?.cuda_available)
+  const selectedModel = models.find((item) => item.id === settings.asrModel)
+  const environmentModelMatches = environment?.model.name === settings.asrModel
+  const selectedModelStatus = selectedModel?.status
+    ?? (environmentModelMatches ? environment?.model.status : undefined)
+  const codexStatus = environment?.codex.status
 
   const handlePickPath = useCallback(async () => {
     setSourceBusy(true)
@@ -66,10 +89,37 @@ export function App() {
 
   const validationError = useMemo(() => {
     if (!source) return '请选择视频'
+    if (environmentChecking || modelsChecking) return '正在检测运行环境'
+    if (environmentError) return '运行环境检测失败，请刷新检测'
+    if (environment?.asr.status !== 'ready') {
+      return environment?.asr.message ?? '语音识别组件不可用'
+    }
+    if (environment.tools.media.status !== 'ready') {
+      return environment.tools.media.message ?? '媒体解码组件不可用'
+    }
+    if (!selectedModelStatus) return modelsError ?? '无法获取识别模型状态，请刷新检测'
+    if (selectedModelStatus === 'missing') return '请先下载识别模型'
+    if (selectedModelStatus === 'damaged') return '识别模型已损坏，请重新下载'
+    if (selectedModelStatus === 'downloading') return '识别模型正在下载，请刷新进度'
+    if (settings.provider === 'codex_spark' && codexStatus === 'not_installed') return '请先安装 Codex 并刷新检测'
+    if (settings.provider === 'codex_spark' && codexStatus === 'not_logged_in') return '请先完成 Codex 登录并刷新检测'
+    if (settings.provider === 'codex_spark' && codexStatus === 'check_failed') return 'Codex 状态检测失败，请刷新重试'
     if (settings.provider === 'lmstudio' && !settings.lmstudioModel.trim()) return '请填写 LM Studio 模型 ID'
     if (settings.provider === 'deepseek' && !settings.deepseekApiKey.trim()) return '请填写 DeepSeek API Key'
     return null
-  }, [settings.deepseekApiKey, settings.lmstudioModel, settings.provider, source])
+  }, [
+    codexStatus,
+    environment,
+    environmentChecking,
+    environmentError,
+    modelsChecking,
+    modelsError,
+    selectedModelStatus,
+    settings.deepseekApiKey,
+    settings.lmstudioModel,
+    settings.provider,
+    source,
+  ])
 
   const handleStart = useCallback(async () => {
     if (!source || validationError) {
@@ -91,7 +141,7 @@ export function App() {
 
     const payload: JobRequest = {
       video_path: source.path,
-      source_language: settings.sourceLanguage,
+      target_language: settings.targetLanguage,
       asr: {
         model: settings.asrModel,
         device: settings.useCuda && cudaAvailable ? 'cuda' : 'cpu',
@@ -100,7 +150,6 @@ export function App() {
         beam_size: 5,
       },
       translation,
-      output: { write_source_srt: settings.writeSourceSrt },
     }
 
     setStartBusy(true)
@@ -115,15 +164,32 @@ export function App() {
     }
   }, [cudaAvailable, settings, source, validationError])
 
-  const canStart = backend.connected && Boolean(source) && !sourceBusy && !validationError
+  const canStart = connected && Boolean(source) && !sourceBusy && !validationError
+  const startHint = sourceBusy
+    ? '正在选择视频，请稍候'
+    : !connected
+      ? '请先检查本地服务'
+      : validationError ?? '请检查任务设置'
+
+  const handleEnvironmentRefresh = useCallback(async () => {
+    await Promise.all([refreshEnvironment(), refreshModels()])
+  }, [refreshEnvironment, refreshModels])
+
+  const handleFullRefresh = useCallback(async () => {
+    await Promise.all([refreshBackend(), refreshEnvironment(), refreshModels()])
+  }, [refreshBackend, refreshEnvironment, refreshModels])
+
+  const handleDownloadModel = useCallback((id: string) => {
+    void startDownload(id)
+  }, [startDownload])
 
   return (
     <div className="app-shell">
       <AppHeader
-        connected={backend.connected}
-        checking={backend.checking}
+        connected={connected}
+        checking={backendChecking}
         cudaAvailable={cudaAvailable}
-        onRefresh={() => void backend.refresh()}
+        onRefresh={() => void handleFullRefresh()}
       />
       <main className="app-layout">
         <div className="workspace">
@@ -142,7 +208,7 @@ export function App() {
           <TaskConsole
             job={job}
             pollError={pollError}
-            actionError={actionError ?? backend.error}
+            actionError={actionError ?? backendError}
             onActionError={setActionError}
           />
         </div>
@@ -151,9 +217,25 @@ export function App() {
           cudaAvailable={cudaAvailable}
           disabled={taskActive}
           canStart={canStart}
+          startHint={startHint}
           onChange={setSettings}
           onStart={() => void handleStart()}
-        />
+        >
+          <EnvironmentPanel
+            environment={environment}
+            checking={environmentChecking}
+            error={environmentError}
+            selectedModel={settings.asrModel}
+            models={models}
+            modelRoot={modelRoot}
+            modelsChecking={modelsChecking}
+            modelsError={modelsError}
+            downloadingModelId={downloadingId}
+            disabled={taskActive}
+            onRefresh={() => void handleEnvironmentRefresh()}
+            onDownloadModel={handleDownloadModel}
+          />
+        </SettingsPanel>
       </main>
     </div>
   )

@@ -11,12 +11,9 @@ if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
     throw 'npm is required. Install Node.js first.'
 }
 
-if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
-    throw 'FFmpeg is required and must be available on PATH.'
-}
-
 uv sync --extra asr --extra dev
 npm --prefix web install
 npm --prefix web run build
 
-Write-Host 'SubLingo Local setup completed. Run .\scripts\dev.ps1 for development.' -ForegroundColor Green
+Write-Host 'CaptionNest setup completed. PyAV provides media decoding; system FFmpeg is not required.' -ForegroundColor Green
+Write-Host 'Run .\scripts\dev.ps1 for development.' -ForegroundColor Green

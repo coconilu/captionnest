@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import platform
 import shutil
 import subprocess
@@ -58,7 +57,15 @@ def open_folder(path_value: str) -> OpenFolderResult:
 
     system = platform.system()
     if system == "Windows":
-        os.startfile(str(folder))  # type: ignore[attr-defined]
+        executable = shutil.which("explorer.exe") or shutil.which("explorer")
+        if not executable:
+            raise SystemIntegrationUnavailable("当前系统没有 explorer，无法打开文件夹")
+        subprocess.Popen(
+            [executable, str(folder)],
+            shell=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
     elif system == "Darwin":
         executable = shutil.which("open")
         if not executable:
@@ -82,4 +89,3 @@ def open_folder(path_value: str) -> OpenFolderResult:
             start_new_session=True,
         )
     return OpenFolderResult(opened=True, path=str(folder))
-

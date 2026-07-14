@@ -9,5 +9,10 @@ node_modules/
 web/dist/
 web/output/
 data/
+packaging/build/
+packaging/dist/
+src-tauri/binaries/_internal/
+src-tauri/binaries/captionnest-sidecar-*.exe
+src-tauri/target/
 *.log
 .DS_Store

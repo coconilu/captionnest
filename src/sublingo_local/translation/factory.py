@@ -28,4 +28,3 @@ def create_translation_provider(settings: TranslationSettings) -> TranslationPro
             timeout_seconds=settings.timeout_seconds,
         )
     raise ValueError(f"不支持的翻译 Provider：{settings.provider}")
-

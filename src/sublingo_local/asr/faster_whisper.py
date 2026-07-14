@@ -4,12 +4,16 @@ import gc
 import os
 from pathlib import Path
 
+from ..model_manager import ModelManager
 from ..models import ASRSettings, SubtitleSegment
 from .base import ASRProgress, ASRProvider, TranscriptionResult
 
 
 class FasterWhisperProvider(ASRProvider):
     """Faster-Whisper adapter with a deliberately lazy heavyweight import."""
+
+    def __init__(self, model_manager: ModelManager | None = None) -> None:
+        self.model_manager = model_manager
 
     def transcribe(
         self,
@@ -19,7 +23,7 @@ class FasterWhisperProvider(ASRProvider):
         settings: ASRSettings,
         on_progress: ASRProgress | None = None,
     ) -> TranscriptionResult:
-        configured_endpoint = os.getenv("SUBLINGO_HF_ENDPOINT", "").strip()
+        configured_endpoint = os.getenv("CAPTIONNEST_HF_ENDPOINT", "").strip()
         if configured_endpoint:
             os.environ["HF_ENDPOINT"] = configured_endpoint
         elif os.getenv("HF_ENDPOINT", "").rstrip("/") == "https://hf-mirror.com":
@@ -31,12 +35,17 @@ class FasterWhisperProvider(ASRProvider):
             from faster_whisper import WhisperModel
         except ImportError as exc:
             raise RuntimeError(
-                "尚未安装 Faster-Whisper，请执行 pip install 'sublingo-local[asr]'"
+                "尚未安装 Faster-Whisper，请执行 pip install 'captionnest[asr]'"
             ) from exc
 
         device = settings.device
         compute_type = "default" if settings.compute_type == "auto" else settings.compute_type
-        model = WhisperModel(settings.model, device=device, compute_type=compute_type)
+        model_reference = (
+            str(self.model_manager.resolve_installed_path(settings.model))
+            if self.model_manager
+            else settings.model
+        )
+        model = WhisperModel(model_reference, device=device, compute_type=compute_type)
         try:
             iterator, info = model.transcribe(
                 str(audio_path),

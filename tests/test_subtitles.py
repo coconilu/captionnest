@@ -9,6 +9,7 @@ from sublingo_local.subtitles import (
     chunk_translation_items,
     read_srt,
     validate_translation_integrity,
+    write_bilingual_srt,
     write_srt,
 )
 
@@ -48,8 +49,47 @@ def test_chunking_and_apply_translation_preserve_timeline() -> None:
     assert [len(chunk) for chunk in chunks] == [2, 2, 1]
 
     segment = SubtitleSegment(id="1", start_ms=100, end_ms=500, text="hello")
-    result = apply_translations(
-        [segment], [TranslatedItem(id="1", translated_text="你好")]
-    )
+    result = apply_translations([segment], [TranslatedItem(id="1", translated_text="你好")])
     assert result[0].text == "你好"
     assert (result[0].start_ms, result[0].end_ms) == (100, 500)
+
+
+def test_bilingual_srt_writes_source_above_translation_atomically(tmp_path: Path) -> None:
+    path = tmp_path / "movie.zh-CN.srt"
+    source = [
+        SubtitleSegment(id="seg-000001", start_ms=100, end_ms=500, text="Hello, world."),
+        SubtitleSegment(id="seg-000002", start_ms=600, end_ms=900, text="Goodbye."),
+    ]
+    translated = [
+        TranslatedItem(id="seg-000001", translated_text="你好，世界。"),
+        TranslatedItem(id="seg-000002", translated_text="再见。"),
+    ]
+
+    write_bilingual_srt(path, source, translated)
+
+    assert path.read_bytes().startswith(b"\xef\xbb\xbf")
+    assert path.read_text(encoding="utf-8-sig") == (
+        "1\n"
+        "00:00:00,100 --> 00:00:00,500\n"
+        "Hello, world.\n"
+        "你好，世界。\n\n"
+        "2\n"
+        "00:00:00,600 --> 00:00:00,900\n"
+        "Goodbye.\n"
+        "再见。\n"
+    )
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_bilingual_srt_validates_ids_before_creating_output(tmp_path: Path) -> None:
+    path = tmp_path / "invalid.srt"
+    source = [SubtitleSegment(id="a", start_ms=100, end_ms=500, text="Hello")]
+
+    with pytest.raises(SubtitleIntegrityError, match="缺少 a"):
+        write_bilingual_srt(
+            path,
+            source,
+            [TranslatedItem(id="b", translated_text="你好")],
+        )
+
+    assert not path.exists()
