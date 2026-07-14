@@ -12,13 +12,6 @@ export type JobStage =
   | 'failed'
   | 'cancelled'
 
-export interface UploadResponse {
-  upload_id: string
-  name: string
-  path: string
-  size: number
-}
-
 export interface PickVideoResponse {
   selected: boolean
   path: string | null

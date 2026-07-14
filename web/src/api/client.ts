@@ -4,7 +4,6 @@ import type {
   JobRequest,
   JobView,
   PickVideoResponse,
-  UploadResponse,
 } from '../types/api'
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ?? ''
@@ -36,12 +35,6 @@ export function getHealth(signal?: AbortSignal) {
 
 export function getCapabilities(signal?: AbortSignal) {
   return request<BackendCapabilities>('/api/capabilities', { signal })
-}
-
-export function uploadVideo(file: File, signal?: AbortSignal) {
-  const form = new FormData()
-  form.append('file', file)
-  return request<UploadResponse>('/api/uploads', { method: 'POST', body: form, signal })
 }
 
 export function pickVideo(signal?: AbortSignal) {

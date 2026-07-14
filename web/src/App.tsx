@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
-import { createJob, pickVideo, uploadVideo } from './api/client'
+import { createJob, pickVideo } from './api/client'
 import { AppHeader } from './components/AppHeader'
 import { SettingsPanel, type SettingsValue } from './components/SettingsPanel'
 import { SourcePicker, type SelectedSource } from './components/SourcePicker'
@@ -43,26 +43,6 @@ export function App() {
       setSettings((current) => ({ ...current, useCuda: false }))
     }
   }, [backend.checking, cudaAvailable, settings.useCuda])
-
-  const handleUpload = useCallback(async (file: File) => {
-    setSourceBusy(true)
-    setActionError(null)
-    try {
-      const uploaded = await uploadVideo(file)
-      setSource({
-        kind: 'upload',
-        uploadId: uploaded.upload_id,
-        name: uploaded.name,
-        path: uploaded.path,
-        size: uploaded.size,
-      })
-      setInitialJob(null)
-    } catch (error) {
-      setActionError(error instanceof Error ? error.message : '视频上传失败')
-    } finally {
-      setSourceBusy(false)
-    }
-  }, [])
 
   const handlePickPath = useCallback(async () => {
     setSourceBusy(true)
@@ -110,7 +90,7 @@ export function App() {
     }
 
     const payload: JobRequest = {
-      ...(source.kind === 'upload' ? { upload_id: source.uploadId } : { video_path: source.path }),
+      video_path: source.path,
       source_language: settings.sourceLanguage,
       asr: {
         model: settings.asrModel,
@@ -151,7 +131,6 @@ export function App() {
             source={source}
             busy={sourceBusy}
             disabled={taskActive}
-            onUpload={handleUpload}
             onPickPath={handlePickPath}
             onClear={() => {
               setSource(null)
