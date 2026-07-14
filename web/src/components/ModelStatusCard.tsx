@@ -1,4 +1,4 @@
-import { Download, HardDrive, LoaderCircle, RefreshCw } from 'lucide-react'
+import { Download, HardDrive, LoaderCircle } from 'lucide-react'
 
 import type { ModelItem, ModelStatus } from '../types/api'
 
@@ -13,7 +13,6 @@ interface ModelStatusCardProps {
   disabled: boolean
   error: string | null
   onDownload: (id: string) => void
-  onRefresh: () => void
 }
 
 const STATUS_LABEL: Record<ModelStatus, string> = {
@@ -34,12 +33,14 @@ export function ModelStatusCard({
   disabled,
   error,
   onDownload,
-  onRefresh,
 }: ModelStatusCardProps) {
   const status = item?.status ?? fallbackStatus
   const activeDownload = downloading || status === 'downloading'
   const progress = item?.progress == null ? null : Math.max(0, Math.min(100, item.progress))
   const canDownload = status === 'missing' || status === 'damaged'
+  const statusMessage = item?.message
+    ?? (item && status === 'ready' ? '模型已下载并可用' : fallbackMessage)
+    ?? '识别模型按需保存在本机，不随安装包重复分发。'
 
   return (
     <div className={`model-status-card ${status === 'ready' ? 'is-ready' : canDownload ? 'is-warning' : ''}`}>
@@ -52,7 +53,7 @@ export function ModelStatusCard({
           <span>{status ? STATUS_LABEL[status] : checking ? '正在检查' : '状态未知'}</span>
         </div>
       </div>
-      <p>{item?.message ?? fallbackMessage ?? '识别模型按需保存在本机，不随安装包重复分发。'}</p>
+      <p>{statusMessage}</p>
       {activeDownload ? (
         <div
           className={`model-progress ${progress == null ? 'is-indeterminate' : ''}`}
@@ -63,7 +64,7 @@ export function ModelStatusCard({
           aria-valuenow={progress ?? undefined}
         >
           <span style={progress == null ? undefined : { width: `${progress}%` }} />
-          <small>{progress == null ? '下载已启动' : `${Math.round(progress)}%`}</small>
+          <small>{progress == null ? '正在准备下载，进度将自动更新' : `${Math.round(progress)}% · 自动更新`}</small>
         </div>
       ) : null}
       {item?.path || modelRoot ? (
@@ -80,12 +81,6 @@ export function ModelStatusCard({
           >
             {downloading ? <LoaderCircle className="is-spinning" size={14} /> : <Download size={14} />}
             {downloading ? '正在启动' : status === 'damaged' ? '重新下载模型' : '下载模型'}
-          </button>
-        ) : null}
-        {activeDownload ? (
-          <button type="button" onClick={onRefresh} disabled={checking}>
-            {checking ? <LoaderCircle className="is-spinning" size={14} /> : <RefreshCw size={14} />}
-            刷新进度
           </button>
         ) : null}
       </div>

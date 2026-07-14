@@ -121,7 +121,6 @@ export function EnvironmentPanel({
         disabled={disabled}
         error={modelsError}
         onDownload={onDownloadModel}
-        onRefresh={onRefresh}
       />
 
       <CodexStatusCard codex={environment?.codex ?? null} checking={checking || modelsChecking} onRefresh={onRefresh} />

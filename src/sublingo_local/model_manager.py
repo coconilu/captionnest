@@ -142,7 +142,7 @@ class ModelManager:
                     label=spec.label,
                     status="downloading",
                     path=None,
-                    message="正在下载模型，可稍后刷新查看进度",
+                    message="正在下载模型，进度会自动更新",
                     progress=self._download_progress(state),
                     recommended_for=spec.recommended_for,
                 )
