@@ -3,20 +3,21 @@ name: Windows Release
 on:
   workflow_dispatch:
     inputs:
-      publish_release:
-        description: '在完成安装/运行/退出/卸载人工冒烟后发布当前 tag'
+      version:
+        description: '要发布的版本号，例如 0.2.0（不要带 v）'
+        required: true
+        type: string
+      prerelease:
+        description: '标记为预发布版本'
         required: true
         type: boolean
         default: false
-  push:
-    tags:
-      - 'v*'
 
 permissions:
   contents: write
 
 concurrency:
-  group: windows-release-${{ github.ref }}
+  group: windows-release
   cancel-in-progress: false
 
 jobs:
@@ -24,41 +25,106 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 180
     env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_VERSION_INPUT: ${{ inputs.version }}
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\packaging\build\vcpkg-binary-cache
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out main with tags
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Validate one-click release request
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -ne 'refs/heads/main') {
+            throw 'Run the one-click release workflow from the main branch.'
+          }
+          $Version = $env:RELEASE_VERSION_INPUT.Trim()
+          if ($Version -ne $env:RELEASE_VERSION_INPUT) {
+            throw 'The version must not contain leading or trailing whitespace.'
+          }
+          if ($Version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
+            throw "Invalid version '$Version'. Use MAJOR.MINOR.PATCH without a v prefix."
+          }
+          $Tag = "v$Version"
+          & git fetch origin main --tags
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to fetch main and tags.' }
+          $BaseSha = (& git rev-parse HEAD).Trim()
+          $RemoteMain = (& git rev-parse origin/main).Trim()
+          if ($BaseSha -ne $RemoteMain) {
+            throw "Checked out $BaseSha, but origin/main is $RemoteMain. Run the workflow again."
+          }
+
+          & gh release view $Tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            throw "Release $Tag already exists. Use a new version."
+          }
+
+          & git show-ref --verify --quiet "refs/tags/$Tag"
+          $TagExists = $LASTEXITCODE -eq 0
+          if ($TagExists) {
+            $TagSha = (& git rev-list -n 1 $Tag).Trim()
+            if ($TagSha -ne $BaseSha) {
+              throw "Tag $Tag points to $TagSha instead of current main $BaseSha."
+            }
+          }
+
+          "RELEASE_VERSION=$Version" | Add-Content -LiteralPath $env:GITHUB_ENV
+          "RELEASE_TAG=$Tag" | Add-Content -LiteralPath $env:GITHUB_ENV
+          "RELEASE_BASE_SHA=$BaseSha" | Add-Content -LiteralPath $env:GITHUB_ENV
+          "RELEASE_TAG_EXISTS=$($TagExists.ToString().ToLowerInvariant())" |
+            Add-Content -LiteralPath $env:GITHUB_ENV
+
       - name: Check out pinned vcpkg baseline
         uses: actions/checkout@v4
         with:
           repository: microsoft/vcpkg
           ref: db4723bd0a99eab031f1a3dee4336dca43049c87
           path: packaging/build/vcpkg
+
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: web/package-lock.json
+
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: '3.12'
           enable-cache: true
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
+
       - name: Restore vcpkg binary cache
         uses: actions/cache@v4
         with:
           path: packaging/build/vcpkg-binary-cache
           key: vcpkg-windows-x64-${{ hashFiles('packaging/media-runtime/vcpkg.json') }}
+
       - name: Bootstrap pinned vcpkg
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
           & .\packaging\build\vcpkg\bootstrap-vcpkg.bat -disableMetrics
           if ($LASTEXITCODE -ne 0) { throw 'Unable to bootstrap pinned vcpkg.' }
+
+      - name: Update every project version
+        shell: pwsh
+        run: |
+          $Python = (& uv python find 3.12).Trim()
+          if (-not $Python) { throw 'Unable to locate the release Python runtime.' }
+          & $Python .\src\sublingo_local\release_version.py $env:RELEASE_VERSION --root .
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to update project versions.' }
+
       - run: npm ci
         working-directory: web
+
       - run: uv sync --extra asr --extra desktop --extra dev --locked
+
       - name: Build and install LGPL media wheel
         shell: pwsh
         run: |
@@ -67,24 +133,29 @@ jobs:
             -VcpkgRoot 'packaging\build\vcpkg' `
             -PythonExecutable $Python
           "CAPTIONNEST_BUILD_PYTHON=$Python" | Add-Content -LiteralPath $env:GITHUB_ENV
+
       - name: Lint Python
         shell: pwsh
         run: '& $env:CAPTIONNEST_BUILD_PYTHON -m ruff check .'
+
       - name: Test Python with release media runtime
         shell: pwsh
         run: '& $env:CAPTIONNEST_BUILD_PYTHON -m pytest'
+
       - run: npm run lint
         working-directory: web
+
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
-      - name: Verify project and tag versions
+
+      - name: Verify every project and lock-file version
         shell: pwsh
-        run: |
-          $Expected = if ($env:GITHUB_REF -like 'refs/tags/*') { $env:GITHUB_REF_NAME.TrimStart('v') } else { '' }
-          .\scripts\check-version-consistency.ps1 -ExpectedVersion $Expected
+        run: .\scripts\check-version-consistency.ps1 -ExpectedVersion $env:RELEASE_VERSION
+
       - name: Build NSIS and checksum
         shell: pwsh
         run: .\scripts\build-desktop.ps1 -PythonExecutable $env:CAPTIONNEST_BUILD_PYTHON
-      - name: Stage release candidate
+
+      - name: Stage release files
         shell: pwsh
         run: |
           $Stage = 'packaging\dist\release-candidate'
@@ -99,29 +170,89 @@ jobs:
           Copy-Item `
             -LiteralPath 'packaging\dist\media-wheel\MEDIA_WHEEL_PROVENANCE.json' `
             -Destination $Stage
-      - name: Upload workflow artifact
+
+      - name: Smoke-test the exact installer
+        shell: pwsh
+        run: |
+          $Installers = @(
+            Get-ChildItem `
+              -LiteralPath 'packaging\dist\release-candidate' `
+              -Filter 'CaptionNest_*_x64-setup.exe' `
+              -File
+          )
+          if ($Installers.Count -ne 1) {
+            throw "Expected one staged installer; found $($Installers.Count)."
+          }
+          .\scripts\smoke-test-installer.ps1 `
+            -InstallerPath $Installers[0].FullName `
+            -ExpectedVersion $env:RELEASE_VERSION
+
+      - name: Upload validated workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: captionnest-windows-x64
+          name: captionnest-windows-x64-v${{ inputs.version }}
           if-no-files-found: error
           path: packaging/dist/release-candidate/*
-  publish:
-    needs: windows-x64
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_release && startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    environment: release
-    steps:
-      - name: Download validated candidate
-        uses: actions/download-artifact@v4
-        with:
-          name: captionnest-windows-x64
-          path: release-artifacts
-      - name: Attach manually approved tag release artifacts
+
+      - name: Commit the version and create the tag
+        shell: pwsh
+        run: |
+          & git fetch origin main --tags
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to refresh main before publishing.' }
+          $RemoteMain = (& git rev-parse origin/main).Trim()
+          if ($RemoteMain -ne $env:RELEASE_BASE_SHA) {
+            throw "main moved from $env:RELEASE_BASE_SHA to $RemoteMain during the build. Run again."
+          }
+
+          $VersionFiles = @(
+            'pyproject.toml',
+            'uv.lock',
+            'web/package.json',
+            'web/package-lock.json',
+            'src-tauri/tauri.conf.json',
+            'src-tauri/Cargo.toml',
+            'src-tauri/Cargo.lock'
+          )
+          if ($env:RELEASE_TAG_EXISTS -eq 'true') {
+            & git diff --exit-code -- $VersionFiles
+            if ($LASTEXITCODE -ne 0) {
+              throw "Existing tag $env:RELEASE_TAG cannot be resumed with uncommitted versions."
+            }
+          } else {
+            & git config user.name 'github-actions[bot]'
+            & git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            & git add -- $VersionFiles
+            & git diff --cached --quiet
+            if ($LASTEXITCODE -ne 0) {
+              & git commit -m "chore: release $env:RELEASE_TAG"
+              if ($LASTEXITCODE -ne 0) { throw 'Unable to commit release versions.' }
+              & git push origin HEAD:main
+              if ($LASTEXITCODE -ne 0) { throw 'Unable to push the release version commit.' }
+            }
+            & git tag -a $env:RELEASE_TAG -m "CaptionNest $env:RELEASE_TAG"
+            if ($LASTEXITCODE -ne 0) { throw 'Unable to create the release tag.' }
+            & git push origin "refs/tags/$env:RELEASE_TAG"
+            if ($LASTEXITCODE -ne 0) { throw 'Unable to push the release tag.' }
+          }
+
+      - name: Publish GitHub Release with generated notes
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ inputs.version }}
+          name: CaptionNest v${{ inputs.version }}
+          prerelease: ${{ inputs.prerelease }}
+          generate_release_notes: true
           fail_on_unmatched_files: true
+          body: |
+            CaptionNest 是一个面向 Windows 的本地优先双语字幕应用。
+
+            Windows 10/11 x64 用户请下载 `CaptionNest_${{ inputs.version }}_x64-setup.exe`。
+
+            > 本版本尚未配置 Windows Authenticode 代码签名，首次安装可能出现 Microsoft Defender SmartScreen 提示。请只从本 Release 下载，并使用同名 `.sha256` 文件核对安装包。
+
+            `FFMPEG_BUILD_INFO.txt` 与 `MEDIA_WHEEL_PROVENANCE.json` 记录了 LGPL 媒体运行时的许可证门禁结果、固定版本和构建来源。
           files: |
-            release-artifacts/CaptionNest_*_x64-setup.exe
-            release-artifacts/CaptionNest_*_x64-setup.exe.sha256
-            release-artifacts/FFMPEG_BUILD_INFO.txt
-            release-artifacts/MEDIA_WHEEL_PROVENANCE.json
+            packaging/dist/release-candidate/CaptionNest_*_x64-setup.exe
+            packaging/dist/release-candidate/CaptionNest_*_x64-setup.exe.sha256
+            packaging/dist/release-candidate/FFMPEG_BUILD_INFO.txt
+            packaging/dist/release-candidate/MEDIA_WHEEL_PROVENANCE.json

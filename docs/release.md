@@ -28,7 +28,29 @@ flowchart TD
     F --> G["上传 Release"]
 ```
 
-推荐构建入口是 GitHub Actions 的 `Windows Release`。推送 `v*` tag 或手动运行 workflow 后，它会依次完成锁定媒体 wheel 构建、许可证门禁、测试、NSIS 封装和候选产物上传。首次构建 FFmpeg 较慢，后续构建使用 vcpkg binary cache。
+推荐发布入口是 GitHub Actions 的 `Windows Release`。维护者从 `main` 手动运行 workflow，只需输入不带 `v` 的版本号（例如 `0.2.0`）以及是否为预发布；workflow 会依次完成统一版本更新、锁定媒体 wheel 构建、许可证门禁、测试、NSIS 封装、安装/启动/退出/卸载冒烟、版本提交、tag 和 GitHub Release。首次构建 FFmpeg 较慢，后续构建使用 vcpkg binary cache。
+
+```mermaid
+flowchart LR
+    A["输入 0.2.0"] --> B["更新版本与锁文件"]
+    B --> C["测试并构建"]
+    C --> D["安装包自动冒烟"]
+    D --> E["提交 main + 创建 v0.2.0"]
+    E --> F["自动生成说明并发布 Release"]
+```
+
+Release 说明不调用 AI。GitHub 根据上一个 tag 至当前 tag 之间合并的 PR 标题、作者和提交生成变更列表，`.github/release.yml` 负责中文分类，workflow 的固定模板补充 Windows 下载、SmartScreen 和 LGPL 构建证据说明。
+
+维护者的唯一发布操作如下：
+
+| 操作 | 值 |
+|---|---|
+| 打开 | `Actions` → `Windows Release` → `Run workflow` |
+| 分支 | `main` |
+| `version` | 新版本号，例如 `0.2.0`，不要带 `v` |
+| `prerelease` | 正式版保持关闭，测试版打开 |
+
+同一版本已经存在 Release 时 workflow 会拒绝覆盖；tag 已创建但 Release 尚未创建，且 tag 仍指向当前 `main` 时，可以用同一版本重试发布。
 
 等价的本机构建需要先 bootstrap 与 `packaging/media-runtime/vcpkg.json` 相同 baseline 的 vcpkg：
 
@@ -44,7 +66,7 @@ npm --prefix web run lint
 
 `scripts/build-desktop.ps1` 会依次生成媒体许可证证据、sidecar、NSIS 和校验和。门禁会同时检查 FFmpeg 配置、自报许可证和 PyAV wheel 实际携带的 DLL。检测到 `--enable-nonfree` 会无条件中止；检测到 `--enable-gpl` 或已知 GPL 外部库配置/DLL 时默认中止；无法读取完整元数据或无法在 Windows 上枚举 bundled DLL 时同样中止，避免把检测失败误当作许可通过。
 
-版本号由 `scripts/check-version-consistency.ps1` 统一核对 Python、Web、Tauri 和 Cargo 四处声明。推送 `v*` tag 只构建并保存候选产物；完成干净 Windows 的安装、运行、退出和卸载冒烟后，发行负责人必须在该 tag 上手动运行 `Windows Release`，勾选 `publish_release`，并通过 `release` environment 审批后才会附加到 GitHub Release。
+版本发布由 `src/sublingo_local/release_version.py` 一次性更新 Python、Web、Tauri、Cargo 及对应 lock 文件；它会先验证全部目标再写盘，避免只更新一部分。`scripts/check-version-consistency.ps1` 在构建阶段再次核对所有声明。只有测试、许可证门禁和安装包冒烟全部通过，workflow 才会向 `main` 提交机械化版本变更、创建 `v<版本>` tag 并发布 Release；失败时不会提交或打 tag。构建期间若远端 `main` 发生变化，发布也会停止并要求重新运行。
 
 官方 PyAV 18.0.0 Windows wheel 自报 LGPL，但构建配置和实际 DLL 包含 x264/x265，因此仍会按设计失败。这不是误报，也不能通过删除证据文件或只采信自报许可证绕过。正式 workflow 不使用该 wheel，而是从已校验哈希的 PyAV 源码构建 wheel，链接由锁定 vcpkg baseline 生成且未启用 GPL/nonfree/x264/x265 的 FFmpeg，并保存 wheel、源码和构建输入的哈希证据。
 
