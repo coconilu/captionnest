@@ -1,8 +1,11 @@
 import type {
   BackendCapabilities,
   BackendHealth,
+  EnvironmentView,
   JobRequest,
   JobView,
+  ModelCatalog,
+  ModelItem,
   PickVideoResponse,
 } from '../types/api'
 
@@ -10,8 +13,18 @@ const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.repl
 
 async function readError(response: Response): Promise<string> {
   try {
-    const payload = (await response.json()) as { detail?: string; message?: string }
-    return payload.detail ?? payload.message ?? `请求失败（${response.status}）`
+    const payload = (await response.json()) as {
+      detail?: string | Array<{ msg?: string }>
+      message?: string
+    }
+    if (typeof payload.detail === 'string') return payload.detail
+    if (Array.isArray(payload.detail)) {
+      const messages = payload.detail
+        .map((item) => item.msg)
+        .filter((message): message is string => Boolean(message))
+      if (messages.length) return messages.join('；')
+    }
+    return payload.message ?? `请求失败（${response.status}）`
   } catch {
     return `请求失败（${response.status} ${response.statusText}）`
   }
@@ -37,7 +50,34 @@ export function getCapabilities(signal?: AbortSignal) {
   return request<BackendCapabilities>('/api/capabilities', { signal })
 }
 
-export function pickVideo(signal?: AbortSignal) {
+export function getEnvironment(signal?: AbortSignal) {
+  return request<EnvironmentView>('/api/environment', { signal })
+}
+
+export function getModels(signal?: AbortSignal) {
+  return request<ModelCatalog>('/api/models', { signal })
+}
+
+export function downloadModel(id: string, signal?: AbortSignal) {
+  return request<ModelItem>(`/api/models/${encodeURIComponent(id)}/download`, {
+    method: 'POST',
+    signal,
+  })
+}
+
+export async function pickVideo(signal?: AbortSignal): Promise<PickVideoResponse> {
+  try {
+    const { open } = await import('@tauri-apps/plugin-dialog')
+    const selected = await open({
+      multiple: false,
+      directory: false,
+      filters: [{ name: '视频文件', extensions: ['mp4', 'mkv', 'mov', 'avi', 'webm', 'm4v', 'ts', 'mts', 'm2ts'] }],
+    })
+    if (typeof selected === 'string') return { selected: true, path: selected }
+    if (selected === null) return { selected: false, path: null }
+  } catch {
+    // Normal browser development has no Tauri IPC; use the local API picker there.
+  }
   return request<PickVideoResponse>('/api/system/pick-video', { method: 'POST', signal })
 }
 

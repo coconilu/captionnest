@@ -5,10 +5,11 @@ from pathlib import Path
 import httpx
 import pytest
 
-from sublingo_local.models import TranslatedItem, TranslationItem
+from sublingo_local.models import TargetLanguage, TranslatedItem, TranslationItem
 from sublingo_local.subtitles import SubtitleIntegrityError
 from sublingo_local.translation.base import TranslationProvider, TranslationService
 from sublingo_local.translation.codex import CodexSparkProvider
+from sublingo_local.translation.common import build_translation_prompt
 from sublingo_local.translation.openai_compatible import (
     OpenAICompatibleProvider,
     chat_completions_url,
@@ -16,24 +17,63 @@ from sublingo_local.translation.openai_compatible import (
 
 
 class EchoProvider(TranslationProvider):
-    async def translate(self, items, *, source_language):  # type: ignore[no-untyped-def]
+    async def translate(  # type: ignore[no-untyped-def]
+        self, items, *, source_language, target_language
+    ):
+        assert source_language == "en"
+        assert target_language == TargetLanguage.ZH_CN
         return [TranslatedItem(id=item.id, translated_text=f"中:{item.text}") for item in items]
 
 
 class MissingProvider(TranslationProvider):
-    async def translate(self, items, *, source_language):  # type: ignore[no-untyped-def]
+    async def translate(  # type: ignore[no-untyped-def]
+        self, items, *, source_language, target_language
+    ):
         return []
+
+
+@pytest.mark.parametrize(
+    ("target_language", "display_name"),
+    [
+        (TargetLanguage.ZH_CN, "简体中文"),
+        (TargetLanguage.EN, "英语"),
+        (TargetLanguage.KO, "韩语"),
+    ],
+)
+def test_translation_prompt_names_requested_target_language(
+    target_language: TargetLanguage, display_name: str
+) -> None:
+    prompt = build_translation_prompt(
+        [TranslationItem(id="1", text="こんにちは")],
+        "ja",
+        target_language,
+    )
+
+    assert f"翻译成自然、简洁的{display_name}" in prompt
+    assert f'"target_language":"{target_language.value}"' in prompt
 
 
 def test_translation_service_chunks_and_validates() -> None:
     items = [TranslationItem(id=str(i), text="hello") for i in range(5)]
     service = TranslationService(EchoProvider(), max_items_per_chunk=2)
-    output = asyncio.run(service.translate(items, source_language="en"))
+    output = asyncio.run(
+        service.translate(
+            items,
+            source_language="en",
+            target_language=TargetLanguage.ZH_CN,
+        )
+    )
     assert [item.id for item in output] == ["0", "1", "2", "3", "4"]
 
     invalid = TranslationService(MissingProvider())
     with pytest.raises(SubtitleIntegrityError):
-        asyncio.run(invalid.translate(items, source_language="en"))
+        asyncio.run(
+            invalid.translate(
+                items,
+                source_language="en",
+                target_language=TargetLanguage.ZH_CN,
+            )
+        )
 
 
 def test_codex_provider_uses_parameter_array_and_structured_output(
@@ -41,23 +81,41 @@ def test_codex_provider_uses_parameter_array_and_structured_output(
 ) -> None:
     captured: dict[str, object] = {}
 
-    class Result:
-        returncode = 0
+    class FakeProcess:
+        def __init__(self, args: list[str]) -> None:
+            self.args = args
+            self.returncode: int | None = None
 
-    def fake_run(args, **kwargs):  # type: ignore[no-untyped-def]
-        captured["args"] = args
+        async def communicate(self, data: bytes) -> tuple[None, None]:
+            captured["input"] = data
+            output = Path(self.args[self.args.index("--output-last-message") + 1])
+            output.write_text(
+                json.dumps({"items": [{"id": "seg-1", "translated_text": "你好"}]}),
+                encoding="utf-8",
+            )
+            self.returncode = 0
+            return None, None
+
+        async def wait(self) -> int:
+            assert self.returncode is not None
+            return self.returncode
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+    async def fake_create_subprocess_exec(*args, **kwargs):  # type: ignore[no-untyped-def]
+        captured["args"] = list(args)
         captured["kwargs"] = kwargs
-        output = Path(args[args.index("--output-last-message") + 1])
-        output.write_text(
-            json.dumps({"items": [{"id": "seg-1", "translated_text": "你好"}]}),
-            encoding="utf-8",
-        )
-        return Result()
+        return FakeProcess(list(args))
 
-    monkeypatch.setattr("sublingo_local.translation.codex.subprocess.run", fake_run)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
     provider = CodexSparkProvider()
     result = asyncio.run(
-        provider.translate([TranslationItem(id="seg-1", text="hello")], source_language="en")
+        provider.translate(
+            [TranslationItem(id="seg-1", text="hello")],
+            source_language="en",
+            target_language=TargetLanguage.ZH_CN,
+        )
     )
 
     args = captured["args"]
@@ -81,9 +139,127 @@ def test_codex_provider_uses_parameter_array_and_structured_output(
     assert "--ephemeral" in args
     assert args[args.index("--sandbox") + 1] == "read-only"
     assert args[-1] == "-"
-    assert kwargs["shell"] is False
-    assert kwargs["input"].find("hello") >= 0
+    assert "shell" not in kwargs
+    assert kwargs["stdin"] is asyncio.subprocess.PIPE
+    assert kwargs["stdout"] is asyncio.subprocess.DEVNULL
+    assert kwargs["stderr"] is asyncio.subprocess.DEVNULL
+    prompt = captured["input"].decode("utf-8")
+    assert "hello" in prompt
+    assert '"target_language":"zh-CN"' in prompt
     assert result == [TranslatedItem(id="seg-1", translated_text="你好")]
+
+
+class HangingCodexProcess:
+    def __init__(self) -> None:
+        self.returncode: int | None = None
+        self.started = asyncio.Event()
+        self.killed = False
+        self.waited = False
+
+    async def communicate(self, data: bytes) -> tuple[None, None]:
+        assert data
+        self.started.set()
+        await asyncio.Future()
+        return None, None
+
+    def kill(self) -> None:
+        self.killed = True
+
+    async def wait(self) -> int:
+        self.waited = True
+        self.returncode = -9
+        return self.returncode
+
+
+def test_codex_provider_kills_process_after_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = HangingCodexProcess()
+
+    async def fake_create_subprocess_exec(*args, **kwargs):  # type: ignore[no-untyped-def]
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    provider = CodexSparkProvider(timeout_seconds=0.01)
+
+    with pytest.raises(RuntimeError, match="Codex 翻译超时"):
+        asyncio.run(
+            provider.translate(
+                [TranslationItem(id="seg-1", text="hello")],
+                source_language="en",
+                target_language=TargetLanguage.ZH_CN,
+            )
+        )
+
+    assert process.killed
+    assert process.waited
+
+
+def test_codex_provider_kills_process_when_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> HangingCodexProcess:
+        process = HangingCodexProcess()
+
+        async def fake_create_subprocess_exec(*args, **kwargs):  # type: ignore[no-untyped-def]
+            return process
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+        provider = CodexSparkProvider()
+        task = asyncio.create_task(
+            provider.translate(
+                [TranslationItem(id="seg-1", text="hello")],
+                source_language="en",
+                target_language=TargetLanguage.ZH_CN,
+            )
+        )
+        await process.started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return process
+
+    process = asyncio.run(scenario())
+
+    assert process.killed
+    assert process.waited
+
+
+def test_codex_provider_never_surfaces_process_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "secret-from-codex-output"
+
+    class FailedProcess:
+        returncode: int | None = None
+
+        async def communicate(self, data: bytes) -> tuple[bytes, bytes]:
+            assert data
+            self.returncode = 7
+            return secret.encode(), secret.encode()
+
+        async def wait(self) -> int:
+            return 7
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+    async def fake_create_subprocess_exec(*args, **kwargs):  # type: ignore[no-untyped-def]
+        return FailedProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    provider = CodexSparkProvider()
+
+    with pytest.raises(RuntimeError, match="退出码 7") as error:
+        asyncio.run(
+            provider.translate(
+                [TranslationItem(id="seg-1", text="hello")],
+                source_language="en",
+                target_language=TargetLanguage.ZH_CN,
+            )
+        )
+
+    assert secret not in str(error.value)
 
 
 def test_openai_compatible_retries_without_response_format() -> None:
@@ -118,11 +294,16 @@ def test_openai_compatible_retries_without_response_format() -> None:
         transport=httpx.MockTransport(handler),
     )
     output = asyncio.run(
-        provider.translate([TranslationItem(id="1", text="good morning")], source_language="en")
+        provider.translate(
+            [TranslationItem(id="1", text="good morning")],
+            source_language="en",
+            target_language=TargetLanguage.KO,
+        )
     )
     assert output[0].translated_text == "早上好"
     assert "response_format" in calls[0]
     assert "response_format" not in calls[1]
+    assert '"target_language":"ko"' in calls[0]["messages"][1]["content"]
 
 
 def test_openai_compatible_does_not_retry_auth_failure() -> None:
@@ -141,7 +322,11 @@ def test_openai_compatible_does_not_retry_auth_failure() -> None:
     )
     with pytest.raises(RuntimeError, match="HTTP 401") as error:
         asyncio.run(
-            provider.translate([TranslationItem(id="1", text="x")], source_language="en")
+            provider.translate(
+                [TranslationItem(id="1", text="x")],
+                source_language="en",
+                target_language=TargetLanguage.ZH_CN,
+            )
         )
     assert count == 1
     assert "top-secret" not in str(error.value)

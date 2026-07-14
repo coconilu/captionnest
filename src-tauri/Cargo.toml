@@ -1,0 +1,21 @@
+[package]
+name = "captionnest-desktop"
+version = "0.1.0"
+description = "CaptionNest Windows desktop shell"
+authors = ["CaptionNest contributors"]
+edition = "2021"
+license = "Apache-2.0"
+
+[[bin]]
+name = "captionnest"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-shell = "2"
+uuid = { version = "1", features = ["v4"] }

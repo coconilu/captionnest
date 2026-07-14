@@ -5,7 +5,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from ..models import TranslatedItem, TranslationItem
+from ..models import TargetLanguage, TranslatedItem, TranslationItem
 from .base import TranslationProvider
 from .common import build_translation_prompt, parse_translation_json
 
@@ -39,7 +39,11 @@ class OpenAICompatibleProvider(TranslationProvider):
         self._transport = transport
 
     async def translate(
-        self, items: Sequence[TranslationItem], *, source_language: str
+        self,
+        items: Sequence[TranslationItem],
+        *,
+        source_language: str,
+        target_language: TargetLanguage,
     ) -> list[TranslatedItem]:
         headers = {"Content-Type": "application/json"}
         if self._api_key:
@@ -48,7 +52,10 @@ class OpenAICompatibleProvider(TranslationProvider):
             "model": self.model,
             "messages": [
                 {"role": "system", "content": "只执行字幕翻译，并且只输出有效 JSON。"},
-                {"role": "user", "content": build_translation_prompt(items, source_language)},
+                {
+                    "role": "user",
+                    "content": build_translation_prompt(items, source_language, target_language),
+                },
             ],
             "temperature": 0.1,
             "response_format": {"type": "json_object"},

@@ -1,4 +1,3 @@
-"""SubLingo Local backend package."""
+"""CaptionNest backend package."""
 
 __version__ = "0.1.0"
-

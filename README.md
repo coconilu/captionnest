@@ -1,121 +1,111 @@
-# SubLingo Local
+# CaptionNest
 
-本地优先的视频字幕生成与中文翻译工具。
-
-将日语或英语视频交给本机 Faster-Whisper 识别，再选择以下任一翻译方式：
-
-- **Codex Spark**：复用本机 Codex CLI 的 ChatGPT 登录与 `gpt-5.3-codex-spark` 额度。
-- **LM Studio**：调用本机 OpenAI-compatible 服务，完全离线翻译。
-- **DeepSeek**：调用 DeepSeek 或其他 OpenAI-compatible `/chat/completions` 服务。
-
-默认输出到源视频同目录：
+CaptionNest 是一个面向 Windows 的本地优先双语字幕应用。它自动识别视频源语言，并生成**一个** SRT：每条字幕上方保留原文，下方写目标语言译文。
 
 ```text
-movie.mp4
-movie.ja.srt       # 可选原文字幕
-movie.zh-CN.srt    # 中文字幕
+42
+00:03:18,400 --> 00:03:21,100
+We should start now.
+我们现在开始吧。
 ```
 
-## 当前能力
+## 首版能力
 
-| 环节 | 实现 |
+| 项目 | M1–M5 实现 |
 |---|---|
-| 视频输入 | 本机系统文件选择 |
-| 语音识别 | Faster-Whisper `large-v3` / `large-v3-turbo` |
-| 语言 | 自动检测、日语、英语 |
-| 在线翻译 | Codex Spark、DeepSeek/OpenAI-compatible |
-| 本地翻译 | LM Studio/OpenAI-compatible |
-| 输出 | 原文 SRT（可选）和简体中文 SRT |
-| 任务反馈 | 三阶段进度、实时日志、错误与完成态 |
+| 输入 | Windows 文件选择器 |
+| 源语言 | Faster-Whisper 自动检测，不向用户暴露手动选项 |
+| 目标语言 | 简体中文（默认）、英语、韩语 |
+| 输出 | `<视频名>.<目标语言>.srt`，只生成一个双语字幕 |
+| 翻译 | Codex Spark、LM Studio、DeepSeek/OpenAI-compatible |
+| 媒体解码 | PyAV wheel 内置媒体库，不要求用户安装 `ffmpeg.exe` |
+| 运行模式 | CPU 开箱即用；CUDA 为可选加速 |
+| Windows 应用 | Tauri 2 + React + PyInstaller onedir Python sidecar |
 
-> 应用通过系统文件选择器使用原始视频路径，中文字幕会写回源视频同目录，无需复制视频。
+若自动识别出的源语言与目标语言相同，任务会在翻译前停止，且不写出无意义的同语字幕。
 
-## 环境要求
+> 应用直接使用原始视频文件，并将字幕写回源视频同目录；不会复制或上传视频。
 
-- Windows 10/11（首要支持平台）
-- Python 3.11–3.12
-- Node.js 20+
-- FFmpeg
-- NVIDIA GPU + CUDA（推荐，但 CPU 也可运行）
-- Codex CLI（仅 Codex Spark 模式需要）
-- LM Studio（仅完全本地翻译模式需要）
+## 普通用户安装
 
-模型首次使用时会从 Hugging Face 下载并缓存。若需要自定义镜像，可在启动前设置
-`SUBLINGO_HF_ENDPOINT`；本机现有的 `HF_ENDPOINT=https://hf-mirror.com` 会自动切换到其当前实际跳转的官方地址。
+> **当前构建状态：已跑通。** `Windows Release` workflow 会从锁定的 PyAV 18.0.0 源码构建自有 wheel，并链接锁定的 LGPL FFmpeg 8.1.2；官方 PyPI wheel 仍会因携带 x264/x265 被门禁拒绝。GitHub Actions 生成的候选安装包已经完成校验和、安装、启动、退出和卸载冒烟，正式 GitHub Release 尚未发布。
 
-## 安装
+合并构建流程并创建版本 tag 后，可从正式 Release 下载 Windows x64 的 `CaptionNest_*_x64-setup.exe`。安装器设计为：
+
+- 只安装到当前用户，不需要管理员权限；
+- 内置 WebView2 bootstrapper；
+- 已携带 Python、Faster-Whisper、PyAV 和本地服务；
+- 不要求预装 Python、Node.js、Rust、FFmpeg 或 Whisper 环境。
+
+识别模型首次使用时由应用按需下载。Codex Spark 是可选翻译方式：应用只检测本机 Codex；不可用时会显示官方安装入口和“重新检测”，不会静默安装或保存登录凭据。
+
+> M5 产物当前未配置 Windows Authenticode 签名和自动更新。首次安装可能出现 SmartScreen 提示；请从可信 Release 获取，并核对同名 `.sha256` 文件。边界详见 [发布指南](docs/release.md)。
+
+## 开发
+
+Web/API 开发环境：
 
 ```powershell
-cd C:\Users\admin\Documents\study\sublingo-local
 .\scripts\setup.ps1
-```
-
-手动安装：
-
-```powershell
-uv sync --extra asr --extra dev
-npm --prefix web install
-npm --prefix web run build
-```
-
-## 启动开发环境
-
-```powershell
 .\scripts\dev.ps1
 ```
 
-随后打开 `http://127.0.0.1:5173`。Vite 会把 `/api` 请求代理到本地 FastAPI 服务。
-
-也可以分别启动：
+Windows 桌面开发：
 
 ```powershell
-uv run --extra asr uvicorn sublingo_local.app:app --host 127.0.0.1 --port 8765 --reload
-npm --prefix web run dev
+npm --prefix web run desktop:dev
 ```
 
-## 翻译方式
-
-### Codex Spark
-
-先确认本机状态：
+构建 NSIS 安装包与 SHA-256：
 
 ```powershell
-codex login status
+npm --prefix web run desktop:build
 ```
 
-应用通过非交互 `codex exec` 调用模型，不需要 OpenAI API Key。视频和音频不会发送给 Codex，只有分段后的字幕原文会发送。
-
-### LM Studio
-
-1. 在 LM Studio 下载并加载支持中、日、英的指令模型。
-2. 启动 Local Server，默认地址为 `http://127.0.0.1:1234/v1`。
-3. 在界面填写 LM Studio 显示的模型 ID；API Key 可留空。
-
-本机 RTX 5090 D 32GB 显存建议优先尝试 Qwen3-30B-A3B 的 Q4/Q5 GGUF。
-
-### DeepSeek / OpenAI-compatible
-
-默认 Endpoint 为 `https://api.deepseek.com`。API Key 只存在于当前任务内存中，不会写入任务状态、日志或配置文件。
-
-## 测试
+完整环境和命令见 [开发指南](docs/development.md)。核心测试命令：
 
 ```powershell
-uv run --extra dev pytest
+uv run --extra asr --extra dev pytest
 uv run --extra dev ruff check .
 npm --prefix web run lint
 npm --prefix web run build
 ```
 
-## 桌面版演进
+## 运行结构
 
-首版刻意保持 `React Web UI → 本地 FastAPI → 处理流水线` 的清晰边界。后续可以复用 React 界面，使用 Tauri 或其他桌面壳管理 Python sidecar，而无需重写识别和翻译 Provider。
+```mermaid
+flowchart LR
+    UI["Tauri / React 界面"] -->|"随机端口 + 会话令牌"| API["FastAPI sidecar"]
+    API --> AV["PyAV 媒体读取"]
+    AV --> ASR["Faster-Whisper 自动识别"]
+    ASR --> TR["翻译 Provider"]
+    TR --> SRT["单个双语 SRT"]
+```
 
-详细架构见 [docs/architecture.md](docs/architecture.md)。
+应用只监听 `127.0.0.1`。桌面壳每次启动生成随机空闲端口与一次性会话令牌，在文档加载前为 `/api/` 请求注入地址和请求头；令牌不会写入磁盘。
 
 ## 隐私边界
 
-| 模式 | 留在本机 | 会发送到外部服务 |
+| 模式 | 留在本机 | 可能发往外部服务 |
 |---|---|---|
-| Codex Spark | 视频、音频、时间轴 | 分段字幕原文 |
+| Codex Spark | 视频、音频、时间轴、字幕文件 | 分段原文文本 |
 | LM Studio | 全部数据 | 无 |
-| DeepSeek | 视频、音频、时间轴 | 分段字幕原文 |
+| DeepSeek-compatible | 视频、音频、时间轴、字幕文件 | 分段原文文本 |
+
+API Key 只保留在当前任务内存中，不写日志或持久化文件。Codex Spark 复用用户本机 `codex exec` 与现有 ChatGPT 登录，不伪装成 OpenAI API。
+
+## 文档
+
+| 文档 | 内容 |
+|---|---|
+| [用户指南](docs/user-guide.md) | 安装、模型、Codex、字幕输出与排障 |
+| [架构说明](docs/architecture.md) | 模块、信任边界与桌面生命周期 |
+| [开发指南](docs/development.md) | 环境、调试、测试与构建 |
+| [发布指南](docs/release.md) | NSIS、校验和、签名与许可证门禁 |
+| [品牌规范](docs/brand.md) | 名称含义、图标源文件、配色与使用边界 |
+| [贡献指南](CONTRIBUTING.md) | 提交与验证约定 |
+| [安全策略](SECURITY.md) | 漏洞报告和安全边界 |
+
+## 开源许可
+
+本项目自有代码采用 [Apache License 2.0](LICENSE)。安装包内第三方组件仍适用各自许可证，尤其 PyAV wheel 携带的 FFmpeg 和外部编码库可能受 LGPL/GPL 条款约束；详见 [第三方软件声明](THIRD_PARTY_NOTICES.md)。

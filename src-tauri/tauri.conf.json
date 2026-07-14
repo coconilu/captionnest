@@ -1,0 +1,53 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "CaptionNest",
+  "version": "0.1.0",
+  "identifier": "io.github.coconilu.captionnest",
+  "mainBinaryName": "captionnest",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:5173",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../web/dist"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "capabilities": ["main-window"],
+      "csp": "default-src 'self' customprotocol: asset:; connect-src ipc: http://ipc.localhost http://127.0.0.1:*; img-src 'self' asset: http://asset.localhost data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "category": "Utility",
+    "publisher": "CaptionNest contributors",
+    "copyright": "Copyright 2026 CaptionNest contributors",
+    "shortDescription": "本地优先的双语字幕生成工具",
+    "longDescription": "在 Windows 本机完成语音识别，并通过可选翻译 Provider 生成源语言在上、目标语言在下的单个双语 SRT 字幕。",
+    "externalBin": ["binaries/captionnest-sidecar"],
+    "resources": {
+      "binaries/_internal/": "_internal",
+      "../LICENSE": "LICENSE",
+      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
+      "../licenses/": "licenses",
+      "../packaging/dist/FFMPEG_BUILD_INFO.txt": "FFMPEG_BUILD_INFO.txt"
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "installerIcon": "icons/icon.ico",
+        "languages": ["SimpChinese", "English"]
+      }
+    }
+  }
+}

@@ -1,10 +1,10 @@
 import { Eye, EyeOff, Play, ShieldCheck } from 'lucide-react'
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 
-import type { AsrModel, SourceLanguage, TranslationProvider } from '../types/api'
+import type { AsrModel, TargetLanguage, TranslationProvider } from '../types/api'
 
 export interface SettingsValue {
-  sourceLanguage: SourceLanguage
+  targetLanguage: TargetLanguage
   asrModel: AsrModel
   useCuda: boolean
   provider: TranslationProvider
@@ -13,7 +13,6 @@ export interface SettingsValue {
   deepseekEndpoint: string
   deepseekModel: string
   deepseekApiKey: string
-  writeSourceSrt: boolean
 }
 
 interface SettingsPanelProps {
@@ -21,6 +20,8 @@ interface SettingsPanelProps {
   cudaAvailable?: boolean
   disabled: boolean
   canStart: boolean
+  startHint: string
+  children?: ReactNode
   onChange: (next: SettingsValue) => void
   onStart: () => void
 }
@@ -31,11 +32,19 @@ const PROVIDERS: Array<{ value: TranslationProvider; label: string }> = [
   { value: 'deepseek', label: 'DeepSeek' },
 ]
 
+const TARGET_LANGUAGES: Array<{ value: TargetLanguage; label: string }> = [
+  { value: 'zh-CN', label: '简体中文' },
+  { value: 'en', label: '英语' },
+  { value: 'ko', label: '韩语' },
+]
+
 export function SettingsPanel({
   value,
   cudaAvailable,
   disabled,
   canStart,
+  startHint,
+  children,
   onChange,
   onStart,
 }: SettingsPanelProps) {
@@ -46,21 +55,12 @@ export function SettingsPanel({
   return (
     <aside className="settings-sidebar" aria-label="字幕任务设置">
       <section className="settings-section">
-        <div className="section-heading">
-          <h2>识别设置</h2>
+        <div className="section-heading section-heading-with-copy">
+          <div>
+            <h2>识别设置</h2>
+            <span>源语言将自动检测</span>
+          </div>
         </div>
-        <label className="field">
-          <span>识别语言</span>
-          <select
-            value={value.sourceLanguage}
-            disabled={disabled}
-            onChange={(event) => patch('sourceLanguage', event.target.value as SourceLanguage)}
-          >
-            <option value="auto">自动检测</option>
-            <option value="ja">日语</option>
-            <option value="en">英语</option>
-          </select>
-        </label>
         <label className="field">
           <span>识别模型</span>
           <select
@@ -68,6 +68,8 @@ export function SettingsPanel({
             disabled={disabled}
             onChange={(event) => patch('asrModel', event.target.value as AsrModel)}
           >
+            <option value="small">small · CPU 轻量</option>
+            <option value="medium">medium · CPU 均衡</option>
             <option value="large-v3">large-v3 · 精度优先</option>
             <option value="large-v3-turbo">large-v3-turbo · 速度优先</option>
           </select>
@@ -91,6 +93,19 @@ export function SettingsPanel({
         <div className="section-heading">
           <h2>翻译设置</h2>
         </div>
+        <label className="field target-language-field">
+          <span>目标语言</span>
+          <select
+            value={value.targetLanguage}
+            disabled={disabled}
+            onChange={(event) => patch('targetLanguage', event.target.value as TargetLanguage)}
+          >
+            {TARGET_LANGUAGES.map((language) => (
+              <option key={language.value} value={language.value}>{language.label}</option>
+            ))}
+          </select>
+          <small>只生成一个双语字幕文件：源文在上，译文在下。</small>
+        </label>
         <fieldset className="provider-fieldset" disabled={disabled}>
           <legend>翻译服务</legend>
           <div className="provider-tabs">
@@ -187,23 +202,7 @@ export function SettingsPanel({
         ) : null}
       </section>
 
-      <section className="settings-section output-section">
-        <div className="section-heading">
-          <h2>输出设置</h2>
-        </div>
-        <label className="check-row">
-          <input
-            type="checkbox"
-            checked={value.writeSourceSrt}
-            disabled={disabled}
-            onChange={(event) => patch('writeSourceSrt', event.target.checked)}
-          />
-          <span>
-            <strong>同时保存原文字幕</strong>
-            <small>另存 .ja.srt 或 .en.srt 文件</small>
-          </span>
-        </label>
-      </section>
+      {children}
 
       <div className="start-area">
         <button
@@ -215,7 +214,7 @@ export function SettingsPanel({
           <Play size={19} fill="currentColor" aria-hidden="true" />
           {disabled ? '正在生成字幕…' : '开始生成字幕'}
         </button>
-        <p>{canStart ? '音视频留在本机；在线翻译仅发送字幕文本' : '请先选择视频并检查本地服务'}</p>
+        <p>{canStart ? '音视频留在本机；在线翻译仅发送字幕文本' : startHint}</p>
       </div>
     </aside>
   )

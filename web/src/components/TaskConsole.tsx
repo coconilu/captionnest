@@ -21,12 +21,7 @@ function LogIcon({ level }: { level?: string }) {
 export function TaskConsole({ job, pollError, actionError, onActionError }: TaskConsoleProps) {
   const logs = job?.logs?.map(formatLog) ?? []
   const progress = Math.max(0, Math.min(100, job?.progress ?? 0))
-  const outputFiles = job
-    ? [
-        ['source_srt', job.source_subtitle_path],
-        ['translated_srt', job.translated_subtitle_path],
-      ].filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].length > 0)
-    : []
+  const subtitlePath = job?.subtitle_path
   const done = job?.status === 'completed'
   const error = job?.error ?? pollError ?? actionError
 
@@ -47,7 +42,7 @@ export function TaskConsole({ job, pollError, actionError, onActionError }: Task
           <h2 id="console-title">处理日志</h2>
           <span>{job ? `任务 ${job.id.slice(0, 8)}` : '开始任务后可在这里查看实时进度'}</span>
         </div>
-        {job && !done && job.status !== 'failed' ? (
+        {job && !done && job.status !== 'failed' && job.status !== 'cancelled' ? (
           <span className="running-label"><LoaderCircle size={15} className="is-spinning" />正在处理</span>
         ) : null}
       </div>
@@ -83,28 +78,35 @@ export function TaskConsole({ job, pollError, actionError, onActionError }: Task
               <CheckCircle2 size={22} />
               <div>
                 <strong>字幕已生成</strong>
-                <span>{outputFiles.length} 个字幕文件已保存</span>
+                <span>双语字幕已保存</span>
               </div>
             </div>
             <div className="result-files">
-              {outputFiles.map(([key, path]) => (
-                <div className="result-file" key={key}>
+              {subtitlePath ? (
+                <div className="result-file">
                   <div>
-                    <strong>{fileNameFromPath(path)}</strong>
-                    <span>{key === 'translated_srt' ? '中文字幕' : '原文字幕'}</span>
+                    <strong>{fileNameFromPath(subtitlePath)}</strong>
+                    <span>双语字幕 · 源文在上，译文在下</span>
                   </div>
-                  <button type="button" onClick={() => void handleOpen(path)} aria-label={`打开 ${path} 所在文件夹`}>
+                  <button
+                    type="button"
+                    onClick={() => void handleOpen(subtitlePath)}
+                    aria-label={`打开 ${subtitlePath} 所在文件夹`}
+                  >
                     <FolderOpen size={16} />
                     打开
                   </button>
                 </div>
-              ))}
+              ) : (
+                <span className="result-path-missing">字幕路径暂不可用</span>
+              )}
             </div>
-            <p title={outputFiles[0]?.[1] ?? ''}>{outputFiles[0]?.[1] ?? '已保存至视频同目录'}</p>
+            <p title={subtitlePath ?? ''}>{subtitlePath ?? '已保存至视频同目录'}</p>
             <button
               type="button"
               className="open-folder-button"
-              onClick={() => void handleOpen(outputFiles[0]?.[1])}
+              onClick={() => void handleOpen(subtitlePath)}
+              disabled={!subtitlePath}
             >
               <FolderOpen size={17} />
               打开文件夹
@@ -114,7 +116,14 @@ export function TaskConsole({ job, pollError, actionError, onActionError }: Task
       </div>
 
       <div className="progress-row">
-        <div className="progress-track" aria-label={`总进度 ${Math.round(progress)}%`}>
+        <div
+          className="progress-track"
+          role="progressbar"
+          aria-label={`总进度 ${Math.round(progress)}%`}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(progress)}
+        >
           <span style={{ width: `${progress}%` }} />
         </div>
         <strong>{Math.round(progress)}%</strong>

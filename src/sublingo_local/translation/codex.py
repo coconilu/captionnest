@@ -6,9 +6,10 @@ import os
 import subprocess
 import tempfile
 from collections.abc import Sequence
+from contextlib import suppress
 from pathlib import Path
 
-from ..models import TranslatedItem, TranslationItem
+from ..models import TargetLanguage, TranslatedItem, TranslationItem
 from .base import TranslationProvider
 from .common import TRANSLATION_SCHEMA, build_translation_prompt, parse_translation_json
 
@@ -28,14 +29,18 @@ class CodexSparkProvider(TranslationProvider):
         self.timeout_seconds = timeout_seconds
 
     async def translate(
-        self, items: Sequence[TranslationItem], *, source_language: str
+        self,
+        items: Sequence[TranslationItem],
+        *,
+        source_language: str,
+        target_language: TargetLanguage,
     ) -> list[TranslatedItem]:
-        prompt = build_translation_prompt(items, source_language)
-        raw = await asyncio.to_thread(self._invoke, prompt)
+        prompt = build_translation_prompt(items, source_language, target_language)
+        raw = await self._invoke(prompt)
         return parse_translation_json(raw)
 
-    def _invoke(self, prompt: str) -> str:
-        with tempfile.TemporaryDirectory(prefix="sublingo-codex-") as temp_dir:
+    async def _invoke(self, prompt: str) -> str:
+        with tempfile.TemporaryDirectory(prefix="captionnest-codex-") as temp_dir:
             temp = Path(temp_dir)
             schema_path = temp / "translation.schema.json"
             output_path = temp / "translation.json"
@@ -77,25 +82,43 @@ class CodexSparkProvider(TranslationProvider):
             ]
             creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
             try:
-                result = subprocess.run(
-                    args,
-                    input=prompt,
-                    text=True,
-                    encoding="utf-8",
-                    capture_output=True,
-                    timeout=self.timeout_seconds,
-                    check=False,
-                    shell=False,
+                process = await asyncio.create_subprocess_exec(
+                    *args,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
                     cwd=temp,
                     creationflags=creationflags,
                 )
             except FileNotFoundError as exc:
                 raise RuntimeError("未找到 codex 命令，请先安装并登录 Codex CLI") from exc
-            except subprocess.TimeoutExpired as exc:
+
+            try:
+                await asyncio.wait_for(
+                    process.communicate(prompt.encode("utf-8")),
+                    timeout=self.timeout_seconds,
+                )
+            except asyncio.CancelledError:
+                await _kill_and_wait(process)
+                raise
+            except TimeoutError as exc:
+                await _kill_and_wait(process)
                 raise RuntimeError("Codex 翻译超时") from exc
-            if result.returncode != 0:
+            except BaseException:
+                await _kill_and_wait(process)
+                raise
+
+            if process.returncode != 0:
                 # Do not surface stdout/stderr: local hooks or proxies could print secrets.
-                raise RuntimeError(f"Codex 翻译失败（退出码 {result.returncode}）")
+                raise RuntimeError(f"Codex 翻译失败（退出码 {process.returncode}）")
             if not output_path.exists():
                 raise RuntimeError("Codex 没有生成结构化翻译结果")
             return output_path.read_text(encoding="utf-8")
+
+
+async def _kill_and_wait(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is None:
+        with suppress(ProcessLookupError):
+            process.kill()
+    with suppress(ProcessLookupError):
+        await process.wait()

@@ -2,7 +2,12 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
   pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   backend:
@@ -12,9 +17,10 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: '3.12'
-      - run: uv sync --extra dev
+          enable-cache: true
+      - run: uv sync --extra asr --extra dev --locked
       - run: uv run --extra dev ruff check .
-      - run: uv run --extra dev pytest
+      - run: uv run --extra asr --extra dev pytest
 
   frontend:
     runs-on: ubuntu-latest
@@ -31,3 +37,50 @@ jobs:
         working-directory: web
       - run: npm run build
         working-directory: web
+
+  desktop-check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - run: npm ci
+        working-directory: web
+      - name: Parse PowerShell build scripts
+        shell: pwsh
+        run: |
+          $Failed = $false
+          Get-ChildItem -LiteralPath scripts -Filter '*.ps1' -File | ForEach-Object {
+            $Tokens = $null
+            $Errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName,
+              [ref]$Tokens,
+              [ref]$Errors
+            )
+            if ($Errors.Count -gt 0) {
+              $Errors | ForEach-Object { Write-Error "$($_.Extent.File): $($_.Message)" }
+              $Failed = $true
+            }
+          }
+          if ($Failed) { throw 'PowerShell parser errors detected.' }
+      - name: Prepare build-script placeholders
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force src-tauri\binaries\_internal | Out-Null
+          New-Item -ItemType File -Force src-tauri\binaries\_internal\.placeholder | Out-Null
+          New-Item -ItemType File -Force src-tauri\binaries\captionnest-sidecar-x86_64-pc-windows-msvc.exe | Out-Null
+          New-Item -ItemType Directory -Force packaging\dist | Out-Null
+          @'
+          CI STATIC CHECK PLACEHOLDER — NOT A RELEASE LICENSE REPORT.
+          The Windows Release workflow replaces this file with evidence generated
+          from the exact PyAV/FFmpeg wheel bundled into the installer.
+          '@ | Set-Content -Encoding utf8 packaging\dist\FFMPEG_BUILD_INFO.txt
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+      - run: cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc --locked

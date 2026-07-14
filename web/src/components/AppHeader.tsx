@@ -13,7 +13,8 @@ export function AppHeader({ connected, checking, cudaAvailable, onRefresh }: App
   return (
     <header className="app-header">
       <div className="brand-lockup">
-        <h1>SubLingo Local</h1>
+        <img className="brand-mark" src="/favicon.svg" alt="" width={32} height={32} />
+        <h1>CaptionNest</h1>
       </div>
 
       <div className="header-status" aria-label="运行环境状态">

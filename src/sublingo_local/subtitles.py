@@ -38,7 +38,6 @@ def srt_to_milliseconds(value: str) -> int:
 
 
 def write_srt(path: Path, segments: Sequence[SubtitleSegment]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
     blocks: list[str] = []
     for index, segment in enumerate(segments, start=1):
         blocks.append(
@@ -52,6 +51,36 @@ def write_srt(path: Path, segments: Sequence[SubtitleSegment]) -> None:
             )
         )
     content = "\n\n".join(blocks) + ("\n" if blocks else "")
+    _atomic_write_text(path, content)
+
+
+def write_bilingual_srt(
+    path: Path,
+    source_segments: Sequence[SubtitleSegment],
+    translated: Sequence[TranslatedItem],
+) -> None:
+    """Write one SRT with source text above its stable-ID translation."""
+    validate_translation_integrity(segments_to_translation_items(source_segments), translated)
+    translated_by_id = {item.id: item.translated_text.strip() for item in translated}
+    blocks: list[str] = []
+    for index, segment in enumerate(source_segments, start=1):
+        blocks.append(
+            "\n".join(
+                (
+                    str(index),
+                    f"{milliseconds_to_srt(segment.start_ms)} --> "
+                    f"{milliseconds_to_srt(segment.end_ms)}",
+                    segment.text.strip(),
+                    translated_by_id[segment.id],
+                )
+            )
+        )
+    content = "\n\n".join(blocks) + ("\n" if blocks else "")
+    _atomic_write_text(path, content)
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     temporary_name: str | None = None
     try:
         with tempfile.NamedTemporaryFile(

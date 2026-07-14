@@ -3,7 +3,7 @@ import { Check, LoaderCircle } from 'lucide-react'
 import type { JobView } from '../types/api'
 
 const STEPS = [
-  { key: 'extract', label: '提取音频', aliases: ['queued', 'extract', 'extracting_audio'] },
+  { key: 'extract', label: '准备媒体', aliases: ['queued', 'extract', 'extracting_audio'] },
   { key: 'transcribe', label: '语音识别', aliases: ['transcribe', 'transcribing', 'recognition'] },
   { key: 'translate', label: '翻译字幕', aliases: ['translate', 'translating', 'write', 'writing'] },
 ] as const
@@ -22,14 +22,14 @@ interface WorkflowProgressProps {
 
 export function WorkflowProgress({ job }: WorkflowProgressProps) {
   const active = activeStep(job)
-  const isFailed = job?.status === 'failed'
+  const isStopped = job?.status === 'failed' || job?.status === 'cancelled'
 
   return (
     <section className="workflow-panel" aria-label="任务阶段">
       <ol className="workflow-steps">
         {STEPS.map((step, index) => {
           const complete = active > index
-          const current = active === index && !isFailed
+          const current = active === index && !isStopped
           return (
             <li
               key={step.key}
