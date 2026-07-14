@@ -3,6 +3,8 @@ import { useCallback, useEffect, useState } from 'react'
 import { downloadModel, getModels } from '../api/client'
 import type { ModelCatalog, ModelItem } from '../types/api'
 
+const DOWNLOAD_POLL_INTERVAL_MS = 750
+
 interface ModelCatalogState extends ModelCatalog {
   checking: boolean
   downloadingId: string | null
@@ -25,6 +27,7 @@ function replaceModel(items: ModelItem[], next: ModelItem) {
 
 export function useModelCatalog() {
   const [state, setState] = useState<ModelCatalogState>(initialState)
+  const hasActiveDownload = state.items.some((item) => item.status === 'downloading')
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     setState((current) => ({ ...current, checking: true, error: null }))
@@ -70,6 +73,45 @@ export function useModelCatalog() {
     void refresh(controller.signal)
     return () => controller.abort()
   }, [refresh])
+
+  useEffect(() => {
+    if (!hasActiveDownload) return
+
+    const controller = new AbortController()
+    let timeoutId: number | undefined
+
+    const scheduleNextPoll = () => {
+      timeoutId = window.setTimeout(pollDownloadStatus, DOWNLOAD_POLL_INTERVAL_MS)
+    }
+
+    const pollDownloadStatus = async () => {
+      try {
+        const catalog = await getModels(controller.signal)
+        if (controller.signal.aborted) return
+        setState((current) => ({
+          ...current,
+          ...catalog,
+          error: null,
+        }))
+        if (catalog.items.some((item) => item.status === 'downloading')) {
+          scheduleNextPoll()
+        }
+      } catch (error) {
+        if (controller.signal.aborted) return
+        setState((current) => ({
+          ...current,
+          error: error instanceof Error ? error.message : '无法自动更新模型下载进度',
+        }))
+        scheduleNextPoll()
+      }
+    }
+
+    scheduleNextPoll()
+    return () => {
+      controller.abort()
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId)
+    }
+  }, [hasActiveDownload])
 
   return { ...state, refresh, startDownload }
 }

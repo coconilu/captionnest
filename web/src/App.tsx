@@ -100,7 +100,7 @@ export function App() {
     if (!selectedModelStatus) return modelsError ?? '无法获取识别模型状态，请刷新检测'
     if (selectedModelStatus === 'missing') return '请先下载识别模型'
     if (selectedModelStatus === 'damaged') return '识别模型已损坏，请重新下载'
-    if (selectedModelStatus === 'downloading') return '识别模型正在下载，请刷新进度'
+    if (selectedModelStatus === 'downloading') return '识别模型正在下载，进度会自动更新'
     if (settings.provider === 'codex_spark' && codexStatus === 'not_installed') return '请先安装 Codex 并刷新检测'
     if (settings.provider === 'codex_spark' && codexStatus === 'not_logged_in') return '请先完成 Codex 登录并刷新检测'
     if (settings.provider === 'codex_spark' && codexStatus === 'check_failed') return 'Codex 状态检测失败，请刷新重试'
