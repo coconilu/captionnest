@@ -6,6 +6,7 @@ import pytest
 from sublingo_local.asr.base import ASRProvider, TranscriptionResult
 from sublingo_local.jobs import JobManager, JobRecord, ProcessingPipeline
 from sublingo_local.models import (
+    ASROutputMode,
     JobCreateRequest,
     JobStage,
     JobStatus,
@@ -69,6 +70,7 @@ def test_path_pipeline_writes_one_bilingual_subtitle_next_to_video(
     assert list(tmp_path.glob("*.srt")) == [subtitle]
     assert "こんにちは\n你好" in subtitle.read_text(encoding="utf-8-sig")
     assert record.to_view().target_language == TargetLanguage.ZH_CN
+    assert record.to_view().asr_provider == "faster_whisper"
 
 
 def test_pipeline_rejects_same_detected_and_target_language_before_translation(
@@ -113,6 +115,7 @@ def test_job_request_exposes_only_target_language() -> None:
     request = JobCreateRequest(video_path="movie.mp4")
 
     assert request.target_language == TargetLanguage.ZH_CN
+    assert request.asr.output_mode == ASROutputMode.WORD_RESEGMENTED
     assert "source_language" not in JobCreateRequest.model_fields
     assert "output" not in JobCreateRequest.model_fields
     for value in ("zh-CN", "en", "ko"):

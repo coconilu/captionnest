@@ -82,30 +82,37 @@ class CodexSparkProvider(TranslationProvider):
             ]
             creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
             try:
-                process = await asyncio.create_subprocess_exec(
-                    *args,
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
+                # Uvicorn's Windows reload loop uses SelectorEventLoop, which does not
+                # implement asyncio subprocesses. Popen inside a worker thread works on
+                # both Windows event-loop policies while keeping the request loop free.
+                process = await asyncio.to_thread(
+                    subprocess.Popen,
+                    args,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
                     cwd=temp,
                     creationflags=creationflags,
                 )
             except FileNotFoundError as exc:
                 raise RuntimeError("未找到 codex 命令，请先安装并登录 Codex CLI") from exc
 
+            communication = asyncio.create_task(
+                asyncio.to_thread(process.communicate, prompt.encode("utf-8"))
+            )
             try:
                 await asyncio.wait_for(
-                    process.communicate(prompt.encode("utf-8")),
+                    asyncio.shield(communication),
                     timeout=self.timeout_seconds,
                 )
             except asyncio.CancelledError:
-                await _kill_and_wait(process)
+                await _kill_and_wait(process, communication)
                 raise
             except TimeoutError as exc:
-                await _kill_and_wait(process)
+                await _kill_and_wait(process, communication)
                 raise RuntimeError("Codex 翻译超时") from exc
             except BaseException:
-                await _kill_and_wait(process)
+                await _kill_and_wait(process, communication)
                 raise
 
             if process.returncode != 0:
@@ -116,9 +123,15 @@ class CodexSparkProvider(TranslationProvider):
             return output_path.read_text(encoding="utf-8")
 
 
-async def _kill_and_wait(process: asyncio.subprocess.Process) -> None:
-    if process.returncode is None:
+async def _kill_and_wait(
+    process: subprocess.Popen[bytes],
+    communication: asyncio.Task[tuple[bytes | None, bytes | None]],
+) -> None:
+    if process.poll() is None:
         with suppress(ProcessLookupError):
             process.kill()
+    # Killing the process releases the worker blocked inside communicate().
+    with suppress(Exception):
+        await asyncio.shield(communication)
     with suppress(ProcessLookupError):
-        await process.wait()
+        await asyncio.to_thread(process.wait)

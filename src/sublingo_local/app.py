@@ -127,20 +127,34 @@ def create_app(
         }
 
     async def capabilities_handler() -> dict[str, Any]:
-        asr_installed = importlib.util.find_spec("faster_whisper") is not None
-        cuda_available = False
-        if asr_installed:
+        faster_whisper_installed = importlib.util.find_spec("faster_whisper") is not None
+        faster_whisper_cuda = False
+        if faster_whisper_installed:
             try:
                 ctranslate2 = importlib.import_module("ctranslate2")
-                cuda_available = ctranslate2.get_cuda_device_count() > 0
+                faster_whisper_cuda = ctranslate2.get_cuda_device_count() > 0
             except (AttributeError, ImportError, OSError, RuntimeError):
-                cuda_available = False
+                faster_whisper_cuda = False
         return {
             "asr": {
                 "provider": "faster-whisper",
-                "installed": asr_installed,
-                "cuda_available": cuda_available,
-                "models": ["small", "medium", "large-v3-turbo", "large-v3"],
+                "installed": faster_whisper_installed,
+                "cuda_available": faster_whisper_cuda,
+                "models": [
+                    "small",
+                    "medium",
+                    "large-v3-turbo",
+                    "large-v3",
+                ],
+                "providers": [
+                    {
+                        "id": "faster_whisper",
+                        "label": "Faster-Whisper",
+                        "installed": faster_whisper_installed,
+                        "cuda_available": faster_whisper_cuda,
+                        "models": ["small", "medium", "large-v3-turbo", "large-v3"],
+                    },
+                ],
                 "source_language": "auto",
                 "target_languages": ["zh-CN", "en", "ko"],
             },

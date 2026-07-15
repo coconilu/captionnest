@@ -8,7 +8,7 @@
 | 桌面调试 | 上述工具 + Rust stable 1.77.2+、MSVC Build Tools |
 | 安装包 | Windows x64、NSIS（由 Tauri 工具链获取）、网络用于 WebView2 bootstrapper |
 
-系统 `ffmpeg.exe` 不是依赖。Faster-Whisper 通过 PyAV wheel 解码媒体；GPU 是可选能力。
+系统 `ffmpeg.exe` 不是依赖。ASR Provider 通过 PyAV wheel 解码媒体；GPU 是可选能力。
 
 > PyPI 的官方 PyAV 18 Windows wheel 含 x264/x265，许可证门禁仍会有意阻止它进入 sidecar。正式 `Windows Release` workflow 会先构建并安装锁定的 LGPL 媒体 wheel；本地构建安装包时请按 [媒体运行时说明](../packaging/media-runtime/README.md) 准备相同 wheel。API / Web 调试和源码测试不受影响；不要为方便开发把 `-AllowGpl` 写入默认脚本。
 
@@ -18,6 +18,16 @@
 .\scripts\setup.ps1
 .\scripts\dev.ps1
 ```
+
+如需维护隐藏的 Qwen3-ASR 实验兼容 Provider：
+
+```powershell
+uv sync --extra asr --extra qwen --extra dev
+```
+
+Windows/Linux 的 `qwen` extra 固定使用 PyTorch 2.10 CUDA 12.8 wheel。Provider 在进程内直接
+加载 Qwen3-ASR-1.7B 与 Qwen3-ForcedAligner-0.6B，不需要也不会连接 LM Studio。当前桌面
+Release 构建不包含该 extra，产品界面和公开能力列表也不会展示 Qwen。
 
 桌面调试会先生成 PyInstaller onedir sidecar，再启动 Vite 和 Tauri：
 
@@ -76,7 +86,7 @@ npm --prefix web run desktop:build
 
 ## 关键约束
 
-- `faster_whisper` 必须延迟导入，缺 GPU 依赖时 Web UI 和单测仍能启动。
+- `faster_whisper`、`torch` 与 `qwen_asr` 必须延迟导入，缺 GPU 依赖时 Web UI 和单测仍能启动。
 - 翻译器必须实现统一 Provider 接口；API Key 不得进入日志或持久文件。
 - Codex Spark 只能通过本机 `codex exec` 与现有登录调用。
 - 时间轴由程序持有，模型只翻译稳定 ID。

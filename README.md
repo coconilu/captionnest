@@ -14,7 +14,7 @@ We should start now.
 | 项目 | M1–M5 实现 |
 |---|---|
 | 输入 | Windows 文件选择器 |
-| 源语言 | Faster-Whisper 自动检测，不向用户暴露手动选项 |
+| 源语言 | ASR Provider 自动检测，不向用户暴露手动选项 |
 | 目标语言 | 简体中文（默认）、英语、韩语 |
 | 输出 | `<视频名>.srt`，只生成一个双语字幕 |
 | 翻译 | Codex Spark、LM Studio、DeepSeek/OpenAI-compatible |
@@ -39,6 +39,11 @@ We should start now.
 
 识别模型首次使用时由应用按需下载。Codex Spark 是可选翻译方式：应用只检测本机 Codex；不可用时会显示官方安装入口和“重新检测”，不会静默安装或保存登录凭据。
 
+Faster-Whisper 对长视频采用 60 秒核心窗口和前后 2 秒上下文，先从全片分布式窗口投票检测主语言，再锁定语言转写。用户可选择：
+
+- **逐词重排（默认）**：利用逐词时间戳切开长静音，适合直接观看；
+- **分片原始段**：保留模型返回的段落边界，适合诊断和对照。
+
 > M5 产物当前未配置 Windows Authenticode 签名和自动更新。首次安装可能出现 SmartScreen 提示；请从可信 Release 获取，并核对同名 `.sha256` 文件。边界详见 [发布指南](docs/release.md)。
 
 ## 开发
@@ -49,6 +54,17 @@ Web/API 开发环境：
 .\scripts\setup.ps1
 .\scripts\dev.ps1
 ```
+
+源码环境仍保留 Qwen3-ASR 1.7B 与 ForcedAligner 的实验兼容代码：
+
+```powershell
+uv sync --extra asr --extra qwen --extra dev
+```
+
+Qwen3-ASR 由 CaptionNest Python Provider 直接加载，不经过 LM Studio。当前产品界面和公开能力
+列表只提供 Faster-Whisper；Qwen 不再作为用户可选模型或推荐路径，已有源码集成与模型包仍可兼容。
+Qwen 音频会按低能量边界分成最长约 60 秒的对齐窗口，并在自动检测到首个可靠语言后锁定语言。
+ForcedAligner 返回零时长堆积或跨越异常长度的单词时，质量门会中止任务，避免静默写出误导性 SRT。
 
 Windows 桌面开发：
 
@@ -77,7 +93,7 @@ npm --prefix web run build
 flowchart LR
     UI["Tauri / React 界面"] -->|"随机端口 + 会话令牌"| API["FastAPI sidecar"]
     API --> AV["PyAV 媒体读取"]
-    AV --> ASR["Faster-Whisper 自动识别"]
+    AV --> ASR["Faster-Whisper 分片识别"]
     ASR --> TR["翻译 Provider"]
     TR --> SRT["单个双语 SRT"]
 ```

@@ -7,10 +7,12 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .asr import ASRProvider, FasterWhisperProvider
+from .asr import ASRProvider, FasterWhisperProvider, Qwen3ASRProvider
 from .media import ensure_supported_video
 from .model_manager import ModelManager
 from .models import (
+    ASROutputMode,
+    ASRProviderName,
     JobCreateRequest,
     JobStage,
     JobStatus,
@@ -116,6 +118,7 @@ class JobRecord:
                 source_kind=self.source.kind,
                 detected_language=self.detected_language,
                 target_language=self.request.target_language,
+                asr_provider=self.request.asr.provider,
                 translation_provider=self.request.translation.provider,
                 created_at=self.created_at,
                 updated_at=self.updated_at,
@@ -135,14 +138,27 @@ class ProcessingPipeline:
     ) -> None:
         self.temp_root = temp_root
         self.temp_root.mkdir(parents=True, exist_ok=True)
+        self.model_manager = model_manager
         if asr_factory is not None:
             self.asr_factory = asr_factory
-        elif model_manager is not None:
-            self.asr_factory = lambda: FasterWhisperProvider(model_manager)
         else:
-            self.asr_factory = FasterWhisperProvider
+            self.asr_factory = None
+
+    def _create_asr(self, provider: ASRProviderName) -> ASRProvider:
+        if self.asr_factory is not None:
+            return self.asr_factory()
+        if provider == ASRProviderName.QWEN3_ASR:
+            if self.model_manager is None:
+                raise RuntimeError("Qwen3-ASR 需要应用模型管理器")
+            return Qwen3ASRProvider(self.model_manager)
+        return FasterWhisperProvider(self.model_manager)
 
     async def run(self, record: JobRecord) -> None:
+        output_mode_label = (
+            "逐词重排"
+            if record.request.asr.output_mode == ASROutputMode.WORD_RESEGMENTED
+            else "分片原始段"
+        )
         record.update(
             status=JobStatus.RUNNING,
             stage=JobStage.EXTRACTING,
@@ -152,10 +168,17 @@ class ProcessingPipeline:
         record.update(
             stage=JobStage.TRANSCRIBING,
             progress=12,
-            message=f"正在使用 Faster-Whisper {record.request.asr.model} 识别",
+            message=(
+                f"正在使用 Qwen3-ASR {record.request.asr.model} 识别并生成精确时间戳"
+                if record.request.asr.provider == ASRProviderName.QWEN3_ASR
+                else (
+                    f"正在使用 Faster-Whisper {record.request.asr.model} 进行 60 秒分片识别"
+                    f"（{output_mode_label}）"
+                )
+            ),
         )
 
-        asr = self.asr_factory()
+        asr = self._create_asr(record.request.asr.provider)
 
         def on_asr_progress(value: float) -> None:
             record.update(progress=12 + round(max(0.0, min(1.0, value)) * 48))
