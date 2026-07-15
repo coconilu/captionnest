@@ -34,6 +34,32 @@ class MissingProvider(TranslationProvider):
         return []
 
 
+class ExtraAndReorderedProvider(TranslationProvider):
+    async def translate(  # type: ignore[no-untyped-def]
+        self, items, *, source_language, target_language
+    ):
+        translated = [
+            TranslatedItem(id=item.id, translated_text=f"中:{item.text}")
+            for item in reversed(items)
+        ]
+        translated.append(TranslatedItem(id="seg-extra", translated_text="不应使用"))
+        return translated
+
+
+class SplitRequiredProvider(TranslationProvider):
+    def __init__(self) -> None:
+        self.batch_sizes: list[int] = []
+
+    async def translate(  # type: ignore[no-untyped-def]
+        self, items, *, source_language, target_language
+    ):
+        self.batch_sizes.append(len(items))
+        translated = [
+            TranslatedItem(id=item.id, translated_text=f"中:{item.text}") for item in items
+        ]
+        return translated if len(items) == 1 else translated[:-1]
+
+
 @pytest.mark.parametrize(
     ("target_language", "display_name"),
     [
@@ -76,6 +102,47 @@ def test_translation_service_chunks_and_validates() -> None:
                 target_language=TargetLanguage.ZH_CN,
             )
         )
+
+
+def test_translation_service_canonicalizes_extra_and_reordered_ids() -> None:
+    items = [TranslationItem(id=f"seg-{index}", text=f"text-{index}") for index in range(3)]
+    recoveries: list[str] = []
+
+    output = asyncio.run(
+        TranslationService(ExtraAndReorderedProvider()).translate(
+            items,
+            source_language="en",
+            target_language=TargetLanguage.ZH_CN,
+            on_recovery=recoveries.append,
+        )
+    )
+
+    assert [item.id for item in output] == ["seg-0", "seg-1", "seg-2"]
+    assert any("seg-extra" in message for message in recoveries)
+    assert any("恢复字幕顺序" in message for message in recoveries)
+
+
+def test_translation_service_splits_invalid_batches_until_ids_are_complete() -> None:
+    items = [TranslationItem(id=f"seg-{index}", text=f"text-{index}") for index in range(4)]
+    provider = SplitRequiredProvider()
+    recoveries: list[str] = []
+    progress: list[tuple[int, int]] = []
+
+    output = asyncio.run(
+        TranslationService(provider).translate(
+            items,
+            source_language="en",
+            target_language=TargetLanguage.ZH_CN,
+            on_progress=lambda done, total: progress.append((done, total)),
+            on_recovery=recoveries.append,
+        )
+    )
+
+    assert [item.id for item in output] == ["seg-0", "seg-1", "seg-2", "seg-3"]
+    assert provider.batch_sizes == [4, 2, 1, 1, 2, 1, 1]
+    assert progress == [(1, 1)]
+    assert len(recoveries) == 3
+    assert all("拆分重试" in message for message in recoveries)
 
 
 def test_codex_provider_uses_parameter_array_and_structured_output(

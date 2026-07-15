@@ -208,11 +208,15 @@ class ProcessingPipeline:
         def on_translation_progress(done: int, total: int) -> None:
             record.update(progress=62 + round(done / max(total, 1) * 30))
 
+        def on_translation_recovery(message: str) -> None:
+            record.update(message=message, level=LogLevel.WARNING)
+
         translated = await service.translate(
             source_items,
             source_language=transcription.language,
             target_language=record.request.target_language,
             on_progress=on_translation_progress,
+            on_recovery=on_translation_recovery,
         )
         record.update(stage=JobStage.WRITING, progress=95, message="正在写入双语字幕")
         subtitle_path = record.source.path.with_suffix(".srt")
