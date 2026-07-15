@@ -29,6 +29,7 @@ export function SourcePicker({
       <div
         className={`drop-zone ${disabled ? 'is-disabled' : ''}`}
       >
+        <span className="panel-step-label">01 · 选择视频</span>
         <div className="drop-icon" aria-hidden="true">
           {busy ? <LoaderCircle className="is-spinning" /> : <Video />}
         </div>
@@ -45,7 +46,10 @@ export function SourcePicker({
             选择本机文件
           </button>
         </div>
-        <p className="boundary-note">直接使用原始视频文件，不会复制视频。</p>
+        <div className="boundary-note">
+          <span aria-hidden="true">✓</span>
+          视频与音频留在本机，在线翻译仅发送字幕文本
+        </div>
       </div>
 
       {source ? (

@@ -1,0 +1,434 @@
+{
+  "schemaVersion": 2,
+  "selectedAt": "2026-07-14T15:17:29.849Z",
+  "brief": "重构现有 CaptionNest React/Vite + Tauri Windows 桌面应用 UI。它是本地优先的双语字幕生产力工具，面向视频创作者、课程学习者和本地 AI 用户。核心流程：选择视频、配置语音识别与翻译 Provider、确认本机环境/模型状态、启动任务、查看三阶段进度与日志、打开同目录 SRT。希望信息密度均衡，首屏清晰突出选择视频和开始生成，复杂设置渐进呈现，运行状态可快速扫读；保留品牌深青 #032F3B/#064B59、亮青 #08D4ED/#18E0F5、暖白 #FFF1D2 与 UI 主色 #0B8492，整体可信、安静、精致，不像营销落地页。",
+  "input": {
+    "styleId": "launch-centered-hero-story",
+    "themeId": "theme-ca63703dc9b7"
+  },
+  "inputKind": "direction",
+  "legacyStyleId": null,
+  "selection": {
+    "directionId": "launch-centered-hero-story",
+    "themeId": "theme-ca63703dc9b7"
+  },
+  "alias": {
+    "legacyStyleId": "launch-centered-hero-story-cff58e59",
+    "directionId": "launch-centered-hero-story",
+    "themeId": "theme-ca63703dc9b7"
+  },
+  "direction": {
+    "id": "launch-centered-hero-story",
+    "experienceType": "marketing-site",
+    "name": "Launch Centered Hero Story",
+    "legacyStyleIds": [
+      "launch-centered-hero-story-cff58e59"
+    ],
+    "family": "launch",
+    "pageTypes": [
+      "landing",
+      "launch-page",
+      "product-site"
+    ],
+    "audiences": [
+      "creators",
+      "early-adopters",
+      "founders"
+    ],
+    "goals": [
+      "brand-awareness",
+      "launch",
+      "signup"
+    ],
+    "tones": [
+      "energetic",
+      "expressive",
+      "modern",
+      "playful"
+    ],
+    "keywords": [
+      "creative",
+      "launch",
+      "new product",
+      "startup",
+      "waitlist"
+    ],
+    "bestFor": [
+      "Landing interfaces",
+      "Launch Page interfaces",
+      "Product Site interfaces"
+    ],
+    "avoidFor": [
+      "Interfaces whose primary emphasis conflicts with this direction.",
+      "Projects that require a different information-density policy."
+    ],
+    "componentKits": [
+      "magic-ui"
+    ],
+    "risks": [
+      "Expressive motion can distract from product evidence when overused.",
+      "Spacious composition can hide important comparison context when content grows."
+    ],
+    "density": "low",
+    "firstViewport": "Use a centered opening statement followed by one concrete proof surface. Keep narrative progression and memorable visual moments dominant.",
+    "layoutRules": [
+      "Use a centered opening statement followed by one concrete proof surface.",
+      "Keep narrative progression and memorable visual moments dominant.",
+      "Use spacious grouping and limit each viewport to a small number of focal elements.",
+      "Use expressive motion only for hierarchy and product-state transitions."
+    ],
+    "typography": "Expressive display typography constrained by a calm supporting text system.",
+    "legacyReferences": [
+      {
+        "provider": "daisyui-themes",
+        "path": "packages/daisyui/src/themes/acid.css",
+        "repo": "saadeghi/daisyui",
+        "revision": "374d63758f997317e92e93e547569a5f9ad11250",
+        "contentHash": "sha256:cff58e59f5a05854b05ba21a4f93a49084cc17eef725c14f1b07a7f5a39394c0",
+        "sourceUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/acid.css",
+        "label": "Daisyui Themes reference 1",
+        "role": "color-system reference"
+      },
+      {
+        "provider": "daisyui-themes",
+        "path": "packages/daisyui/src/themes/cyberpunk.css",
+        "repo": "saadeghi/daisyui",
+        "revision": "374d63758f997317e92e93e547569a5f9ad11250",
+        "contentHash": "sha256:c5d2e36a943035fad0b1e320b20f53414d5f8306e701686452174f32c2185c19",
+        "sourceUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/cyberpunk.css",
+        "label": "Daisyui Themes reference 2",
+        "role": "color-system reference"
+      },
+      {
+        "provider": "daisyui-themes",
+        "path": "packages/daisyui/src/themes/synthwave.css",
+        "repo": "saadeghi/daisyui",
+        "revision": "374d63758f997317e92e93e547569a5f9ad11250",
+        "contentHash": "sha256:d5726f45f0f0a7d4e4f360b3b1d88819284c5de659c73ebd39de82dee6e31b8f",
+        "sourceUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/synthwave.css",
+        "label": "Daisyui Themes reference 3",
+        "role": "color-system reference"
+      }
+    ]
+  },
+  "theme": {
+    "id": "theme-ca63703dc9b7",
+    "name": "Acid Theme",
+    "legacyStyleIds": [
+      "launch-centered-hero-story-cff58e59"
+    ],
+    "tokens": {
+      "canvas": "#F8F8F8",
+      "surface": "#EEEEEE",
+      "surfaceAlt": "#E1E1E1",
+      "text": "#000000",
+      "muted": "#636363",
+      "accent": "#FF42F4",
+      "border": "#E1E1E1"
+    },
+    "palette": [
+      "canvas #F8F8F8",
+      "surface #EEEEEE",
+      "surfaceAlt #E1E1E1",
+      "text #000000",
+      "muted #636363",
+      "accent #FF42F4",
+      "border #E1E1E1"
+    ],
+    "appearance": "light",
+    "tones": [
+      "energetic",
+      "expressive",
+      "modern",
+      "playful"
+    ],
+    "sources": [
+      {
+        "kind": "source-pinned",
+        "provider": "daisyui-themes",
+        "slug": "acid",
+        "path": "packages/daisyui/src/themes/acid.css",
+        "repo": "saadeghi/daisyui",
+        "revision": "374d63758f997317e92e93e547569a5f9ad11250",
+        "contentHash": "sha256:cff58e59f5a05854b05ba21a4f93a49084cc17eef725c14f1b07a7f5a39394c0",
+        "sourceUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/acid.css"
+      }
+    ],
+    "legacyReferences": [
+      {
+        "provider": "daisyui-themes",
+        "path": "packages/daisyui/src/themes/acid.css",
+        "repo": "saadeghi/daisyui",
+        "revision": "374d63758f997317e92e93e547569a5f9ad11250",
+        "contentHash": "sha256:cff58e59f5a05854b05ba21a4f93a49084cc17eef725c14f1b07a7f5a39394c0",
+        "sourceUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/acid.css",
+        "label": "Daisyui Themes reference 1",
+        "role": "color-system reference"
+      },
+      {
+        "provider": "daisyui-themes",
+        "path": "packages/daisyui/src/themes/cyberpunk.css",
+        "repo": "saadeghi/daisyui",
+        "revision": "374d63758f997317e92e93e547569a5f9ad11250",
+        "contentHash": "sha256:c5d2e36a943035fad0b1e320b20f53414d5f8306e701686452174f32c2185c19",
+        "sourceUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/cyberpunk.css",
+        "label": "Daisyui Themes reference 2",
+        "role": "color-system reference"
+      },
+      {
+        "provider": "daisyui-themes",
+        "path": "packages/daisyui/src/themes/synthwave.css",
+        "repo": "saadeghi/daisyui",
+        "revision": "374d63758f997317e92e93e547569a5f9ad11250",
+        "contentHash": "sha256:d5726f45f0f0a7d4e4f360b3b1d88819284c5de659c73ebd39de82dee6e31b8f",
+        "sourceUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/synthwave.css",
+        "label": "Daisyui Themes reference 3",
+        "role": "color-system reference"
+      }
+    ]
+  },
+  "link": {
+    "directionId": "launch-centered-hero-story",
+    "themeId": "theme-ca63703dc9b7",
+    "isDefault": true
+  },
+  "previewSpec": {
+    "directionId": "launch-centered-hero-story",
+    "legacyVariant": "launch",
+    "layoutArchetype": "centered-hero",
+    "contentPattern": "narrative-proof",
+    "emphasis": "story",
+    "contentBlocks": [
+      "launch-claim",
+      "product-proof",
+      "release-milestone",
+      "signup-action"
+    ],
+    "hierarchy": {
+      "primary": "launch-claim",
+      "secondary": [
+        "product-proof",
+        "release-milestone"
+      ],
+      "supporting": [
+        "signup-action"
+      ]
+    }
+  },
+  "visualSelection": {
+    "styleId": "launch-centered-hero-story",
+    "variant": "launch",
+    "theme": {
+      "canvas": "#F8F8F8",
+      "surface": "#EEEEEE",
+      "surfaceAlt": "#E1E1E1",
+      "text": "#000000",
+      "muted": "#636363",
+      "accent": "#FF42F4",
+      "border": "#E1E1E1"
+    },
+    "references": [
+      {
+        "provider": "daisyui-themes",
+        "path": "packages/daisyui/src/themes/acid.css",
+        "repo": "saadeghi/daisyui",
+        "revision": "374d63758f997317e92e93e547569a5f9ad11250",
+        "contentHash": "sha256:cff58e59f5a05854b05ba21a4f93a49084cc17eef725c14f1b07a7f5a39394c0",
+        "sourceUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/acid.css",
+        "label": "Daisyui Themes reference 1",
+        "role": "color-system reference",
+        "pageUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/acid.css",
+        "referenceKinds": [
+          "direction",
+          "theme"
+        ],
+        "themeSource": {
+          "kind": "source-pinned",
+          "provider": "daisyui-themes",
+          "slug": "acid",
+          "path": "packages/daisyui/src/themes/acid.css",
+          "repo": "saadeghi/daisyui",
+          "revision": "374d63758f997317e92e93e547569a5f9ad11250",
+          "contentHash": "sha256:cff58e59f5a05854b05ba21a4f93a49084cc17eef725c14f1b07a7f5a39394c0",
+          "sourceUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/acid.css",
+          "label": "Acid theme source",
+          "role": "theme palette source",
+          "pageUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/acid.css",
+          "referenceKinds": [
+            "theme"
+          ]
+        }
+      },
+      {
+        "provider": "daisyui-themes",
+        "path": "packages/daisyui/src/themes/cyberpunk.css",
+        "repo": "saadeghi/daisyui",
+        "revision": "374d63758f997317e92e93e547569a5f9ad11250",
+        "contentHash": "sha256:c5d2e36a943035fad0b1e320b20f53414d5f8306e701686452174f32c2185c19",
+        "sourceUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/cyberpunk.css",
+        "label": "Daisyui Themes reference 2",
+        "role": "color-system reference",
+        "pageUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/cyberpunk.css",
+        "referenceKinds": [
+          "direction"
+        ]
+      },
+      {
+        "provider": "daisyui-themes",
+        "path": "packages/daisyui/src/themes/synthwave.css",
+        "repo": "saadeghi/daisyui",
+        "revision": "374d63758f997317e92e93e547569a5f9ad11250",
+        "contentHash": "sha256:d5726f45f0f0a7d4e4f360b3b1d88819284c5de659c73ebd39de82dee6e31b8f",
+        "sourceUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/synthwave.css",
+        "label": "Daisyui Themes reference 3",
+        "role": "color-system reference",
+        "pageUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/synthwave.css",
+        "referenceKinds": [
+          "direction"
+        ]
+      }
+    ],
+    "themeSources": [
+      {
+        "kind": "source-pinned",
+        "provider": "daisyui-themes",
+        "slug": "acid",
+        "path": "packages/daisyui/src/themes/acid.css",
+        "repo": "saadeghi/daisyui",
+        "revision": "374d63758f997317e92e93e547569a5f9ad11250",
+        "contentHash": "sha256:cff58e59f5a05854b05ba21a4f93a49084cc17eef725c14f1b07a7f5a39394c0",
+        "sourceUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/acid.css",
+        "label": "Acid theme source",
+        "role": "theme palette source",
+        "pageUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/acid.css",
+        "referenceKinds": [
+          "theme"
+        ]
+      }
+    ]
+  },
+  "compatibilityLegacyStyleId": "launch-centered-hero-story-cff58e59",
+  "style": {
+    "id": "launch-centered-hero-story-cff58e59",
+    "name": "Launch Centered Hero Story",
+    "sourceProvider": "daisyui-themes",
+    "sourceSlug": "acid",
+    "sourcePath": "packages/daisyui/src/themes/acid.css",
+    "sourceRepo": "saadeghi/daisyui",
+    "sourceRevision": "374d63758f997317e92e93e547569a5f9ad11250",
+    "sourceContentHash": "sha256:cff58e59f5a05854b05ba21a4f93a49084cc17eef725c14f1b07a7f5a39394c0",
+    "sourceUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/acid.css",
+    "family": "launch",
+    "pageTypes": [
+      "landing",
+      "launch-page",
+      "product-site"
+    ],
+    "audiences": [
+      "early-adopters",
+      "founders",
+      "creators"
+    ],
+    "goals": [
+      "launch",
+      "signup",
+      "brand-awareness"
+    ],
+    "density": "low",
+    "tones": [
+      "energetic",
+      "playful",
+      "expressive",
+      "modern"
+    ],
+    "keywords": [
+      "launch",
+      "waitlist",
+      "startup",
+      "new product",
+      "creative"
+    ],
+    "bestFor": [
+      "Landing interfaces",
+      "Launch Page interfaces",
+      "Product Site interfaces"
+    ],
+    "avoidFor": [
+      "Projects that require a different information-density policy.",
+      "Interfaces whose primary emphasis conflicts with this direction."
+    ],
+    "firstViewport": "Use a centered opening statement followed by one concrete proof surface. Keep narrative progression and memorable visual moments dominant.",
+    "layoutRules": [
+      "Use a centered opening statement followed by one concrete proof surface.",
+      "Keep narrative progression and memorable visual moments dominant.",
+      "Use spacious grouping and limit each viewport to a small number of focal elements.",
+      "Use expressive motion only for hierarchy and product-state transitions."
+    ],
+    "palette": [
+      "canvas #F8F8F8",
+      "surface #EEEEEE",
+      "text #000000",
+      "muted #636363",
+      "accent #FF42F4",
+      "border #E1E1E1"
+    ],
+    "typography": "Expressive display typography constrained by a calm supporting text system.",
+    "componentKits": [
+      "magic-ui"
+    ],
+    "risks": [
+      "Spacious composition can hide important comparison context when content grows.",
+      "Expressive motion can distract from product evidence when overused."
+    ]
+  },
+  "visual": {
+    "styleId": "launch-centered-hero-story-cff58e59",
+    "variant": "launch",
+    "theme": {
+      "canvas": "#F8F8F8",
+      "surface": "#EEEEEE",
+      "surfaceAlt": "#E1E1E1",
+      "text": "#000000",
+      "muted": "#636363",
+      "accent": "#FF42F4",
+      "border": "#E1E1E1"
+    },
+    "references": [
+      {
+        "provider": "daisyui-themes",
+        "path": "packages/daisyui/src/themes/acid.css",
+        "repo": "saadeghi/daisyui",
+        "revision": "374d63758f997317e92e93e547569a5f9ad11250",
+        "contentHash": "sha256:cff58e59f5a05854b05ba21a4f93a49084cc17eef725c14f1b07a7f5a39394c0",
+        "sourceUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/acid.css",
+        "label": "Daisyui Themes reference 1",
+        "role": "color-system reference",
+        "pageUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/acid.css"
+      },
+      {
+        "provider": "daisyui-themes",
+        "path": "packages/daisyui/src/themes/cyberpunk.css",
+        "repo": "saadeghi/daisyui",
+        "revision": "374d63758f997317e92e93e547569a5f9ad11250",
+        "contentHash": "sha256:c5d2e36a943035fad0b1e320b20f53414d5f8306e701686452174f32c2185c19",
+        "sourceUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/cyberpunk.css",
+        "label": "Daisyui Themes reference 2",
+        "role": "color-system reference",
+        "pageUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/cyberpunk.css"
+      },
+      {
+        "provider": "daisyui-themes",
+        "path": "packages/daisyui/src/themes/synthwave.css",
+        "repo": "saadeghi/daisyui",
+        "revision": "374d63758f997317e92e93e547569a5f9ad11250",
+        "contentHash": "sha256:d5726f45f0f0a7d4e4f360b3b1d88819284c5de659c73ebd39de82dee6e31b8f",
+        "sourceUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/synthwave.css",
+        "label": "Daisyui Themes reference 3",
+        "role": "color-system reference",
+        "pageUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/synthwave.css"
+      }
+    ],
+    "previewCardPath": "C:\\Users\\admin\\.codex\\tools\\ai-ui-style-director\\catalog\\previews\\launch-centered-hero-story-cff58e59.svg",
+    "previewCardMarkdownPath": "C:/Users/admin/.codex/tools/ai-ui-style-director/catalog/previews/launch-centered-hero-story-cff58e59.svg"
+  }
+}

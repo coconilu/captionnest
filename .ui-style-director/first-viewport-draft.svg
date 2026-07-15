@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" role="img" aria-labelledby="title description" data-direction-id="launch-centered-hero-story" data-theme-id="theme-ca63703dc9b7" data-theme-adaptation="captionnest-brand" data-content-pattern="narrative-proof" data-layout-archetype="centered-hero">
+  <title id="title">CaptionNest 品牌适配首屏草图</title>
+  <desc id="description">居中开场语下方设置一个字幕任务证明面板，左侧选择视频，右侧显示任务设置、处理阶段和开始按钮。</desc>
+  <defs>
+    <pattern id="grid" width="28" height="28" patternUnits="userSpaceOnUse">
+      <path d="M 28 0 L 0 0 0 28" fill="none" stroke="#CFE2E3" stroke-width="1" opacity="0.38"/>
+    </pattern>
+    <linearGradient id="primaryButton" x1="0" x2="1">
+      <stop offset="0" stop-color="#0B8492"/>
+      <stop offset="1" stop-color="#064B59"/>
+    </linearGradient>
+    <linearGradient id="cyanLine" x1="0" x2="1">
+      <stop offset="0" stop-color="#08D4ED"/>
+      <stop offset="1" stop-color="#0B8492"/>
+    </linearGradient>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="12" stdDeviation="18" flood-color="#032F3B" flood-opacity="0.10"/>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="720" fill="#F7FBFA"/>
+  <rect width="1200" height="720" fill="url(#grid)"/>
+
+  <g aria-label="应用顶部状态栏">
+    <rect x="0" y="0" width="1200" height="68" fill="#FFFFFF" opacity="0.94"/>
+    <line x1="0" y1="68" x2="1200" y2="68" stroke="#CFE2E3"/>
+    <rect x="42" y="18" width="32" height="32" rx="10" fill="#032F3B"/>
+    <rect x="50" y="26" width="16" height="4" rx="2" fill="#FFF1D2"/>
+    <rect x="50" y="34" width="16" height="4" rx="2" fill="#08D4ED"/>
+    <text x="86" y="39" fill="#032F3B" font-family="Inter, Segoe UI, Microsoft YaHei, sans-serif" font-size="19" font-weight="760">CaptionNest</text>
+
+    <rect x="902" y="20" width="132" height="28" rx="14" fill="#EAF8F5" stroke="#CFE2E3"/>
+    <circle cx="920" cy="34" r="5" fill="#1C8A5B"/>
+    <text x="932" y="38" fill="#365F61" font-family="Inter, Segoe UI, Microsoft YaHei, sans-serif" font-size="11" font-weight="650">本地服务已连接</text>
+    <rect x="1046" y="20" width="112" height="28" rx="14" fill="#FFF1D2"/>
+    <circle cx="1064" cy="34" r="5" fill="#08D4ED"/>
+    <text x="1076" y="38" fill="#064B59" font-family="Inter, Segoe UI, Microsoft YaHei, sans-serif" font-size="11" font-weight="650">CUDA 可用</text>
+  </g>
+
+  <g aria-label="居中开场语">
+    <text x="600" y="111" fill="#0B8492" font-family="Inter, Segoe UI, Microsoft YaHei, sans-serif" font-size="11" font-weight="760" letter-spacing="2" text-anchor="middle">LOCAL-FIRST BILINGUAL CAPTIONS</text>
+    <text x="600" y="154" fill="#032F3B" font-family="Inter, Segoe UI, Microsoft YaHei, sans-serif" font-size="38" font-weight="790" letter-spacing="-1.2" text-anchor="middle">把视频放进来，带走一份双语字幕</text>
+    <text x="600" y="185" fill="#5F7379" font-family="Inter, Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="430" text-anchor="middle">自动识别源语言，完成翻译，并把 SRT 写回视频所在目录。</text>
+    <circle cx="247" cy="137" r="9" fill="#08D4ED" opacity="0.62"/>
+    <path d="M930 126 l14 14 -14 14 -14 -14 z" fill="#FFF1D2" stroke="#0B8492" stroke-width="2"/>
+  </g>
+
+  <g transform="translate(64 216)" filter="url(#softShadow)" aria-label="字幕任务主要证明面板">
+    <rect x="0" y="0" width="1072" height="454" rx="24" fill="#FFFFFF" stroke="#CFE2E3"/>
+
+    <g transform="translate(24 24)" aria-label="视频选择区">
+      <rect x="0" y="0" width="624" height="406" rx="18" fill="#FFFDF7" stroke="#0B8492" stroke-width="1.5" stroke-dasharray="7 7"/>
+      <text x="24" y="34" fill="#0B8492" font-family="Inter, Segoe UI, Microsoft YaHei, sans-serif" font-size="10" font-weight="780" letter-spacing="1.4">01 · 选择视频</text>
+
+      <g transform="translate(262 80)">
+        <rect x="0" y="0" width="100" height="78" rx="24" fill="#032F3B"/>
+        <path d="M34 24 h28 a8 8 0 0 1 8 8 v21 a8 8 0 0 1 -8 8 h-28 a8 8 0 0 1 -8 -8 v-21 a8 8 0 0 1 8 -8 z" fill="none" stroke="#FFF1D2" stroke-width="3"/>
+        <path d="M45 36 l17 9 -17 9 z" fill="#08D4ED"/>
+      </g>
+
+      <text x="312" y="195" fill="#032F3B" font-family="Inter, Segoe UI, Microsoft YaHei, sans-serif" font-size="24" font-weight="760" text-anchor="middle">选择视频开始处理</text>
+      <text x="312" y="225" fill="#5F7379" font-family="Inter, Segoe UI, Microsoft YaHei, sans-serif" font-size="13" text-anchor="middle">支持 MP4、MKV、MOV、WEBM</text>
+
+      <rect x="211" y="252" width="202" height="48" rx="24" fill="url(#primaryButton)"/>
+      <path d="M242 268 h15 l5 6 h22 v13 h-42 z" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linejoin="round"/>
+      <text x="322" y="282" fill="#FFFFFF" font-family="Inter, Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="720" text-anchor="middle">选择本机文件</text>
+
+      <rect x="86" y="329" width="452" height="48" rx="13" fill="#FFF1D2"/>
+      <circle cx="110" cy="353" r="7" fill="#0B8492"/>
+      <path d="M107 353 l2 2 5 -6" fill="none" stroke="#FFFFFF" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="127" y="358" fill="#365F61" font-family="Inter, Segoe UI, Microsoft YaHei, sans-serif" font-size="11" font-weight="620">视频与音频留在本机，在线翻译仅发送字幕文本</text>
+    </g>
+
+    <g transform="translate(672 24)" aria-label="任务摘要和进度">
+      <rect x="0" y="0" width="376" height="154" rx="16" fill="#F7FBFA" stroke="#CFE2E3"/>
+      <text x="18" y="30" fill="#0B8492" font-family="Inter, Segoe UI, Microsoft YaHei, sans-serif" font-size="10" font-weight="780" letter-spacing="1.3">02 · 任务摘要</text>
+      <text x="18" y="62" fill="#032F3B" font-family="Inter, Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="700">自动检测源语言</text>
+      <rect x="18" y="78" width="94" height="30" rx="15" fill="#FFFFFF" stroke="#CFE2E3"/>
+      <text x="65" y="98" fill="#365F61" font-family="Inter, Segoe UI, Microsoft YaHei, sans-serif" font-size="10" font-weight="650" text-anchor="middle">目标 · 简中</text>
+      <rect x="120" y="78" width="91" height="30" rx="15" fill="#FFFFFF" stroke="#CFE2E3"/>
+      <text x="165" y="98" fill="#365F61" font-family="Inter, Segoe UI, Microsoft YaHei, sans-serif" font-size="10" font-weight="650" text-anchor="middle">模型 · small</text>
+      <rect x="219" y="78" width="139" height="30" rx="15" fill="#032F3B"/>
+      <circle cx="239" cy="93" r="4" fill="#08D4ED"/>
+      <text x="289" y="98" fill="#FFFFFF" font-family="Inter, Segoe UI, Microsoft YaHei, sans-serif" font-size="10" font-weight="650" text-anchor="middle">Codex Spark</text>
+      <text x="18" y="134" fill="#5F7379" font-family="Inter, Segoe UI, Microsoft YaHei, sans-serif" font-size="10">高级识别、翻译与模型设置可展开调整</text>
+
+      <rect x="0" y="170" width="376" height="132" rx="16" fill="#FFFFFF" stroke="#CFE2E3"/>
+      <text x="18" y="200" fill="#0B8492" font-family="Inter, Segoe UI, Microsoft YaHei, sans-serif" font-size="10" font-weight="780" letter-spacing="1.3">03 · 处理阶段</text>
+      <line x1="50" y1="239" x2="326" y2="239" stroke="#CFE2E3" stroke-width="5" stroke-linecap="round"/>
+      <line x1="50" y1="239" x2="188" y2="239" stroke="url(#cyanLine)" stroke-width="5" stroke-linecap="round"/>
+      <circle cx="50" cy="239" r="13" fill="#0B8492"/>
+      <circle cx="188" cy="239" r="13" fill="#08D4ED"/>
+      <circle cx="326" cy="239" r="13" fill="#FFFFFF" stroke="#CFE2E3" stroke-width="3"/>
+      <text x="50" y="270" fill="#365F61" font-family="Inter, Segoe UI, Microsoft YaHei, sans-serif" font-size="10" font-weight="650" text-anchor="middle">准备媒体</text>
+      <text x="188" y="270" fill="#365F61" font-family="Inter, Segoe UI, Microsoft YaHei, sans-serif" font-size="10" font-weight="650" text-anchor="middle">语音识别</text>
+      <text x="326" y="270" fill="#5F7379" font-family="Inter, Segoe UI, Microsoft YaHei, sans-serif" font-size="10" font-weight="650" text-anchor="middle">翻译字幕</text>
+
+      <rect x="0" y="318" width="376" height="64" rx="16" fill="url(#primaryButton)"/>
+      <text x="188" y="356" fill="#FFFFFF" font-family="Inter, Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="760" text-anchor="middle">开始生成字幕  →</text>
+      <text x="188" y="402" fill="#5F7379" font-family="Inter, Segoe UI, Microsoft YaHei, sans-serif" font-size="10" text-anchor="middle">输出：与源视频同目录的单个双语 SRT</text>
+    </g>
+  </g>
+</svg>
