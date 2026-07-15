@@ -104,7 +104,8 @@ jobs:
           targets: x86_64-pc-windows-msvc
 
       - name: Restore vcpkg binary cache
-        uses: actions/cache@v4
+        id: restore_vcpkg_cache
+        uses: actions/cache/restore@v4
         with:
           path: packaging/build/vcpkg-binary-cache
           key: vcpkg-windows-x64-${{ hashFiles('packaging/media-runtime/vcpkg.json') }}
@@ -137,6 +138,13 @@ jobs:
             -VcpkgRoot 'packaging\build\vcpkg' `
             -PythonExecutable $Python
           "CAPTIONNEST_BUILD_PYTHON=$Python" | Add-Content -LiteralPath $env:GITHUB_ENV
+
+      - name: Save vcpkg binary cache
+        if: steps.restore_vcpkg_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: packaging/build/vcpkg-binary-cache
+          key: vcpkg-windows-x64-${{ hashFiles('packaging/media-runtime/vcpkg.json') }}
 
       - name: Lint Python
         shell: pwsh
@@ -176,6 +184,7 @@ jobs:
             -Destination $Stage
 
       - name: Smoke-test the exact installer
+        timeout-minutes: 8
         shell: pwsh
         run: |
           $Installers = @(

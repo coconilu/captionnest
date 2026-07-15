@@ -18,6 +18,7 @@ def test_nsis_uninstall_warns_before_removing_app_managed_models() -> None:
 
     assert "NSIS_HOOK_PREUNINSTALL" in hooks
     assert "MB_OKCANCEL" in hooks
+    assert "/SD IDOK IDOK continue_uninstall" in hooks
     assert "Abort" in hooks
     assert "NSIS_HOOK_POSTUNINSTALL" in hooks
     assert f"$LOCALAPPDATA\\{identifier}\\models" in hooks
