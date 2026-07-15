@@ -3,6 +3,7 @@ import { useCallback, useMemo, useState } from 'react'
 import { createJob, pickVideo } from './api/client'
 import { AppHeader } from './components/AppHeader'
 import { EnvironmentPanel } from './components/EnvironmentPanel'
+import { HeroIntro } from './components/HeroIntro'
 import { SettingsPanel, type SettingsValue } from './components/SettingsPanel'
 import { SourcePicker, type SelectedSource } from './components/SourcePicker'
 import { TaskConsole } from './components/TaskConsole'
@@ -191,8 +192,9 @@ export function App() {
         cudaAvailable={cudaAvailable}
         onRefresh={() => void handleFullRefresh()}
       />
-      <main className="app-layout">
-        <div className="workspace">
+      <HeroIntro />
+      <main className="task-workbench">
+        <div className="task-primary-column">
           <SourcePicker
             source={source}
             busy={sourceBusy}
@@ -204,7 +206,6 @@ export function App() {
               setActionError(null)
             }}
           />
-          <WorkflowProgress job={job} />
           <TaskConsole
             job={job}
             pollError={pollError}
@@ -220,6 +221,7 @@ export function App() {
           startHint={startHint}
           onChange={setSettings}
           onStart={() => void handleStart()}
+          progress={<WorkflowProgress job={job} />}
         >
           <EnvironmentPanel
             environment={environment}

@@ -24,6 +24,7 @@ export function TaskConsole({ job, pollError, actionError, onActionError }: Task
   const subtitlePath = job?.subtitle_path
   const done = job?.status === 'completed'
   const error = job?.error ?? pollError ?? actionError
+  const idle = !job && !error
 
   const handleOpen = async (path?: string | null) => {
     if (!path) return
@@ -36,7 +37,7 @@ export function TaskConsole({ job, pollError, actionError, onActionError }: Task
   }
 
   return (
-    <section className="console-panel" aria-labelledby="console-title">
+    <section className={`console-panel ${idle ? 'is-idle' : ''}`} aria-labelledby="console-title">
       <div className="console-header">
         <div>
           <h2 id="console-title">处理日志</h2>

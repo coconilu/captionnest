@@ -1,0 +1,14 @@
+[
+  {
+    "id": "magic-ui",
+    "name": "Magic UI",
+    "bestFor": [
+      "launch pages",
+      "motion moments",
+      "social proof",
+      "animated hero details"
+    ],
+    "useWhen": "Use sparingly for approved motion-rich marketing sections.",
+    "avoidWhen": "Avoid in dense enterprise tools or conservative trust pages."
+  }
+]

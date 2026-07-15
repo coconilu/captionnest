@@ -26,6 +26,7 @@ export function WorkflowProgress({ job }: WorkflowProgressProps) {
 
   return (
     <section className="workflow-panel" aria-label="任务阶段">
+      <span className="panel-step-label">03 · 处理阶段</span>
       <ol className="workflow-steps">
         {STEPS.map((step, index) => {
           const complete = active > index

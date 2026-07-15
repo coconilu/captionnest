@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 2,
+  "generatedBy": "ai-ui-style-director",
+  "selection": {
+    "directionId": "launch-centered-hero-story",
+    "themeId": "theme-ca63703dc9b7"
+  },
+  "sourceProvider": "daisyui-themes",
+  "sourceSlug": "acid",
+  "sourcePath": "packages/daisyui/src/themes/acid.css",
+  "sourceRepo": "saadeghi/daisyui",
+  "sourceRevision": "374d63758f997317e92e93e547569a5f9ad11250",
+  "sourceContentHash": "sha256:cff58e59f5a05854b05ba21a4f93a49084cc17eef725c14f1b07a7f5a39394c0",
+  "sourceUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/acid.css",
+  "directionReferences": [
+    {
+      "provider": "daisyui-themes",
+      "path": "packages/daisyui/src/themes/acid.css",
+      "repo": "saadeghi/daisyui",
+      "revision": "374d63758f997317e92e93e547569a5f9ad11250",
+      "contentHash": "sha256:cff58e59f5a05854b05ba21a4f93a49084cc17eef725c14f1b07a7f5a39394c0",
+      "sourceUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/acid.css",
+      "label": "Daisyui Themes reference 1",
+      "role": "color-system reference",
+      "pageUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/acid.css",
+      "referenceKinds": [
+        "direction"
+      ]
+    },
+    {
+      "provider": "daisyui-themes",
+      "path": "packages/daisyui/src/themes/cyberpunk.css",
+      "repo": "saadeghi/daisyui",
+      "revision": "374d63758f997317e92e93e547569a5f9ad11250",
+      "contentHash": "sha256:c5d2e36a943035fad0b1e320b20f53414d5f8306e701686452174f32c2185c19",
+      "sourceUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/cyberpunk.css",
+      "label": "Daisyui Themes reference 2",
+      "role": "color-system reference",
+      "pageUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/cyberpunk.css",
+      "referenceKinds": [
+        "direction"
+      ]
+    },
+    {
+      "provider": "daisyui-themes",
+      "path": "packages/daisyui/src/themes/synthwave.css",
+      "repo": "saadeghi/daisyui",
+      "revision": "374d63758f997317e92e93e547569a5f9ad11250",
+      "contentHash": "sha256:d5726f45f0f0a7d4e4f360b3b1d88819284c5de659c73ebd39de82dee6e31b8f",
+      "sourceUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/synthwave.css",
+      "label": "Daisyui Themes reference 3",
+      "role": "color-system reference",
+      "pageUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/synthwave.css",
+      "referenceKinds": [
+        "direction"
+      ]
+    }
+  ],
+  "themeSources": [
+    {
+      "kind": "source-pinned",
+      "provider": "daisyui-themes",
+      "slug": "acid",
+      "path": "packages/daisyui/src/themes/acid.css",
+      "repo": "saadeghi/daisyui",
+      "revision": "374d63758f997317e92e93e547569a5f9ad11250",
+      "contentHash": "sha256:cff58e59f5a05854b05ba21a4f93a49084cc17eef725c14f1b07a7f5a39394c0",
+      "sourceUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/acid.css",
+      "label": "Acid theme source",
+      "role": "theme palette source",
+      "pageUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/acid.css",
+      "referenceKinds": [
+        "theme"
+      ]
+    }
+  ],
+  "visualReferences": [
+    {
+      "provider": "daisyui-themes",
+      "path": "packages/daisyui/src/themes/acid.css",
+      "repo": "saadeghi/daisyui",
+      "revision": "374d63758f997317e92e93e547569a5f9ad11250",
+      "contentHash": "sha256:cff58e59f5a05854b05ba21a4f93a49084cc17eef725c14f1b07a7f5a39394c0",
+      "sourceUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/acid.css",
+      "label": "Daisyui Themes reference 1",
+      "role": "color-system reference",
+      "pageUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/acid.css"
+    },
+    {
+      "provider": "daisyui-themes",
+      "path": "packages/daisyui/src/themes/cyberpunk.css",
+      "repo": "saadeghi/daisyui",
+      "revision": "374d63758f997317e92e93e547569a5f9ad11250",
+      "contentHash": "sha256:c5d2e36a943035fad0b1e320b20f53414d5f8306e701686452174f32c2185c19",
+      "sourceUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/cyberpunk.css",
+      "label": "Daisyui Themes reference 2",
+      "role": "color-system reference",
+      "pageUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/cyberpunk.css"
+    },
+    {
+      "provider": "daisyui-themes",
+      "path": "packages/daisyui/src/themes/synthwave.css",
+      "repo": "saadeghi/daisyui",
+      "revision": "374d63758f997317e92e93e547569a5f9ad11250",
+      "contentHash": "sha256:d5726f45f0f0a7d4e4f360b3b1d88819284c5de659c73ebd39de82dee6e31b8f",
+      "sourceUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/synthwave.css",
+      "label": "Daisyui Themes reference 3",
+      "role": "color-system reference",
+      "pageUrl": "https://github.com/saadeghi/daisyui/blob/374d63758f997317e92e93e547569a5f9ad11250/packages/daisyui/src/themes/synthwave.css"
+    }
+  ],
+  "brandSafety": "Use as inspiration only; do not copy proprietary brand assets or exact layouts."
+}
