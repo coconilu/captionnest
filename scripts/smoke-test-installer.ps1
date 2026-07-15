@@ -10,6 +10,7 @@ $Installer = (Resolve-Path -LiteralPath $InstallerPath).Path
 $InstallDirectory = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'CaptionNest'))
 $LocalAppDataRoot = [IO.Path]::GetFullPath($env:LOCALAPPDATA).TrimEnd('\') + '\'
 $UninstallRoot = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall'
+$ExternalProcessTimeoutSeconds = 180
 
 if (-not [Environment]::Is64BitOperatingSystem) {
     throw 'The release installer smoke test requires Windows x64.'
@@ -60,6 +61,49 @@ function Wait-Until([scriptblock]$Condition, [int]$TimeoutSeconds) {
     return $false
 }
 
+function Invoke-HiddenProcessWithTimeout {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+        [Parameter(Mandatory = $true)]
+        [string[]]$ArgumentList,
+        [Parameter(Mandatory = $true)]
+        [int]$TimeoutSeconds
+    )
+
+    $Process = Start-Process `
+        -FilePath $FilePath `
+        -ArgumentList $ArgumentList `
+        -PassThru `
+        -WindowStyle Hidden
+    try {
+        if (-not $Process.WaitForExit($TimeoutSeconds * 1000)) {
+            $Taskkill = Join-Path $env:SystemRoot 'System32\taskkill.exe'
+            $TaskkillArguments = @('/PID', $Process.Id.ToString(), '/T', '/F')
+            & $Taskkill @TaskkillArguments 2>$null | Out-Null
+            [void]$Process.WaitForExit(5000)
+            return [pscustomobject]@{
+                ExitCode = $null
+                TimedOut = $true
+            }
+        }
+        $Process.WaitForExit()
+        return [pscustomobject]@{
+            ExitCode = $Process.ExitCode
+            TimedOut = $false
+        }
+    } finally {
+        $Process.Dispose()
+    }
+}
+
+function Get-FailureMessage($Failure) {
+    if ($Failure -is [Management.Automation.ErrorRecord]) {
+        return $Failure.Exception.Message
+    }
+    return [string]$Failure
+}
+
 function Stop-CaptionNestProcesses {
     $Processes = Get-CaptionNestProcesses
     foreach ($Process in $Processes) {
@@ -84,12 +128,13 @@ try {
         throw 'A CaptionNest uninstall registry entry already exists.'
     }
 
-    $Install = Start-Process `
+    $Install = Invoke-HiddenProcessWithTimeout `
         -FilePath $Installer `
         -ArgumentList @('/S') `
-        -PassThru `
-        -Wait `
-        -WindowStyle Hidden
+        -TimeoutSeconds $ExternalProcessTimeoutSeconds
+    if ($Install.TimedOut) {
+        throw "Installer timed out after $ExternalProcessTimeoutSeconds seconds."
+    }
     if ($Install.ExitCode -ne 0) {
         throw "Installer failed with exit code $($Install.ExitCode)."
     }
@@ -147,13 +192,13 @@ try {
     Stop-CaptionNestProcesses
     $Uninstaller = Join-Path $InstallDirectory 'uninstall.exe'
     if (Test-Path -LiteralPath $Uninstaller -PathType Leaf) {
-        $Uninstall = Start-Process `
+        $Uninstall = Invoke-HiddenProcessWithTimeout `
             -FilePath $Uninstaller `
             -ArgumentList @('/S') `
-            -PassThru `
-            -Wait `
-            -WindowStyle Hidden
-        if ($Uninstall.ExitCode -ne 0 -and -not $Failure) {
+            -TimeoutSeconds $ExternalProcessTimeoutSeconds
+        if ($Uninstall.TimedOut -and -not $Failure) {
+            $Failure = "Uninstaller timed out after $ExternalProcessTimeoutSeconds seconds."
+        } elseif ($Uninstall.ExitCode -ne 0 -and -not $Failure) {
             $Failure = "Uninstaller failed with exit code $($Uninstall.ExitCode)."
         }
         [void](Wait-Until -TimeoutSeconds 20 -Condition {
@@ -171,7 +216,7 @@ if ($RemainingProcesses.Count -ne 0 -or $RemainingEntries.Count -ne 0 -or $Direc
         "registry=$($RemainingEntries.Count), directory=$DirectoryExists"
     )
     if ($Failure) {
-        throw "$($Failure.Exception.Message) $CleanupSummary"
+        throw "$(Get-FailureMessage $Failure) $CleanupSummary"
     }
     throw $CleanupSummary
 }

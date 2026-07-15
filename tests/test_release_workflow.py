@@ -57,7 +57,13 @@ def test_generated_release_notes_have_chinese_categories_and_fixed_safety_text()
 
 
 def test_installer_smoke_preserves_existing_installs_and_checks_full_lifecycle() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8"
+    )
     smoke = (ROOT / "scripts" / "smoke-test-installer.ps1").read_text(encoding="utf-8")
+    smoke_step = workflow.split("- name: Smoke-test the exact installer", 1)[1].split(
+        "- name: Upload validated workflow artifact", 1
+    )[0]
 
     assert "Refusing to overwrite an existing installation" in smoke
     assert "CaptionNest contributors" in smoke
@@ -65,3 +71,18 @@ def test_installer_smoke_preserves_existing_installs_and_checks_full_lifecycle()
     assert "captionnest-sidecar" in smoke
     assert "CloseMainWindow" in smoke
     assert "uninstall.exe" in smoke
+    assert "Invoke-HiddenProcessWithTimeout" in smoke
+    assert "taskkill.exe" in smoke
+    assert "timeout-minutes: 8" in smoke_step
+
+
+def test_vcpkg_cache_is_saved_before_later_release_checks() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "actions/cache/restore@v4" in workflow
+    assert "actions/cache/save@v4" in workflow
+    assert workflow.index("Build and install LGPL media wheel") < workflow.index(
+        "Save vcpkg binary cache"
+    ) < workflow.index("Lint Python")
