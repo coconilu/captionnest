@@ -50,6 +50,14 @@ function Get-CaptionNestUninstallEntries {
     )
 }
 
+function Test-CaptionNestCleanupComplete {
+    return (
+        (Get-CaptionNestProcesses).Count -eq 0 -and
+        (Get-CaptionNestUninstallEntries).Count -eq 0 -and
+        -not (Test-Path -LiteralPath $InstallDirectory)
+    )
+}
+
 function Wait-Until([scriptblock]$Condition, [int]$TimeoutSeconds) {
     $Deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     do {
@@ -201,9 +209,12 @@ try {
         } elseif ($Uninstall.ExitCode -ne 0 -and -not $Failure) {
             $Failure = "Uninstaller failed with exit code $($Uninstall.ExitCode)."
         }
-        [void](Wait-Until -TimeoutSeconds 20 -Condition {
-            -not (Test-Path -LiteralPath $InstallDirectory)
-        })
+        $CleanupCompleted = Wait-Until -TimeoutSeconds 60 -Condition {
+            Test-CaptionNestCleanupComplete
+        }
+        if (-not $CleanupCompleted -and -not $Failure) {
+            $Failure = 'Uninstaller exited before cleanup completed within 60 seconds.'
+        }
     }
 }
 
@@ -211,9 +222,21 @@ $RemainingProcesses = Get-CaptionNestProcesses
 $RemainingEntries = Get-CaptionNestUninstallEntries
 $DirectoryExists = Test-Path -LiteralPath $InstallDirectory
 if ($RemainingProcesses.Count -ne 0 -or $RemainingEntries.Count -ne 0 -or $DirectoryExists) {
+    $RegistryPaths = @(
+        $RemainingEntries |
+            ForEach-Object {
+                if ($_.PSPath) { $_.PSPath } else { $_.PSChildName }
+            }
+    ) -join '; '
+    $RegistryDetails = if ($RegistryPaths) {
+        ", registry_paths=$RegistryPaths"
+    } else {
+        ''
+    }
     $CleanupSummary = (
         "Cleanup failed: processes=$($RemainingProcesses.Count), " +
-        "registry=$($RemainingEntries.Count), directory=$DirectoryExists"
+        "registry=$($RemainingEntries.Count), directory=$DirectoryExists" +
+        $RegistryDetails
     )
     if ($Failure) {
         throw "$(Get-FailureMessage $Failure) $CleanupSummary"
