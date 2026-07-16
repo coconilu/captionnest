@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable, Mapping
+from contextlib import suppress
 from typing import Any, Protocol, TypeVar
 
 from .job_store import JobStore
@@ -44,8 +45,23 @@ class JobRepository:
             record.attach_persistence(None)
             return
         record.attach_persistence(
-            lambda payload, job_id=record.id: self.store.save_job(job_id, payload)
+            lambda payload, job_id=record.id: self._save_attached(job_id, payload)
         )
+
+    def _save_attached(self, job_id: str, payload: Mapping[str, Any]) -> None:
+        """Acknowledge a reported write error when disk has the exact payload."""
+
+        assert self.store is not None
+        try:
+            self.store.save_job(job_id, payload)
+        except Exception as exc:
+            try:
+                durable = self.store.load_job(job_id)
+            except Exception:
+                raise exc from None
+            if durable == dict(payload):
+                return
+            raise
 
     def _load(self) -> None:
         if self.store is None:
@@ -63,9 +79,19 @@ class JobRepository:
             if record.id in self._records:
                 raise ValueError("任务 ID 已存在")
             self._attach(record)
+            try:
+                if self.store is not None:
+                    self.store.save_job(record.id, record.to_payload())
+            except Exception:
+                # A store implementation may fail after creating part (or all) of
+                # the on-disk record. Do not expose an item that create() reported
+                # as failed, and make a best-effort cleanup of that partial write.
+                record.attach_persistence(None)
+                if self.store is not None:
+                    with suppress(OSError):
+                        self.store.delete_job(record.id)
+                raise
             self._records[record.id] = record
-            if self.store is not None:
-                self.store.save_job(record.id, record.to_payload())
 
     def get(self, job_id: str) -> JobRecordT:
         with self._lock:
@@ -82,6 +108,7 @@ class JobRepository:
         with self._lock:
             if job_id not in self._records:
                 raise KeyError("任务不存在")
-            self._records.pop(job_id)
             if self.store is not None:
                 self.store.delete_job(job_id)
+            record = self._records.pop(job_id)
+            record.attach_persistence(None)

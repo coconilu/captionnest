@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import hashlib
+import hmac
 import json
+import os
+import secrets
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +36,7 @@ from .models import (
     JobStatus,
     JobStep,
     JobStepView,
+    JobSummaryPage,
     JobSummaryView,
     JobView,
     LegacyASRSettings,
@@ -80,6 +87,9 @@ STEP_PROGRESS = {
 LEGACY_ASR_UNAVAILABLE_MESSAGE = (
     "Qwen3-ASR 已停用；历史任务仍可查看，请先在识别配置中改选 Faster-Whisper 模型"
 )
+SUMMARY_SNAPSHOT_TTL_SECONDS = 300.0
+SUMMARY_SNAPSHOT_MAX_ENTRIES = 64
+SUMMARY_SNAPSHOT_MAX_ITEMS = 20_000
 
 
 class _BlockingCallCancelled(RuntimeError):
@@ -126,6 +136,175 @@ def _fingerprint(payload: Mapping[str, Any]) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(content).hexdigest()
+
+
+def subtitle_output_path(source_path: Path, export: ExportSettings) -> Path:
+    try:
+        output_directory = (
+            Path(export.output_directory).expanduser().resolve()
+            if export.output_directory
+            else source_path.resolve().parent
+        )
+        return (output_directory / source_path.with_suffix(".srt").name).resolve()
+    except RuntimeError as exc:
+        raise ValueError("字幕输出路径无法解析") from exc
+
+
+def output_path_key(path: Path) -> str:
+    return os.path.normcase(str(path.resolve()))
+
+
+def validate_output_target(path: Path, *, overwrite_existing: bool) -> None:
+    """Reject targets that the atomic SRT writer cannot safely replace."""
+
+    resolved = path.resolve()
+    ancestor = resolved.parent
+    while not ancestor.exists() and ancestor != ancestor.parent:
+        ancestor = ancestor.parent
+    if ancestor.exists() and not ancestor.is_dir():
+        raise NotADirectoryError("字幕输出目录不是文件夹")
+    if not resolved.exists():
+        return
+    if not resolved.is_file():
+        raise IsADirectoryError("目标字幕路径不是可覆盖的普通文件")
+    if not overwrite_existing:
+        raise FileExistsError("目标字幕已存在，请允许覆盖或修改输出目录")
+
+
+@dataclass(frozen=True)
+class _SummaryCursor:
+    snapshot_id: str
+    offset: int
+    filter_fingerprint: str
+
+
+@dataclass(frozen=True)
+class _SummarySnapshot:
+    snapshot_id: str
+    filter_fingerprint: str
+    server_time: datetime
+    statuses: tuple[JobStatus, ...] | None
+    batch_id: str | None
+    query: str | None
+    updated_after: datetime | None
+    items: tuple[JobSummaryView, ...]
+    expires_at_monotonic: float
+
+
+def _normalized_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _summary_filter_payload(
+    *,
+    statuses: tuple[JobStatus, ...] | None,
+    batch_id: str | None,
+    query: str | None,
+    updated_after: datetime | None,
+) -> dict[str, Any]:
+    return {
+        "statuses": [status.value for status in statuses] if statuses is not None else None,
+        "batch_id": batch_id,
+        "query": query,
+        "updated_after": updated_after.isoformat() if updated_after is not None else None,
+    }
+
+
+def _encode_summary_cursor(
+    snapshot: _SummarySnapshot,
+    offset: int,
+    secret: bytes,
+) -> str:
+    signature = _summary_cursor_signature(
+        secret,
+        snapshot_id=snapshot.snapshot_id,
+        offset=offset,
+        filter_fingerprint=snapshot.filter_fingerprint,
+    )
+    payload = json.dumps(
+        {
+            "v": 3,
+            "snapshot_id": snapshot.snapshot_id,
+            "offset": offset,
+            "filter_fingerprint": snapshot.filter_fingerprint,
+            "signature": signature,
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _summary_cursor_signature(
+    secret: bytes,
+    *,
+    snapshot_id: str,
+    offset: int,
+    filter_fingerprint: str,
+) -> str:
+    message = f"3:{snapshot_id}:{offset}:{filter_fingerprint}".encode("ascii")
+    return hmac.new(secret, message, hashlib.sha256).hexdigest()
+
+
+def _decode_summary_cursor(cursor: str, secret: bytes) -> _SummaryCursor:
+    try:
+        padding = "=" * (-len(cursor) % 4)
+        decoded = base64.b64decode(
+            f"{cursor}{padding}",
+            altchars=b"-_",
+            validate=True,
+        )
+        payload = json.loads(decoded.decode("utf-8"))
+        if not isinstance(payload, dict) or payload.get("v") != 3:
+            raise ValueError
+        snapshot_id = payload["snapshot_id"]
+        offset = payload["offset"]
+        filter_fingerprint = payload["filter_fingerprint"]
+        signature = payload["signature"]
+        if not isinstance(snapshot_id, str) or len(snapshot_id) != 32:
+            raise ValueError
+        if any(character not in "0123456789abcdef" for character in snapshot_id):
+            raise ValueError
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 1:
+            raise ValueError
+        if (
+            not isinstance(filter_fingerprint, str)
+            or len(filter_fingerprint) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in filter_fingerprint
+            )
+        ):
+            raise ValueError
+        if (
+            not isinstance(signature, str)
+            or len(signature) != 64
+            or any(character not in "0123456789abcdef" for character in signature)
+        ):
+            raise ValueError
+        expected_signature = _summary_cursor_signature(
+            secret,
+            snapshot_id=snapshot_id,
+            offset=offset,
+            filter_fingerprint=filter_fingerprint,
+        )
+        if not hmac.compare_digest(signature, expected_signature):
+            raise ValueError
+        return _SummaryCursor(
+            snapshot_id=snapshot_id,
+            offset=offset,
+            filter_fingerprint=filter_fingerprint,
+        )
+    except (
+        binascii.Error,
+        KeyError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise ValueError("分页 cursor 无效") from exc
 
 
 async def _run_blocking_call(
@@ -212,6 +391,14 @@ class JobRecord:
     def attach_persistence(self, callback: PersistCallback | None) -> None:
         with self._lock:
             self._persist_callback = callback
+
+    def assign_batch(self, batch_id: str | None) -> None:
+        with self._lock:
+            if self.batch_id == batch_id:
+                return
+            self.batch_id = batch_id
+            self.updated_at = utc_now()
+            self._persist()
 
     def config_model(self, step: JobStep) -> BaseModel:
         return {
@@ -404,25 +591,89 @@ class JobRecord:
 
     def invalidate_from(self, step: JobStep, *, message: str | None = None) -> None:
         with self._lock:
-            if self.status in {JobStatus.QUEUED, JobStatus.RUNNING}:
-                raise ValueError("任务运行中，不能修改配置或重置步骤")
-            start_index = STEP_ORDER.index(step)
-            for item in STEP_ORDER[start_index:]:
-                state = self.steps[item]
-                state.status = StepStatus.STALE if state.artifact else StepStatus.PENDING
-                state.progress = 0
-                state.error = None
-            self.status = JobStatus.DRAFT
-            self.queue_status = QueueStatus.DRAFT
-            self.queue_position = None
-            self.stage = STEP_STAGE[step]
-            self.progress = STEP_PROGRESS[step][0]
-            self.error = None
-            self.current_step = None
-            if message:
-                self._append_log(message)
-            self.updated_at = utc_now()
-            self._persist()
+            previous = self.to_payload()
+            self._invalidate_from_locked(step, message=message)
+            try:
+                self._persist()
+            except Exception:
+                self._restore_payload_locked(previous)
+                raise
+
+    def _invalidate_from_locked(
+        self,
+        step: JobStep,
+        *,
+        message: str | None = None,
+    ) -> None:
+        if self.status in {JobStatus.QUEUED, JobStatus.RUNNING}:
+            raise ValueError("任务运行中，不能修改配置或重置步骤")
+        start_index = STEP_ORDER.index(step)
+        for item in STEP_ORDER[start_index:]:
+            state = self.steps[item]
+            state.status = StepStatus.STALE if state.artifact else StepStatus.PENDING
+            state.progress = 0
+            state.error = None
+        self.status = JobStatus.DRAFT
+        self.queue_status = QueueStatus.DRAFT
+        self.queue_position = None
+        self.stage = STEP_STAGE[step]
+        self.progress = STEP_PROGRESS[step][0]
+        self.error = None
+        self.current_step = None
+        if message:
+            self._append_log(message)
+        self.updated_at = utc_now()
+
+    def prepare_queue(
+        self,
+        step: JobStep,
+        *,
+        continue_pipeline: bool,
+        queue_position: int,
+    ) -> None:
+        """Persist invalidation and queued state as one recoverable transition."""
+
+        with self._lock:
+            previous = self.to_payload()
+            self._invalidate_from_locked(step)
+            self._mark_queued_locked(
+                step,
+                continue_pipeline=continue_pipeline,
+                queue_position=queue_position,
+            )
+            try:
+                self._persist()
+            except Exception:
+                self._restore_payload_locked(previous)
+                raise
+
+    def _restore_payload_locked(self, payload: Mapping[str, Any]) -> None:
+        restored = type(self).from_payload(payload)
+        for name in (
+            "media",
+            "asr",
+            "translation",
+            "export",
+            "batch_id",
+            "status",
+            "queue_status",
+            "queue_position",
+            "priority",
+            "stage",
+            "progress",
+            "detected_language",
+            "created_at",
+            "updated_at",
+            "interrupted_at",
+            "error",
+            "logs",
+            "steps",
+            "current_step",
+            "queued_start_step",
+            "queued_continue_pipeline",
+        ):
+            setattr(self, name, getattr(restored, name))
+        self._attempt_started_monotonic.clear()
 
     def mark_queued(
         self,
@@ -432,17 +683,35 @@ class JobRecord:
         queue_position: int,
     ) -> None:
         with self._lock:
-            self.status = JobStatus.QUEUED
-            self.queue_status = QueueStatus.QUEUED
-            self.queue_position = queue_position
-            self.queued_start_step = step
-            self.queued_continue_pipeline = continue_pipeline
-            self.stage = STEP_STAGE[step]
-            self.progress = STEP_PROGRESS[step][0]
-            self.error = None
-            self._append_log(f"将从“{_step_label(step)}”开始执行")
-            self.updated_at = utc_now()
-            self._persist()
+            previous = self.to_payload()
+            self._mark_queued_locked(
+                step,
+                continue_pipeline=continue_pipeline,
+                queue_position=queue_position,
+            )
+            try:
+                self._persist()
+            except Exception:
+                self._restore_payload_locked(previous)
+                raise
+
+    def _mark_queued_locked(
+        self,
+        step: JobStep,
+        *,
+        continue_pipeline: bool,
+        queue_position: int,
+    ) -> None:
+        self.status = JobStatus.QUEUED
+        self.queue_status = QueueStatus.QUEUED
+        self.queue_position = queue_position
+        self.queued_start_step = step
+        self.queued_continue_pipeline = continue_pipeline
+        self.stage = STEP_STAGE[step]
+        self.progress = STEP_PROGRESS[step][0]
+        self.error = None
+        self._append_log(f"将从“{_step_label(step)}”开始执行")
+        self.updated_at = utc_now()
 
     def set_queue_position(self, position: int) -> None:
         with self._lock:
@@ -1124,14 +1393,11 @@ class ProcessingPipeline:
             for item in translation_payload.get("items", [])
         ]
 
-        output_directory = (
-            Path(record.export.output_directory).expanduser().resolve()
-            if record.export.output_directory
-            else record.source.path.parent
+        subtitle_path = subtitle_output_path(record.source.path, record.export)
+        validate_output_target(
+            subtitle_path,
+            overwrite_existing=record.export.overwrite_existing,
         )
-        subtitle_path = output_directory / record.source.path.with_suffix(".srt").name
-        if subtitle_path.exists() and not record.export.overwrite_existing:
-            raise FileExistsError("目标字幕已存在，请允许覆盖或修改输出目录")
         await _run_blocking_call(
             write_bilingual_srt,
             subtitle_path,
@@ -1166,6 +1432,14 @@ class JobManager:
         self.upload_store = upload_store
         self.pipeline = pipeline
         self.store = job_store or getattr(pipeline, "store", None)
+        self._mutation_lock = threading.RLock()
+        self._summary_snapshots: OrderedDict[str, _SummarySnapshot] = OrderedDict()
+        self._summary_cursor_secret = secrets.token_bytes(32)
+        self._summary_snapshot_item_count = 0
+        self._summary_snapshot_clock: Callable[[], float] = time.monotonic
+        self._summary_snapshot_ttl_seconds = SUMMARY_SNAPSHOT_TTL_SECONDS
+        self._summary_snapshot_max_entries = SUMMARY_SNAPSHOT_MAX_ENTRIES
+        self._summary_snapshot_max_items = SUMMARY_SNAPSHOT_MAX_ITEMS
         self.repository = JobRepository(self.store, JobRecord.from_payload)
         self._jobs = self.repository.records
         self.scheduler = JobScheduler(
@@ -1229,6 +1503,16 @@ class JobManager:
             ):
                 record.mark_waiting_for_input(start_step)
                 continue
+            if JobStep.EXPORT in selected:
+                try:
+                    self.validate_output_claim(
+                        record.media,
+                        record.export,
+                        exclude_job_id=record.id,
+                    )
+                except (OSError, ValueError) as exc:
+                    record.fail_current(exc)
+                    continue
             self.scheduler.restore(
                 record.id,
                 start_step,
@@ -1257,7 +1541,60 @@ class JobManager:
             name=item.name,
         )
 
-    def create(self, request: JobCreateRequest) -> JobView:
+    @staticmethod
+    def output_path(media: MediaStepSettings, export: ExportSettings) -> Path:
+        return subtitle_output_path(Path(media.path), export)
+
+    def output_claim_owner(
+        self,
+        path: Path,
+        *,
+        exclude_job_id: str | None = None,
+    ) -> str | None:
+        requested_key = output_path_key(path)
+        with self._mutation_lock:
+            for record in self.repository.list():
+                if record.id == exclude_job_id:
+                    continue
+                try:
+                    claimed_key = output_path_key(
+                        self.output_path(record.media, record.export)
+                    )
+                except (OSError, ValueError):
+                    continue
+                if claimed_key == requested_key:
+                    return record.id
+        return None
+
+    def validate_output_claim(
+        self,
+        media: MediaStepSettings,
+        export: ExportSettings,
+        *,
+        exclude_job_id: str | None = None,
+    ) -> Path:
+        path = self.output_path(media, export)
+        validate_output_target(path, overwrite_existing=export.overwrite_existing)
+        owner = self.output_claim_owner(path, exclude_job_id=exclude_job_id)
+        if owner is not None:
+            raise ValueError(f"目标字幕路径已由任务 {owner} 占用")
+        return path
+
+    def create(
+        self,
+        request: JobCreateRequest,
+        *,
+        batch_id: str | None = None,
+    ) -> JobView:
+        if (
+            request.auto_start
+            and request.translation.provider == TranslationProviderName.DEEPSEEK
+            and (
+                request.translation.api_key is None
+                or not request.translation.api_key.get_secret_value().strip()
+            )
+        ):
+            raise ValueError("DeepSeek 自动启动需要本次运行 API Key")
         media = self.resolve_source(request)
         translation = TranslationStepSettings(
             target_language=request.target_language,
@@ -1268,21 +1605,29 @@ class JobManager:
         )
         record = JobRecord(
             id=uuid.uuid4().hex,
+            batch_id=batch_id,
             media=media,
             asr=request.asr.model_copy(deep=True),
             translation=translation,
             export=request.export.model_copy(deep=True),
         )
-        self.repository.add(record)
         record.update(message="任务草稿已创建")
-        if request.auto_start:
-            self.run(
-                record.id,
-                JobRunRequest(
-                    api_key=request.translation.api_key,
-                    continue_pipeline=True,
-                ),
-            )
+        with self._mutation_lock:
+            self.validate_output_claim(record.media, record.export)
+            self.repository.add(record)
+            if request.auto_start:
+                try:
+                    self._schedule(
+                        record,
+                        JobStep.MEDIA,
+                        JobRunRequest(
+                            api_key=request.translation.api_key,
+                            continue_pipeline=True,
+                        ),
+                    )
+                except Exception:
+                    self.repository.delete(record.id)
+                    raise
         return record.to_view()
 
     def update_step_config(
@@ -1291,37 +1636,55 @@ class JobManager:
         step: JobStep,
         config: Mapping[str, Any],
     ) -> JobView:
-        record = self._record(job_id)
-        if record.status in {JobStatus.QUEUED, JobStatus.RUNNING}:
-            raise ValueError("任务运行中，不能修改步骤配置")
-        if step == JobStep.MEDIA:
-            requested = MediaStepSettings.model_validate(config)
-            path = ensure_supported_video(Path(requested.path)).resolve()
-            record.media = requested.model_copy(update={"path": str(path), "name": path.name})
-        elif step == JobStep.TRANSCRIPTION:
-            try:
-                record.asr = ASRSettings.model_validate(config)
-            except ValidationError as exc:
-                # A manual config update bypasses FastAPI's request-model handler.
-                # Never echo rejected prompt text from Pydantic's default repr.
-                raise ValueError(_safe_validation_message(exc)) from exc
-        elif step == JobStep.TRANSLATION:
-            if "api_key" in config:
-                raise ValueError("API Key 只能随单次运行请求提交，不能写入任务配置")
-            record.translation = TranslationStepSettings.model_validate(config)
-        else:
-            record.export = ExportSettings.model_validate(config)
-        record.steps[step].config_revision += 1
-        record.invalidate_from(step, message=f"{_step_label(step)}配置已更新")
-        return record.to_view()
+        with self._mutation_lock:
+            record = self._record(job_id)
+            if record.status in {JobStatus.QUEUED, JobStatus.RUNNING}:
+                raise ValueError("任务运行中，不能修改步骤配置")
+            if step == JobStep.MEDIA:
+                requested = MediaStepSettings.model_validate(config)
+                path = ensure_supported_video(Path(requested.path)).resolve()
+                media = requested.model_copy(update={"path": str(path), "name": path.name})
+                self.validate_output_claim(
+                    media,
+                    record.export,
+                    exclude_job_id=record.id,
+                )
+                record.media = media
+            elif step == JobStep.TRANSCRIPTION:
+                try:
+                    record.asr = ASRSettings.model_validate(config)
+                except ValidationError as exc:
+                    # A manual config update bypasses FastAPI's request-model handler.
+                    # Never echo rejected prompt text from Pydantic's default repr.
+                    raise ValueError(_safe_validation_message(exc)) from exc
+            elif step == JobStep.TRANSLATION:
+                if "api_key" in config:
+                    raise ValueError("API Key 只能随单次运行请求提交，不能写入任务配置")
+                record.translation = TranslationStepSettings.model_validate(config)
+            else:
+                export = ExportSettings.model_validate(config)
+                self.validate_output_claim(
+                    record.media,
+                    export,
+                    exclude_job_id=record.id,
+                )
+                record.export = export
+            record.steps[step].config_revision += 1
+            record.invalidate_from(step, message=f"{_step_label(step)}配置已更新")
+            return record.to_view()
 
     def run(self, job_id: str, request: JobRunRequest | None = None) -> JobView:
-        record = self._record(job_id)
-        start_step = next(
-            (step for step in STEP_ORDER if record.steps[step].status != StepStatus.SUCCEEDED),
-            JobStep.MEDIA,
-        )
-        return self._schedule(record, start_step, request or JobRunRequest())
+        with self._mutation_lock:
+            record = self._record(job_id)
+            start_step = next(
+                (
+                    step
+                    for step in STEP_ORDER
+                    if record.steps[step].status != StepStatus.SUCCEEDED
+                ),
+                JobStep.MEDIA,
+            )
+            return self._schedule(record, start_step, request or JobRunRequest())
 
     def run_step(
         self,
@@ -1329,10 +1692,20 @@ class JobManager:
         step: JobStep,
         request: JobRunRequest | None = None,
     ) -> JobView:
-        record = self._record(job_id)
-        return self._schedule(record, step, request or JobRunRequest())
+        with self._mutation_lock:
+            record = self._record(job_id)
+            return self._schedule(record, step, request or JobRunRequest())
 
     def _schedule(
+        self,
+        record: JobRecord,
+        start_step: JobStep,
+        request: JobRunRequest,
+    ) -> JobView:
+        with self._mutation_lock:
+            return self._schedule_locked(record, start_step, request)
+
+    def _schedule_locked(
         self,
         record: JobRecord,
         start_step: JobStep,
@@ -1371,7 +1744,13 @@ class JobManager:
         ):
             raise ValueError("DeepSeek 需要 API Key，请在本次运行前填写")
 
-        record.invalidate_from(start_step)
+        if JobStep.EXPORT in selected:
+            self.validate_output_claim(
+                record.media,
+                record.export,
+                exclude_job_id=record.id,
+            )
+
         self.scheduler.enqueue(
             record,
             start_step,
@@ -1385,6 +1764,15 @@ class JobManager:
 
     def get(self, job_id: str) -> JobView:
         return self._record(job_id).to_view()
+
+    def get_summary(self, job_id: str) -> JobSummaryView:
+        return self._record(job_id).to_summary()
+
+    def assign_batch(self, job_id: str, batch_id: str | None) -> JobSummaryView:
+        with self._mutation_lock:
+            record = self._record(job_id)
+            record.assign_batch(batch_id)
+            return record.to_summary()
 
     def list(self) -> list[JobView]:
         records = sorted(
@@ -1402,6 +1790,221 @@ class JobManager:
         )
         return [record.to_summary() for record in records]
 
+    def _drop_summary_snapshot_locked(self, snapshot_id: str) -> None:
+        snapshot = self._summary_snapshots.pop(snapshot_id, None)
+        if snapshot is not None:
+            self._summary_snapshot_item_count -= len(snapshot.items)
+
+    def _purge_summary_snapshots_locked(self, now: float) -> None:
+        expired = [
+            snapshot_id
+            for snapshot_id, snapshot in self._summary_snapshots.items()
+            if snapshot.expires_at_monotonic <= now
+        ]
+        for snapshot_id in expired:
+            self._drop_summary_snapshot_locked(snapshot_id)
+
+    def _create_summary_snapshot_locked(
+        self,
+        items: list[JobSummaryView],
+        *,
+        server_time: datetime,
+        statuses: tuple[JobStatus, ...] | None,
+        batch_id: str | None,
+        query: str | None,
+        updated_after: datetime | None,
+    ) -> _SummarySnapshot:
+        max_items = max(1, self._summary_snapshot_max_items)
+        if len(items) > max_items:
+            raise ValueError("分页结果超过快照上限，请增加筛选条件后重试")
+
+        now = self._summary_snapshot_clock()
+        self._purge_summary_snapshots_locked(now)
+        max_entries = max(1, self._summary_snapshot_max_entries)
+        while self._summary_snapshots and (
+            len(self._summary_snapshots) >= max_entries
+            or self._summary_snapshot_item_count + len(items) > max_items
+        ):
+            oldest_id = next(iter(self._summary_snapshots))
+            self._drop_summary_snapshot_locked(oldest_id)
+
+        filters = _summary_filter_payload(
+            statuses=statuses,
+            batch_id=batch_id,
+            query=query,
+            updated_after=updated_after,
+        )
+        snapshot_id = uuid.uuid4().hex
+        while snapshot_id in self._summary_snapshots:
+            snapshot_id = uuid.uuid4().hex
+        snapshot = _SummarySnapshot(
+            snapshot_id=snapshot_id,
+            filter_fingerprint=_fingerprint(filters),
+            server_time=server_time,
+            statuses=statuses,
+            batch_id=batch_id,
+            query=query,
+            updated_after=updated_after,
+            items=tuple(item.model_copy(deep=True) for item in items),
+            expires_at_monotonic=now
+            + max(1.0, self._summary_snapshot_ttl_seconds),
+        )
+        self._summary_snapshots[snapshot_id] = snapshot
+        self._summary_snapshot_item_count += len(snapshot.items)
+        return snapshot
+
+    def _get_summary_snapshot_locked(
+        self,
+        cursor: _SummaryCursor,
+    ) -> _SummarySnapshot:
+        self._purge_summary_snapshots_locked(self._summary_snapshot_clock())
+        snapshot = self._summary_snapshots.get(cursor.snapshot_id)
+        if snapshot is None:
+            raise ValueError("分页 cursor 已过期或已被淘汰，请重新查询")
+        if snapshot.filter_fingerprint != cursor.filter_fingerprint:
+            raise ValueError("分页 cursor 无效")
+        if cursor.offset >= len(snapshot.items):
+            raise ValueError("分页 cursor 无效")
+        self._summary_snapshots.move_to_end(snapshot.snapshot_id)
+        return snapshot
+
+    def list_summary_page(
+        self,
+        *,
+        cursor: str | None = None,
+        limit: int = 50,
+        statuses: set[JobStatus] | None = None,
+        batch_id: str | None = None,
+        query: str | None = None,
+        updated_after: datetime | None = None,
+    ) -> JobSummaryPage:
+        if not 1 <= limit <= 200:
+            raise ValueError("limit 必须在 1 到 200 之间")
+        provided_statuses = (
+            tuple(sorted(statuses, key=lambda status: status.value))
+            if statuses is not None
+            else None
+        )
+        provided_batch_id = (
+            (batch_id.strip() or None) if batch_id is not None else None
+        )
+        provided_query = (
+            (query.strip().casefold() or None) if query is not None else None
+        )
+        provided_updated_after = (
+            _normalized_datetime(updated_after) if updated_after is not None else None
+        )
+
+        with self._mutation_lock:
+            cursor_state = (
+                _decode_summary_cursor(cursor, self._summary_cursor_secret)
+                if cursor is not None
+                else None
+            )
+            if cursor_state is not None:
+                snapshot = self._get_summary_snapshot_locked(cursor_state)
+                mismatched = (
+                    (statuses is not None and provided_statuses != snapshot.statuses)
+                    or (
+                        batch_id is not None
+                        and provided_batch_id != snapshot.batch_id
+                    )
+                    or (query is not None and provided_query != snapshot.query)
+                    or (
+                        updated_after is not None
+                        and provided_updated_after != snapshot.updated_after
+                    )
+                )
+                if mismatched:
+                    raise ValueError("分页 cursor 与筛选条件不匹配")
+                end = min(cursor_state.offset + limit, len(snapshot.items))
+                items = [
+                    item.model_copy(deep=True)
+                    for item in snapshot.items[cursor_state.offset : end]
+                ]
+                has_more = end < len(snapshot.items)
+                return JobSummaryPage(
+                    items=items,
+                    next_cursor=(
+                        _encode_summary_cursor(
+                            snapshot,
+                            end,
+                            self._summary_cursor_secret,
+                        )
+                        if has_more
+                        else None
+                    ),
+                    has_more=has_more,
+                    total=len(snapshot.items),
+                    server_time=snapshot.server_time,
+                )
+
+            effective_statuses = provided_statuses
+            effective_batch_id = provided_batch_id
+            effective_query = provided_query
+            effective_updated_after = provided_updated_after
+            server_time = utc_now() - timedelta(microseconds=1)
+
+            summaries = [record.to_summary() for record in self.repository.list()]
+            filtered = [
+                summary
+                for summary in summaries
+                if summary.created_at <= server_time
+                and (
+                    effective_statuses is None
+                    or summary.status in effective_statuses
+                )
+                and (
+                    effective_batch_id is None
+                    or summary.batch_id == effective_batch_id
+                )
+                and (
+                    effective_query is None
+                    or effective_query in summary.source_name.casefold()
+                )
+                and (
+                    effective_updated_after is None
+                    or (
+                        summary.updated_at > effective_updated_after
+                        and summary.updated_at <= server_time
+                    )
+                )
+            ]
+            filtered.sort(
+                key=lambda summary: (summary.created_at, summary.id),
+                reverse=True,
+            )
+            total = len(filtered)
+            items = filtered[:limit]
+            has_more = total > limit
+            snapshot = (
+                self._create_summary_snapshot_locked(
+                    filtered,
+                    server_time=server_time,
+                    statuses=effective_statuses,
+                    batch_id=effective_batch_id,
+                    query=effective_query,
+                    updated_after=effective_updated_after,
+                )
+                if has_more
+                else None
+            )
+            return JobSummaryPage(
+                items=items,
+                next_cursor=(
+                    _encode_summary_cursor(
+                        snapshot,
+                        len(items),
+                        self._summary_cursor_secret,
+                    )
+                    if snapshot is not None
+                    else None
+                ),
+                has_more=has_more,
+                total=total,
+                server_time=server_time,
+            )
+
     def cancel(self, job_id: str) -> JobView:
         record = self._record(job_id)
         if not self.scheduler.cancel(job_id):
@@ -1413,13 +2016,17 @@ class JobManager:
         await self.scheduler.wait(job_id)
 
     def delete(self, job_id: str) -> None:
-        record = self._record(job_id)
-        if self.scheduler.is_active(record.id) or record.status in {
-            JobStatus.QUEUED,
-            JobStatus.RUNNING,
-        }:
-            raise ValueError("任务运行中，不能删除")
-        self.repository.delete(job_id)
+        with self._mutation_lock:
+            record = self._record(job_id)
+            if self.scheduler.is_active(record.id) or record.status in {
+                JobStatus.QUEUED,
+                JobStatus.RUNNING,
+            }:
+                raise ValueError("任务运行中，不能删除")
+            self.repository.delete(job_id)
 
     async def shutdown(self) -> None:
         await self.scheduler.shutdown()
+        with self._mutation_lock:
+            self._summary_snapshots.clear()
+            self._summary_snapshot_item_count = 0

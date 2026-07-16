@@ -80,6 +80,15 @@ class JobStore:
         with self._lock:
             atomic_write_json(self.job_file(job_id), payload)
 
+    def load_job(self, job_id: str) -> dict[str, Any]:
+        """Read one durable record for commit acknowledgement and recovery."""
+
+        with self._lock:
+            payload = json.loads(self.job_file(job_id).read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("任务记录格式无效")
+        return payload
+
     def load_jobs(self) -> list[dict[str, Any]]:
         jobs: list[dict[str, Any]] = []
         with self._lock:

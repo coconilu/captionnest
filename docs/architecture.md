@@ -72,11 +72,30 @@ flowchart LR
 | 翻译配置或翻译失败 | 媒体与识别产物 | 翻译、导出 |
 | 导出配置或导出失败 | 媒体、识别与翻译产物 | 仅导出 |
 
-任务创建后先成为草稿，正常“开始生成字幕”会从媒体步骤连续执行到导出；步骤级运行接口则可从指定位置继续。开始请求只把 Job 原子加入持久 FIFO，调度器最多创建配置数量的运行 Task；媒体/导出、CPU ASR、CUDA/auto ASR 和各翻译 Provider 分别受独立 Semaphore 约束，CUDA/auto 默认同时 1 个。应用退出时，尚未 claim 的 `queued` Job 保留顺序；已经运行的 Attempt 标为 `interrupted` 并保留成功上游产物。重启后普通 queued Job 自动恢复，需要 DeepSeek API Key 的 Job 因密钥从不落盘而进入 `waiting_for_input`，等待用户重新输入。删除任务会清理 `job.json` 和内部中间产物，不会把已经写到用户目录的 SRT 当作缓存删除。
+任务创建后先成为草稿，正常“开始生成字幕”会从媒体步骤连续执行到导出；步骤级运行接口则可从指定位置继续。开始请求只把 Job 原子加入持久 FIFO：步骤失效与 queued 状态一次落盘，写前失败会恢复原状态且不登记 completion，写入后才报告错误则通过精确回读确认是否已提交。调度器最多创建配置数量的运行 Task；媒体/导出、CPU ASR、CUDA/auto ASR 和各翻译 Provider 分别受独立 Semaphore 约束，CUDA/auto 默认同时 1 个。应用退出时，尚未 claim 的 `queued` Job 保留顺序；已经运行的 Attempt 标为 `interrupted` 并保留成功上游产物。重启后普通 queued Job 自动恢复，需要 DeepSeek API Key 的 Job 因密钥从不落盘而进入 `waiting_for_input`，等待用户重新输入。删除任务会清理 `job.json` 和内部中间产物，不会把已经写到用户目录的 SRT 当作缓存删除。
 
 队列状态与业务步骤状态分开保存：`queue_status` 表示 draft/queued/running/waiting/completed/failed/cancelled/interrupted，`status` 和每个 Step/Attempt 继续描述任务与流水线结果。旧任务没有 Batch 或队列字段时按 `batch_id=null` 和原 `status` 推导加载，不要求迁移文件。
 
 旧版本写入的 Qwen3-ASR 任务只通过独立的历史配置模型加载，用于保留任务、执行记录和已有产物；新建与更新接口只接受 Faster-Whisper。历史任务重新执行识别前必须先迁移到当前支持的模型，不会重新加载已移除的 Qwen 运行时。
+
+## 多任务查询与批次 API
+
+一个源文件仍对应一个 Job；`BatchManager` 只负责一次多文件提交的分组、公共配置快照、预检和逐 Job 批量动作。Batch 状态在读取时由轻量 Job Summary 聚合，Job 的步骤、Attempt、Artifact、日志和失败仍彼此独立。
+
+| 接口 | 语义 |
+|---|---|
+| `GET /api/jobs` | 无查询参数时保留旧版完整数组；带 `limit/cursor/status/batch_id/q/updated_after` 时返回轻量 `JobSummaryPage` |
+| `POST /api/batches/preflight` | 逐文件验证格式、路径、大小、同批重复项、已存在输出和同名 SRT 冲突，不因单项失败丢失其他结果 |
+| `POST /api/batches` | 复制公共配置到每个有效源并创建独立 Job；返回 Batch 与逐项创建结果 |
+| `POST /api/jobs/bulk-actions` | 逐 Job 执行 run、cancel、retry_failed、delete 或 update_config，部分失败不回滚其他项 |
+| `POST /api/uploads/bulk` | 浏览器多文件上传，逐文件返回成功或错误 |
+| `DELETE /api/batches/{id}` | 默认仅解除分组；`delete_jobs=true` 时删除可删除 Job 的内部记录/中间产物，导出的 SRT 永不随 Batch 删除 |
+
+Summary 分页使用固定快照水位与不可变 `(created_at, job_id)` 排序。首屏冻结有序 `JobSummaryView` 副本；不透明 cursor 只携带随机 `snapshot_id`、筛选指纹和偏移，并由当前进程的 256-bit 随机密钥对完整 payload 做 HMAC-SHA256 签名，任何字段篡改都会被拒绝。后续页不再用 Job 当前版本重算成员，因而首屏后出现的新成员不会混入本轮，已计入的未读成员即使再次更新也不会丢失；增量窗口固定为 `updated_after < updated_at <= server_time`，新版本只在下一轮返回一次。快照仅驻留当前 Sidecar 进程，TTL 为 5 分钟，最多 64 个快照且合计最多 20,000 个 Summary；过期、重启失效或被 LRU 淘汰的 cursor 明确返回 400。后续页省略筛选参数时沿用首屏条件，显式不匹配会被拒绝。Summary 不含日志、步骤、API Key 或其他运行时秘密。
+
+每个未删除 Job 都持有其规范化 `<输出目录>/<源文件名>.srt` 的输出占用，不只检查同一 Batch。预检、创建、配置更新和运行入队都会重验占用；输出目录必须是目录，已存在目标必须是可覆盖普通文件。`overwrite_existing=true` 只允许当前 Job 覆盖未被其他 Job 占用的普通文件，不能绕过跨 Batch 冲突。删除 Job 后才释放占用；可以通过单项 `export` 修改输出目录。Batch 请求中的 DeepSeek Key 只传给本次内存调度项，不进入 Batch 模板、Job JSON、响应或日志。
+
+Job 首次持久化只进行一次原子写入，失败会回滚内存索引并清理部分目录；磁盘删除成功后才从内存移除。Batch 关联写入失败会补偿删除新 Job。启动时以 `Job.batch_id` 为归属事实，双向修复 `Batch.job_ids`：补入缺失成员、移除失效或错属成员，并把指向不存在 Batch 的 Job 解除分组。
 
 ## 桌面进程生命周期
 
