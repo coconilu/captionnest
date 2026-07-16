@@ -433,6 +433,14 @@ class JobRecord:
             isinstance(raw_asr, Mapping)
             and raw_asr.get("provider") == "qwen3_asr"
         )
+        if (
+            not legacy_asr
+            and isinstance(raw_asr, Mapping)
+            and "dynamic_chunking" not in raw_asr
+        ):
+            # Jobs created before #17 used fixed windows. Preserve their execution
+            # semantics when they are reopened or rerun; new requests still default on.
+            raw_asr = {**raw_asr, "dynamic_chunking": False}
         record = cls(
             id=str(payload["id"]),
             media=MediaStepSettings.model_validate(payload["media"]),
@@ -605,8 +613,11 @@ class ProcessingPipeline:
             if record.asr.output_mode == ASROutputMode.WORD_RESEGMENTED
             else "分片原始段"
         )
+        chunking_label = (
+            "VAD 动态分片" if record.asr.dynamic_chunking else "固定 60 秒分片"
+        )
         message = (
-            f"正在使用 Faster-Whisper {record.asr.model} 进行 60 秒分片识别"
+            f"正在使用 Faster-Whisper {record.asr.model} 进行{chunking_label}识别"
             f"（{output_mode_label}）"
         )
         record.begin_step(JobStep.TRANSCRIPTION, message)

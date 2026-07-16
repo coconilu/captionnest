@@ -110,6 +110,22 @@ export function AsrStepEditor({
         />
         <i aria-hidden="true" />
       </label>
+      <label className="switch-row">
+        <span>
+          <strong>动态切片边界</strong>
+          <small>将 60 秒边界吸附到附近自然停顿</small>
+        </span>
+        <input
+          type="checkbox"
+          checked={draft.dynamic_chunking ?? false}
+          disabled={saving || legacy}
+          onChange={(event) => setDraft((current) => ({
+            ...current,
+            dynamic_chunking: event.target.checked,
+          }))}
+        />
+        <i aria-hidden="true" />
+      </label>
       <label className="field compact-number-field">
         <span>Beam Size</span>
         <input

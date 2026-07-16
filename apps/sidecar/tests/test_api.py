@@ -94,6 +94,12 @@ def test_health_capabilities_upload_and_job_do_not_echo_api_key(tmp_path: Path) 
         )
         assert response.status_code == 200
         assert secret not in response.text
+        transcription = next(
+            step
+            for step in response.json()["steps"]
+            if step["id"] == "transcription"
+        )
+        assert transcription["config"]["dynamic_chunking"] is True
         job_id = response.json()["id"]
         assert response.json()["status"] == "draft"
 

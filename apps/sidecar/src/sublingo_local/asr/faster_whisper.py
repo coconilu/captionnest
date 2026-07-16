@@ -5,10 +5,11 @@ import math
 import os
 import re
 from collections import Counter, defaultdict
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from ..model_manager import ModelManager
 from ..models import ASROutputMode, ASRSettings, SubtitleSegment
@@ -20,15 +21,25 @@ from .diagnostics import (
     ASRSegmentDiagnostics,
     ASRWindowDiagnostics,
     AudioInterval,
+    normalize_intervals,
 )
 
 _SAMPLE_RATE = 16_000
 _CORE_SECONDS = 60.0
 _CONTEXT_SECONDS = 2.0
+_MIN_CORE_SECONDS = 45.0
+_MAX_CORE_SECONDS = 75.0
+_MIN_BOUNDARY_SILENCE_SECONDS = 0.35
 _LANGUAGE_PROBE_SECONDS = 30.0
 _MAX_CUE_SECONDS = 7.0
 _MAX_CUE_GAP_SECONDS = 1.2
 _MIN_CUE_DURATION_MS = 400
+_CORE_SAMPLES = round(_CORE_SECONDS * _SAMPLE_RATE)
+_CONTEXT_SAMPLES = round(_CONTEXT_SECONDS * _SAMPLE_RATE)
+_MIN_CORE_SAMPLES = round(_MIN_CORE_SECONDS * _SAMPLE_RATE)
+_MAX_CORE_SAMPLES = round(_MAX_CORE_SECONDS * _SAMPLE_RATE)
+_MIN_BOUNDARY_SILENCE_SAMPLES = round(_MIN_BOUNDARY_SILENCE_SECONDS * _SAMPLE_RATE)
+_MAX_SILENCE_BONUS_SAMPLES = round(2.0 * _SAMPLE_RATE)
 _TERMINAL_PUNCTUATION = ("。", "！", "？", "!", "?", ".", "…")
 _CJK_LANGUAGES = {"zh", "yue", "ja", "ko", "chinese", "japanese", "korean"}
 _TEXT_KEY_PATTERN = re.compile(r"[\s、。,.!?！？「」『』（）()…〜~・]+")
@@ -43,6 +54,8 @@ class _ChunkWindow:
     context_end: float
     sample_start: int
     sample_end: int
+    boundary_shift_samples: int = 0
+    fallback_to_fixed: bool = False
 
 
 @dataclass(frozen=True)
@@ -90,29 +103,210 @@ def _sample_interval(start: float, end: float, *, total_samples: int) -> AudioIn
     return AudioInterval(start_sample=start_sample, end_sample=end_sample)
 
 
+def _make_chunk_window(
+    index: int,
+    *,
+    core_start_sample: int,
+    core_end_sample: int,
+    total_samples: int,
+    boundary_shift_samples: int = 0,
+    fallback_to_fixed: bool = False,
+) -> _ChunkWindow:
+    context_start_sample = max(0, core_start_sample - _CONTEXT_SAMPLES)
+    context_end_sample = min(total_samples, core_end_sample + _CONTEXT_SAMPLES)
+    return _ChunkWindow(
+        index=index,
+        core_start=core_start_sample / _SAMPLE_RATE,
+        core_end=core_end_sample / _SAMPLE_RATE,
+        context_start=context_start_sample / _SAMPLE_RATE,
+        context_end=context_end_sample / _SAMPLE_RATE,
+        sample_start=context_start_sample,
+        sample_end=context_end_sample,
+        boundary_shift_samples=boundary_shift_samples,
+        fallback_to_fixed=fallback_to_fixed,
+    )
+
+
 def _chunk_windows(total_samples: int) -> list[_ChunkWindow]:
+    """Return the legacy deterministic 60-second fixed windows."""
+
     if total_samples <= 0:
         return []
-    duration = total_samples / _SAMPLE_RATE
-    count = math.ceil(duration / _CORE_SECONDS)
     windows: list[_ChunkWindow] = []
-    for index in range(count):
-        core_start = index * _CORE_SECONDS
-        core_end = min(duration, (index + 1) * _CORE_SECONDS)
-        context_start = max(0.0, core_start - _CONTEXT_SECONDS)
-        context_end = min(duration, core_end + _CONTEXT_SECONDS)
+    core_start_sample = 0
+    while core_start_sample < total_samples:
+        core_end_sample = min(total_samples, core_start_sample + _CORE_SAMPLES)
         windows.append(
-            _ChunkWindow(
-                index=index,
-                core_start=core_start,
-                core_end=core_end,
-                context_start=context_start,
-                context_end=context_end,
-                sample_start=round(context_start * _SAMPLE_RATE),
-                sample_end=round(context_end * _SAMPLE_RATE),
+            _make_chunk_window(
+                len(windows),
+                core_start_sample=core_start_sample,
+                core_end_sample=core_end_sample,
+                total_samples=total_samples,
             )
         )
+        core_start_sample = core_end_sample
     return windows
+
+
+def _fixed_fallback_windows(total_samples: int) -> list[_ChunkWindow]:
+    fixed = _chunk_windows(total_samples)
+    return [
+        _make_chunk_window(
+            window.index,
+            core_start_sample=round(window.core_start * _SAMPLE_RATE),
+            core_end_sample=round(window.core_end * _SAMPLE_RATE),
+            total_samples=total_samples,
+            fallback_to_fixed=(window.index < len(fixed) - 1 or len(fixed) == 1),
+        )
+        for window in fixed
+    ]
+
+
+def _feasible_cut_ranges(
+    core_start_sample: int,
+    *,
+    total_samples: int,
+) -> tuple[tuple[int, int], ...]:
+    """Return cut ranges whose current and remaining cores can stay within bounds."""
+
+    lower = core_start_sample + _MIN_CORE_SAMPLES
+    upper = min(core_start_sample + _MAX_CORE_SAMPLES, total_samples - _MIN_CORE_SAMPLES)
+    if upper < lower:
+        return ()
+
+    ranges: list[tuple[int, int]] = []
+    long_tail_end = min(upper, total_samples - 2 * _MIN_CORE_SAMPLES)
+    if long_tail_end >= lower:
+        ranges.append((lower, long_tail_end))
+
+    final_core_start = max(lower, total_samples - _MAX_CORE_SAMPLES)
+    final_core_end = min(upper, total_samples - _MIN_CORE_SAMPLES)
+    if final_core_end >= final_core_start:
+        ranges.append((final_core_start, final_core_end))
+
+    merged: list[list[int]] = []
+    for start_sample, end_sample in sorted(ranges):
+        if merged and start_sample <= merged[-1][1] + 1:
+            merged[-1][1] = max(merged[-1][1], end_sample)
+        else:
+            merged.append([start_sample, end_sample])
+    return tuple((start_sample, end_sample) for start_sample, end_sample in merged)
+
+
+def _select_silence_cut(
+    non_speech_intervals: Sequence[AudioInterval],
+    feasible_ranges: Sequence[tuple[int, int]],
+    *,
+    target_sample: int,
+) -> int | None:
+    candidates: list[tuple[int, int, int, int]] = []
+    for silence in non_speech_intervals:
+        silence_length = silence.end_sample - silence.start_sample
+        if silence_length < _MIN_BOUNDARY_SILENCE_SAMPLES:
+            continue
+        for range_start, range_end in feasible_ranges:
+            intersection_start = max(silence.start_sample, range_start)
+            intersection_end = min(silence.end_sample, range_end)
+            if intersection_end < intersection_start:
+                continue
+            cut_sample = (intersection_start + intersection_end) // 2
+            distance = abs(cut_sample - target_sample)
+            length_bonus = min(silence_length, _MAX_SILENCE_BONUS_SAMPLES) // 4
+            candidates.append(
+                (distance - length_bonus, distance, -silence_length, cut_sample)
+            )
+    return min(candidates)[-1] if candidates else None
+
+
+def _dynamic_chunk_windows(
+    total_samples: int,
+    non_speech_intervals: Sequence[AudioInterval],
+) -> list[_ChunkWindow]:
+    """Snap 60-second boundaries to nearby silence or fall back to all fixed windows."""
+
+    if total_samples <= 0:
+        return []
+    if total_samples < _MIN_CORE_SAMPLES:
+        return _fixed_fallback_windows(total_samples)
+    if total_samples <= _MAX_CORE_SAMPLES:
+        return [
+            _make_chunk_window(
+                0,
+                core_start_sample=0,
+                core_end_sample=total_samples,
+                total_samples=total_samples,
+            )
+        ]
+
+    windows: list[_ChunkWindow] = []
+    core_start_sample = 0
+    while total_samples - core_start_sample > _MAX_CORE_SAMPLES:
+        feasible_ranges = _feasible_cut_ranges(
+            core_start_sample,
+            total_samples=total_samples,
+        )
+        target_sample = core_start_sample + _CORE_SAMPLES
+        cut_sample = _select_silence_cut(
+            non_speech_intervals,
+            feasible_ranges,
+            target_sample=target_sample,
+        )
+        if cut_sample is None or cut_sample <= core_start_sample:
+            return _fixed_fallback_windows(total_samples)
+        windows.append(
+            _make_chunk_window(
+                len(windows),
+                core_start_sample=core_start_sample,
+                core_end_sample=cut_sample,
+                total_samples=total_samples,
+                boundary_shift_samples=cut_sample - target_sample,
+            )
+        )
+        core_start_sample = cut_sample
+
+    windows.append(
+        _make_chunk_window(
+            len(windows),
+            core_start_sample=core_start_sample,
+            core_end_sample=total_samples,
+            total_samples=total_samples,
+        )
+    )
+    return windows
+
+
+def _analyze_vad(
+    audio: Any,
+    *,
+    get_speech_timestamps: Any,
+    vad_options_type: Any,
+) -> ASRAudioAnalysis:
+    raw_intervals = get_speech_timestamps(
+        audio,
+        vad_options=vad_options_type(
+            threshold=0.5,
+            min_speech_duration_ms=0,
+            max_speech_duration_s=math.inf,
+            min_silence_duration_ms=round(_MIN_BOUNDARY_SILENCE_SECONDS * 1_000),
+            speech_pad_ms=0,
+        ),
+        sampling_rate=_SAMPLE_RATE,
+    )
+    speech_intervals: list[tuple[int, int]] = []
+    for value in raw_intervals:
+        if not isinstance(value, Mapping) or "start" not in value or "end" not in value:
+            raise ValueError("VAD 返回了无效区间")
+        speech_intervals.append((int(value["start"]), int(value["end"])))
+    return ASRAudioAnalysis(
+        sample_rate=_SAMPLE_RATE,
+        total_samples=len(audio),
+        vad_source="faster_whisper",
+        vad_status="available",
+        speech_intervals=normalize_intervals(
+            speech_intervals,
+            total_samples=len(audio),
+        ),
+    )
 
 
 def _text_key(value: str) -> str:
@@ -323,9 +517,38 @@ class FasterWhisperProvider(ASRProvider):
             model = WhisperModel(model_reference, device=device, compute_type=compute_type)
             audio = decode_audio(str(audio_path), sampling_rate=_SAMPLE_RATE)
             duration = len(audio) / _SAMPLE_RATE
-            windows = _chunk_windows(len(audio))
-            if not windows:
+            fixed_windows = _chunk_windows(len(audio))
+            if not fixed_windows:
                 raise RuntimeError("音频为空，无法执行 Faster-Whisper")
+            if settings.dynamic_chunking:
+                window_strategy: Literal["fixed", "vad_dynamic"] = "vad_dynamic"
+                try:
+                    from faster_whisper.vad import VadOptions, get_speech_timestamps
+
+                    audio_analysis = _analyze_vad(
+                        audio,
+                        get_speech_timestamps=get_speech_timestamps,
+                        vad_options_type=VadOptions,
+                    )
+                    windows = _dynamic_chunk_windows(
+                        len(audio),
+                        audio_analysis.non_speech_intervals,
+                    )
+                except Exception:
+                    audio_analysis = ASRAudioAnalysis.failed(
+                        sample_rate=_SAMPLE_RATE,
+                        total_samples=len(audio),
+                        vad_source="faster_whisper",
+                    )
+                    windows = _fixed_fallback_windows(len(audio))
+            else:
+                window_strategy = "fixed"
+                audio_analysis = ASRAudioAnalysis.unavailable(
+                    sample_rate=_SAMPLE_RATE,
+                    total_samples=len(audio),
+                    vad_source="disabled",
+                )
+                windows = fixed_windows
             if on_progress:
                 on_progress(0.03)
 
@@ -485,19 +708,25 @@ class FasterWhisperProvider(ASRProvider):
                         start_sample=window.sample_start,
                         end_sample=window.sample_end,
                     ),
+                    boundary_shift_samples=window.boundary_shift_samples,
+                    fallback_to_fixed=window.fallback_to_fixed,
                     candidate_count=window_candidate_counts[window.index],
                 )
                 for window in windows
             )
             diagnostics = ASRRunDiagnostics(
-                audio=ASRAudioAnalysis.unavailable(
-                    sample_rate=_SAMPLE_RATE,
-                    total_samples=len(audio),
-                ),
+                window_strategy=window_strategy,
+                audio=audio_analysis,
                 windows=window_diagnostics,
                 segments=tuple(candidate_diagnostics),
                 summary=ASRDiagnosticsSummary(
                     window_count=len(window_diagnostics),
+                    fallback_window_count=sum(
+                        window.fallback_to_fixed for window in windows
+                    ),
+                    boundary_shift_abs_total_samples=sum(
+                        abs(window.boundary_shift_samples) for window in windows
+                    ),
                     candidate_segment_count=len(candidate_diagnostics),
                     deduplicated_segment_count=len(candidates) - len(chunk_segments),
                     output_segment_count=len(segments),
