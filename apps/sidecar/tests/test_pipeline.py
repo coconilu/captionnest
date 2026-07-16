@@ -4,6 +4,14 @@ from pathlib import Path
 import pytest
 
 from sublingo_local.asr.base import ASRProvider, TranscriptionResult
+from sublingo_local.asr.diagnostics import (
+    ASRAudioAnalysis,
+    ASRDiagnosticsSummary,
+    ASRRunDiagnostics,
+    ASRSegmentDiagnostics,
+    ASRWindowDiagnostics,
+    AudioInterval,
+)
 from sublingo_local.job_store import JobStore
 from sublingo_local.jobs import JobManager, JobRecord, ProcessingPipeline
 from sublingo_local.models import (
@@ -19,6 +27,40 @@ from sublingo_local.models import (
     TranslatedItem,
 )
 from sublingo_local.translation.base import TranslationProvider
+
+
+def _asr_diagnostics() -> ASRRunDiagnostics:
+    total_samples = 19_200
+    return ASRRunDiagnostics(
+        audio=ASRAudioAnalysis.unavailable(
+            sample_rate=16_000,
+            total_samples=total_samples,
+        ),
+        windows=(
+            ASRWindowDiagnostics(
+                index=0,
+                core=AudioInterval(start_sample=0, end_sample=total_samples),
+                context=AudioInterval(start_sample=0, end_sample=total_samples),
+                candidate_count=1,
+            ),
+        ),
+        segments=(
+            ASRSegmentDiagnostics(
+                candidate_id="candidate-chunk-000000-segment-000000",
+                window_index=0,
+                interval=AudioInterval(start_sample=1_600, end_sample=total_samples),
+                avg_logprob=-0.1,
+                word_count=1,
+                valid_word_timestamp_count=1,
+                word_timestamp_coverage=1.0,
+            ),
+        ),
+        summary=ASRDiagnosticsSummary(
+            window_count=1,
+            candidate_segment_count=1,
+            output_segment_count=1,
+        ),
+    )
 
 
 class CountingASR(ASRProvider):
@@ -40,6 +82,7 @@ class CountingASR(ASRProvider):
             segments=[
                 SubtitleSegment(id="seg-000001", start_ms=100, end_ms=1_200, text=text)
             ],
+            diagnostics=_asr_diagnostics(),
         )
 
 
@@ -103,6 +146,23 @@ def test_path_pipeline_writes_artifacts_and_one_bilingual_subtitle(
     assert store.artifact_path(record.id, "media.json").is_file()
     assert store.artifact_path(record.id, "transcription.json").is_file()
     assert store.artifact_path(record.id, "translation.json").is_file()
+    transcription = record.steps[JobStep.TRANSCRIPTION].artifact
+    assert transcription is not None
+    assert transcription.summary["diagnostics"] == {
+        "schema_version": 1,
+        "window_strategy": "fixed",
+        "window_count": 1,
+        "fallback_window_count": 0,
+        "boundary_shift_abs_total_samples": 0,
+        "candidate_segment_count": 1,
+        "deduplicated_segment_count": 0,
+        "output_segment_count": 1,
+        "retry_candidate_count": 0,
+        "retry_request_count": 0,
+        "retry_selected_count": 0,
+    }
+    persisted = store.read_artifact(Path(transcription.path))
+    assert persisted["diagnostics"]["audio"]["total_samples"] == 19_200
 
 
 def test_translation_failure_can_change_config_and_resume_without_asr(

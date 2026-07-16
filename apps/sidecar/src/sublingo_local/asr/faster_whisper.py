@@ -13,6 +13,14 @@ from typing import Any
 from ..model_manager import ModelManager
 from ..models import ASROutputMode, ASRSettings, SubtitleSegment
 from .base import ASRProgress, ASRProvider, TranscriptionResult
+from .diagnostics import (
+    ASRAudioAnalysis,
+    ASRDiagnosticsSummary,
+    ASRRunDiagnostics,
+    ASRSegmentDiagnostics,
+    ASRWindowDiagnostics,
+    AudioInterval,
+)
 
 _SAMPLE_RATE = 16_000
 _CORE_SECONDS = 60.0
@@ -52,6 +60,34 @@ class _ChunkSegment:
     words: tuple[_WordItem, ...]
     chunk_index: int
     avg_logprob: float
+
+
+def _optional_finite_float(value: object) -> float | None:
+    try:
+        metric = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return metric if math.isfinite(metric) else None
+
+
+def _optional_probability(value: object) -> float | None:
+    metric = _optional_finite_float(value)
+    return metric if metric is not None and 0.0 <= metric <= 1.0 else None
+
+
+def _optional_non_negative_float(value: object) -> float | None:
+    metric = _optional_finite_float(value)
+    return metric if metric is not None and metric >= 0.0 else None
+
+
+def _valid_word_offsets(start: float, end: float, *, window_duration: float) -> bool:
+    return 0.0 <= start < end <= window_duration
+
+
+def _sample_interval(start: float, end: float, *, total_samples: int) -> AudioInterval:
+    start_sample = max(0, min(total_samples - 1, round(start * _SAMPLE_RATE)))
+    end_sample = max(start_sample + 1, min(total_samples, round(end * _SAMPLE_RATE)))
+    return AudioInterval(start_sample=start_sample, end_sample=end_sample)
 
 
 def _chunk_windows(total_samples: int) -> list[_ChunkWindow]:
@@ -302,6 +338,8 @@ class FasterWhisperProvider(ASRProvider):
                 on_progress(0.08)
 
             candidates: list[_ChunkSegment] = []
+            candidate_diagnostics: list[ASRSegmentDiagnostics] = []
+            window_candidate_counts = [0 for _ in windows]
             fallback_languages: list[str] = []
             fallback_probabilities: list[float] = []
             for window_index, window in enumerate(windows, start=1):
@@ -324,7 +362,7 @@ class FasterWhisperProvider(ASRProvider):
                         detected_language = info_language
                         detected_probability = info_probability
 
-                for raw_segment in chunk_segments:
+                for raw_segment_index, raw_segment in enumerate(chunk_segments):
                     text = str(getattr(raw_segment, "text", "")).strip()
                     if not text:
                         continue
@@ -337,16 +375,33 @@ class FasterWhisperProvider(ASRProvider):
                     ):
                         continue
                     words: list[_WordItem] = []
-                    for raw_word in getattr(raw_segment, "words", None) or []:
+                    raw_words = [
+                        raw_word
+                        for raw_word in (getattr(raw_segment, "words", None) or [])
+                        if str(getattr(raw_word, "word", "")).strip()
+                    ]
+                    for raw_word in raw_words:
                         word_text = str(getattr(raw_word, "word", ""))
-                        if not word_text.strip():
+                        relative_word_start = _optional_finite_float(
+                            getattr(raw_word, "start", None)
+                        )
+                        relative_word_end = _optional_finite_float(
+                            getattr(raw_word, "end", None)
+                        )
+                        if relative_word_start is None or relative_word_end is None:
+                            continue
+                        if not _valid_word_offsets(
+                            relative_word_start,
+                            relative_word_end,
+                            window_duration=window.context_end - window.context_start,
+                        ):
                             continue
                         word_start = max(
-                            0.0, window.context_start + float(getattr(raw_word, "start", 0.0))
+                            0.0, window.context_start + relative_word_start
                         )
                         word_end = min(
                             duration,
-                            window.context_start + float(getattr(raw_word, "end", 0.0)),
+                            window.context_start + relative_word_end,
                         )
                         words.append(
                             _WordItem(
@@ -355,6 +410,9 @@ class FasterWhisperProvider(ASRProvider):
                                 end=max(word_start + 0.001, word_end),
                             )
                         )
+                    avg_logprob = _optional_finite_float(
+                        getattr(raw_segment, "avg_logprob", None)
+                    )
                     candidates.append(
                         _ChunkSegment(
                             text=text,
@@ -362,9 +420,41 @@ class FasterWhisperProvider(ASRProvider):
                             end=end,
                             words=tuple(words),
                             chunk_index=window.index,
-                            avg_logprob=float(getattr(raw_segment, "avg_logprob", float("-inf"))),
+                            avg_logprob=(
+                                avg_logprob if avg_logprob is not None else float("-inf")
+                            ),
                         )
                     )
+                    candidate_diagnostics.append(
+                        ASRSegmentDiagnostics(
+                            candidate_id=(
+                                "candidate-"
+                                f"chunk-{window.index:06d}-segment-{raw_segment_index:06d}"
+                            ),
+                            window_index=window.index,
+                            interval=_sample_interval(
+                                start,
+                                end,
+                                total_samples=len(audio),
+                            ),
+                            avg_logprob=avg_logprob,
+                            no_speech_prob=_optional_probability(
+                                getattr(raw_segment, "no_speech_prob", None)
+                            ),
+                            compression_ratio=_optional_non_negative_float(
+                                getattr(raw_segment, "compression_ratio", None)
+                            ),
+                            temperature=_optional_non_negative_float(
+                                getattr(raw_segment, "temperature", None)
+                            ),
+                            word_count=len(raw_words),
+                            valid_word_timestamp_count=len(words),
+                            word_timestamp_coverage=(
+                                len(words) / len(raw_words) if raw_words else 0.0
+                            ),
+                        )
+                    )
+                    window_candidate_counts[window.index] += 1
                 if on_progress:
                     on_progress(0.08 + window_index / len(windows) * 0.92)
 
@@ -384,11 +474,41 @@ class FasterWhisperProvider(ASRProvider):
                 if settings.output_mode == ASROutputMode.WORD_RESEGMENTED
                 else _chunk_segments_to_subtitles(chunk_segments)
             )
+            window_diagnostics = tuple(
+                ASRWindowDiagnostics(
+                    index=window.index,
+                    core=AudioInterval(
+                        start_sample=round(window.core_start * _SAMPLE_RATE),
+                        end_sample=round(window.core_end * _SAMPLE_RATE),
+                    ),
+                    context=AudioInterval(
+                        start_sample=window.sample_start,
+                        end_sample=window.sample_end,
+                    ),
+                    candidate_count=window_candidate_counts[window.index],
+                )
+                for window in windows
+            )
+            diagnostics = ASRRunDiagnostics(
+                audio=ASRAudioAnalysis.unavailable(
+                    sample_rate=_SAMPLE_RATE,
+                    total_samples=len(audio),
+                ),
+                windows=window_diagnostics,
+                segments=tuple(candidate_diagnostics),
+                summary=ASRDiagnosticsSummary(
+                    window_count=len(window_diagnostics),
+                    candidate_segment_count=len(candidate_diagnostics),
+                    deduplicated_segment_count=len(candidates) - len(chunk_segments),
+                    output_segment_count=len(segments),
+                ),
+            )
             return TranscriptionResult(
                 language=detected_language,
                 language_probability=detected_probability,
                 duration_seconds=duration,
                 segments=segments,
+                diagnostics=diagnostics,
             )
         finally:
             audio = None

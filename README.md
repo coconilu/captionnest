@@ -127,6 +127,7 @@ API Key 只保留在当前页面内存中，并随单次执行请求传入，不
 |---|---|
 | [用户指南](docs/user-guide.md) | 安装、模型、Codex、字幕输出与排障 |
 | [架构说明](docs/architecture.md) | 模块、信任边界与桌面生命周期 |
+| [ASR 诊断契约](docs/asr-diagnostics.md) | VAD 区间、候选诊断与无敏感文本的 A/B 报告 |
 | [开发指南](docs/development.md) | 环境、调试、测试与构建 |
 | [发布指南](docs/release.md) | NSIS、校验和、签名与许可证门禁 |
 | [品牌规范](docs/brand.md) | 名称含义、图标源文件、配色与使用边界 |

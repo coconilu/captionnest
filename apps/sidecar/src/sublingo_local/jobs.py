@@ -631,16 +631,23 @@ class ProcessingPipeline:
         )
         record.set_detected_language(transcription.language)
         record.update_step_progress(JobStep.TRANSCRIPTION, 1.0)
+        summary: dict[str, Any] = {
+            "language": transcription.language,
+            "segment_count": len(transcription.segments),
+            "duration_seconds": transcription.duration_seconds,
+        }
+        if transcription.diagnostics is not None:
+            summary["diagnostics"] = {
+                "schema_version": transcription.diagnostics.schema_version,
+                "window_strategy": transcription.diagnostics.window_strategy,
+                **transcription.diagnostics.summary.model_dump(mode="json"),
+            }
         return self._artifact(
             record,
             JobStep.TRANSCRIPTION,
             path=artifact_path,
             fingerprint=fingerprint,
-            summary={
-                "language": transcription.language,
-                "segment_count": len(transcription.segments),
-                "duration_seconds": transcription.duration_seconds,
-            },
+            summary=summary,
         )
 
     async def _translate(
