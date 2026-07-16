@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import threading
+import time
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -33,6 +34,7 @@ from .models import (
     LogEntry,
     LogLevel,
     MediaStepSettings,
+    ModelUsageSummary,
     ResolvedSource,
     SourceKind,
     StepArtifactView,
@@ -42,6 +44,7 @@ from .models import (
     TranslatedItem,
     TranslationProviderName,
     TranslationStepSettings,
+    merge_model_usage,
     utc_now,
 )
 from .storage import UploadStore
@@ -130,6 +133,10 @@ class JobRecord:
     current_step: JobStep | None = None
     _persist_callback: PersistCallback | None = field(default=None, repr=False)
     _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
+    _attempt_started_monotonic: dict[JobStep, float] = field(
+        default_factory=dict,
+        repr=False,
+    )
 
     @property
     def source(self) -> ResolvedSource:
@@ -207,10 +214,13 @@ class JobRecord:
     def begin_step(self, step: JobStep, message: str) -> None:
         with self._lock:
             state = self.steps[step]
+            started_at = utc_now()
+            self._attempt_started_monotonic[step] = time.perf_counter()
             attempt = StepAttemptView(
                 number=len(state.attempts) + 1,
                 status=StepStatus.RUNNING,
                 config=self.config_payload(step),
+                started_at=started_at,
             )
             state.attempts.append(attempt)
             state.status = StepStatus.RUNNING
@@ -224,6 +234,29 @@ class JobRecord:
             self._append_log(message)
             self.updated_at = utc_now()
             self._persist()
+
+    def record_model_usage(self, step: JobStep, usage: ModelUsageSummary) -> None:
+        """Persist one model-call delta while its Attempt is still active."""
+        with self._lock:
+            state = self.steps[step]
+            if not state.attempts or state.attempts[-1].status != StepStatus.RUNNING:
+                return
+            attempt = state.attempts[-1]
+            current = [attempt.model_usage] if attempt.model_usage is not None else []
+            attempt.model_usage = merge_model_usage([*current, usage])
+            self.updated_at = utc_now()
+            self._persist()
+
+    def _finish_attempt_timing(
+        self,
+        step: JobStep,
+        attempt: StepAttemptView,
+    ) -> None:
+        attempt.finished_at = utc_now()
+        started = self._attempt_started_monotonic.pop(step, None)
+        if started is not None:
+            elapsed_ms = round((time.perf_counter() - started) * 1_000)
+            attempt.duration_ms = max(0, elapsed_ms)
 
     def update_step_progress(self, step: JobStep, value: float) -> None:
         normalized = max(0.0, min(1.0, value))
@@ -249,7 +282,7 @@ class JobRecord:
             state.artifact = artifact
             attempt = state.attempts[-1]
             attempt.status = StepStatus.SUCCEEDED
-            attempt.finished_at = utc_now()
+            self._finish_attempt_timing(step, attempt)
             attempt.artifact_id = artifact.id
             self.progress = STEP_PROGRESS[step][1]
             self.current_step = None
@@ -276,7 +309,7 @@ class JobRecord:
             if state.attempts and state.attempts[-1].status == StepStatus.RUNNING:
                 attempt = state.attempts[-1]
                 attempt.status = StepStatus.FAILED
-                attempt.finished_at = utc_now()
+                self._finish_attempt_timing(step, attempt)
                 attempt.error = message
             self.current_step = None
             self.status = JobStatus.FAILED
@@ -296,7 +329,7 @@ class JobRecord:
                 if state.attempts and state.attempts[-1].status == StepStatus.RUNNING:
                     attempt = state.attempts[-1]
                     attempt.status = StepStatus.CANCELLED
-                    attempt.finished_at = utc_now()
+                    self._finish_attempt_timing(step, attempt)
                     attempt.error = "任务已取消"
             self.current_step = None
             self.status = JobStatus.CANCELLED
@@ -380,7 +413,19 @@ class JobRecord:
                 state.can_run = not active and prerequisites_ok and not legacy_transcription
                 if legacy_transcription:
                     state.error = LEGACY_ASR_UNAVAILABLE_MESSAGE
+                state.latest_duration_ms = (
+                    state.attempts[-1].duration_ms if state.attempts else None
+                )
+                state.total_duration_ms = _total_attempt_duration(state.attempts)
+                state.total_model_usage = merge_model_usage(
+                    [
+                        attempt.model_usage
+                        for attempt in state.attempts
+                        if attempt.model_usage is not None
+                    ]
+                )
                 views.append(state)
+            attempts = [attempt for state in views for attempt in state.attempts]
             return JobView(
                 id=self.id,
                 status=self.status,
@@ -398,12 +443,25 @@ class JobRecord:
                 error=self.error,
                 logs=list(self.logs),
                 steps=views,
+                wall_duration_ms=_wall_duration_ms(
+                    attempts,
+                    status=self.status,
+                    updated_at=self.updated_at,
+                ),
+                cumulative_attempt_duration_ms=_total_attempt_duration(attempts),
+                total_model_usage=merge_model_usage(
+                    [
+                        attempt.model_usage
+                        for attempt in attempts
+                        if attempt.model_usage is not None
+                    ]
+                ),
             )
 
     def to_payload(self) -> dict[str, Any]:
         with self._lock:
             return {
-                "schema_version": 1,
+                "schema_version": 2,
                 "id": self.id,
                 "media": self.media.model_dump(mode="json"),
                 "asr": self.asr.model_dump(mode="json"),
@@ -419,7 +477,14 @@ class JobRecord:
                 "logs": [item.model_dump(mode="json") for item in self.logs],
                 "steps": [
                     self.steps[step].model_dump(
-                        mode="json", exclude={"config", "can_run"}
+                        mode="json",
+                        exclude={
+                            "config",
+                            "can_run",
+                            "latest_duration_ms",
+                            "total_duration_ms",
+                            "total_model_usage",
+                        },
                     )
                     for step in STEP_ORDER
                 ],
@@ -479,6 +544,34 @@ class JobRecord:
             for step in STEP_ORDER
         }
         return record
+
+
+def _total_attempt_duration(attempts: list[StepAttemptView]) -> int | None:
+    finished = [attempt for attempt in attempts if attempt.status != StepStatus.RUNNING]
+    if not finished:
+        return None
+    if any(attempt.duration_ms is None for attempt in finished):
+        return None
+    return sum(attempt.duration_ms or 0 for attempt in finished)
+
+
+def _wall_duration_ms(
+    attempts: list[StepAttemptView],
+    *,
+    status: JobStatus,
+    updated_at: datetime,
+) -> int | None:
+    if not attempts:
+        return None
+    started_at = min(attempt.started_at for attempt in attempts)
+    if status in {JobStatus.QUEUED, JobStatus.RUNNING}:
+        finished_at = utc_now()
+    elif status in {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED}:
+        finished_at = updated_at
+    else:
+        finished = [attempt.finished_at for attempt in attempts if attempt.finished_at]
+        finished_at = max(finished) if finished else started_at
+    return max(0, round((finished_at - started_at).total_seconds() * 1_000))
 
 
 def _step_label(step: JobStep) -> str:
@@ -711,12 +804,16 @@ class ProcessingPipeline:
         def on_recovery(message: str) -> None:
             record.update(message=message, level=LogLevel.WARNING)
 
+        def on_usage(usage: ModelUsageSummary) -> None:
+            record.record_model_usage(JobStep.TRANSLATION, usage)
+
         translated = await service.translate(
             source_items,
             source_language=transcription.language,
             target_language=record.translation.target_language,
             on_progress=on_progress,
             on_recovery=on_recovery,
+            on_usage=on_usage,
         )
         payload = {
             "target_language": record.translation.target_language.value,

@@ -21,13 +21,15 @@ from sublingo_local.models import (
     JobRunRequest,
     JobStep,
     MediaStepSettings,
+    ModelUsageSummary,
     SourceKind,
     StepStatus,
     SubtitleSegment,
     TargetLanguage,
     TranslatedItem,
+    TranslationItem,
 )
-from sublingo_local.translation.base import TranslationProvider
+from sublingo_local.translation.base import TranslationProvider, TranslationService
 
 
 def _asr_diagnostics() -> ASRRunDiagnostics:
@@ -92,9 +94,22 @@ class CountingTranslator(TranslationProvider):
         self.calls = 0
 
     async def translate(  # type: ignore[no-untyped-def]
-        self, items, *, source_language, target_language
+        self, items, *, source_language, target_language, on_usage=None
     ):
         self.calls += 1
+        if on_usage:
+            on_usage(
+                ModelUsageSummary(
+                    provider="test",
+                    model="counting-translator",
+                    request_count=1,
+                    input_tokens=3,
+                    output_tokens=2,
+                    total_tokens=5,
+                    source="provider",
+                    complete=True,
+                )
+            )
         return [TranslatedItem(id=item.id, translated_text="你好") for item in items]
 
 
@@ -139,8 +154,17 @@ def test_path_pipeline_writes_artifacts_and_one_bilingual_subtitle(
     assert record.subtitle_path == str(subtitle)
     assert list(tmp_path.glob("*.srt")) == [subtitle]
     assert "こんにちは\n你好" in subtitle.read_text(encoding="utf-8-sig")
-    assert record.to_view().target_language == TargetLanguage.ZH_CN
-    assert record.to_view().asr_provider == "faster_whisper"
+    view = record.to_view()
+    assert view.target_language == TargetLanguage.ZH_CN
+    assert view.asr_provider == "faster_whisper"
+    assert view.wall_duration_ms is not None and view.wall_duration_ms >= 0
+    assert all(step.latest_duration_ms is not None for step in view.steps)
+    assert all(step.total_duration_ms == step.latest_duration_ms for step in view.steps)
+    assert view.cumulative_attempt_duration_ms == sum(
+        step.total_duration_ms or 0 for step in view.steps
+    )
+    assert view.total_model_usage is not None
+    assert view.total_model_usage.total_tokens == 5
     assert all(record.steps[step].status == StepStatus.SUCCEEDED for step in JobStep)
     assert asr.calls == 1
     assert translator.calls == 1
@@ -304,8 +328,13 @@ def test_job_metadata_survives_reload_and_delete_cleans_artifacts(
         job_store=store,
     )
     reloaded = JobManager(None, reloaded_pipeline, job_store=store)
-    assert reloaded.get(job_id).status == "completed"
-    assert reloaded.get(job_id).steps[1].artifact is not None
+    reloaded_view = reloaded.get(job_id)
+    assert reloaded_view.status == "completed"
+    assert reloaded_view.steps[1].artifact is not None
+    assert all(step.latest_duration_ms is not None for step in reloaded_view.steps)
+    assert reloaded_view.cumulative_attempt_duration_ms is not None
+    assert reloaded_view.total_model_usage is not None
+    assert reloaded_view.total_model_usage.total_tokens == 5
     assert store.job_file(job_id).is_file()
 
     reloaded.delete(job_id)
@@ -414,7 +443,7 @@ def test_runtime_api_key_is_redacted_and_never_persisted(
 
     class FailedTranslator(TranslationProvider):
         async def translate(  # type: ignore[no-untyped-def]
-            self, items, *, source_language, target_language
+            self, items, *, source_language, target_language, on_usage=None
         ):
             raise RuntimeError(f"provider failed with {secret}")
 
@@ -446,3 +475,132 @@ def test_runtime_api_key_is_redacted_and_never_persisted(
     assert "***" in (view.error or "")
     assert secret not in persisted
     assert all(secret not in log.message for log in view.logs)
+
+
+def test_failed_cancelled_and_retried_attempts_keep_monotonic_durations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ticks = iter((10.0, 10.125, 20.0, 20.25))
+    monkeypatch.setattr("sublingo_local.jobs.time.perf_counter", lambda: next(ticks))
+    record = JobRecord(
+        id="timed-job",
+        media=MediaStepSettings(
+            source_kind=SourceKind.PATH,
+            path=str(tmp_path / "movie.mp4"),
+            name="movie.mp4",
+        ),
+    )
+
+    record.begin_step(JobStep.MEDIA, "第一次执行")
+    record.fail_current(RuntimeError("第一次失败"))
+    record.begin_step(JobStep.MEDIA, "第二次执行")
+    record.cancel_current()
+
+    view = record.to_view()
+    media = view.steps[0]
+    assert [attempt.duration_ms for attempt in media.attempts] == [125, 250]
+    assert [attempt.status for attempt in media.attempts] == ["failed", "cancelled"]
+    assert all(attempt.finished_at is not None for attempt in media.attempts)
+    assert media.latest_duration_ms == 250
+    assert media.total_duration_ms == 375
+    assert view.cumulative_attempt_duration_ms == 375
+
+
+def test_job_payload_without_metrics_remains_loadable(tmp_path: Path) -> None:
+    record = JobRecord(
+        id="legacy-metrics-job",
+        media=MediaStepSettings(
+            source_kind=SourceKind.PATH,
+            path=str(tmp_path / "movie.mp4"),
+            name="movie.mp4",
+        ),
+    )
+    record.begin_step(JobStep.MEDIA, "旧版本执行")
+    record.cancel_current()
+    payload = record.to_payload()
+    attempt = payload["steps"][0]["attempts"][0]
+    attempt.pop("duration_ms")
+    attempt.pop("model_usage")
+    payload["schema_version"] = 1
+
+    restored = JobRecord.from_payload(payload).to_view()
+
+    assert restored.steps[0].attempts[0].duration_ms is None
+    assert restored.steps[0].attempts[0].model_usage is None
+    assert restored.steps[0].total_duration_ms is None
+    assert restored.cumulative_attempt_duration_ms is None
+
+
+def test_partial_translation_usage_is_persisted_before_later_chunk_failure(
+    tmp_path: Path,
+) -> None:
+    snapshots: list[dict[str, object]] = []
+    record = JobRecord(
+        id="partial-usage-job",
+        media=MediaStepSettings(
+            source_kind=SourceKind.PATH,
+            path=str(tmp_path / "movie.mp4"),
+            name="movie.mp4",
+        ),
+    )
+    record.attach_persistence(lambda payload: snapshots.append(dict(payload)))
+
+    class PartialFailureTranslator(TranslationProvider):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def translate(  # type: ignore[no-untyped-def]
+            self, items, *, source_language, target_language, on_usage=None
+        ):
+            self.calls += 1
+            if on_usage:
+                on_usage(
+                    ModelUsageSummary(
+                        provider="deepseek",
+                        model="partial-model",
+                        request_count=1,
+                        input_tokens=4,
+                        output_tokens=2,
+                        total_tokens=6,
+                        source="provider",
+                        complete=True,
+                    )
+                )
+            if self.calls == 2:
+                raise RuntimeError("second chunk failed")
+            return [
+                TranslatedItem(id=item.id, translated_text="译文") for item in items
+            ]
+
+    record.begin_step(JobStep.TRANSLATION, "开始分片翻译")
+    service = TranslationService(PartialFailureTranslator(), max_items_per_chunk=1)
+    with pytest.raises(RuntimeError, match="second chunk failed"):
+        asyncio.run(
+            service.translate(
+                [
+                    TranslationItem(id="1", text="first"),
+                    TranslationItem(id="2", text="second"),
+                ],
+                source_language="en",
+                target_language=TargetLanguage.ZH_CN,
+                on_usage=lambda usage: record.record_model_usage(
+                    JobStep.TRANSLATION,
+                    usage,
+                ),
+            )
+        )
+
+    # The second callback is persisted while the Attempt is still running.
+    running_attempt = snapshots[-1]["steps"][2]["attempts"][0]
+    assert running_attempt["status"] == "running"
+    assert running_attempt["model_usage"]["request_count"] == 2
+    assert running_attempt["model_usage"]["total_tokens"] == 12
+
+    record.fail_current(RuntimeError("second chunk failed"))
+    failed_attempt = record.to_view().steps[2].attempts[0]
+    assert failed_attempt.status == "failed"
+    assert failed_attempt.duration_ms is not None
+    assert failed_attempt.model_usage is not None
+    assert failed_attempt.model_usage.request_count == 2
+    assert failed_attempt.model_usage.total_tokens == 12

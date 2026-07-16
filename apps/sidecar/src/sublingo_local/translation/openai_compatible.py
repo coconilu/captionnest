@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from urllib.parse import urlsplit
 
 import httpx
 
-from ..models import TargetLanguage, TranslatedItem, TranslationItem
-from .base import TranslationProvider
+from ..models import ModelUsageSummary, TargetLanguage, TranslatedItem, TranslationItem
+from .base import ModelUsageCallback, TranslationProvider, emit_model_usage
 from .common import build_translation_prompt, parse_translation_json
 
 
@@ -29,11 +29,13 @@ class OpenAICompatibleProvider(TranslationProvider):
         endpoint: str,
         model: str,
         api_key: str | None = None,
+        provider_name: str = "openai_compatible",
         timeout_seconds: float = 300,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.url = chat_completions_url(endpoint)
         self.model = model
+        self.provider_name = provider_name
         self._api_key = api_key.strip() if api_key else None
         self.timeout_seconds = timeout_seconds
         self._transport = transport
@@ -44,6 +46,7 @@ class OpenAICompatibleProvider(TranslationProvider):
         *,
         source_language: str,
         target_language: TargetLanguage,
+        on_usage: ModelUsageCallback | None = None,
     ) -> list[TranslatedItem]:
         headers = {"Content-Type": "application/json"}
         if self._api_key:
@@ -64,12 +67,22 @@ class OpenAICompatibleProvider(TranslationProvider):
             async with httpx.AsyncClient(
                 timeout=self.timeout_seconds, transport=self._transport
             ) as client:
-                response = await client.post(self.url, headers=headers, json=payload)
+                response = await self._post(
+                    client,
+                    headers=headers,
+                    payload=payload,
+                    on_usage=on_usage,
+                )
                 if response.status_code in {400, 422}:
                     # Some older OpenAI-compatible servers reject response_format.
                     fallback_payload = dict(payload)
                     fallback_payload.pop("response_format", None)
-                    response = await client.post(self.url, headers=headers, json=fallback_payload)
+                    response = await self._post(
+                        client,
+                        headers=headers,
+                        payload=fallback_payload,
+                        on_usage=on_usage,
+                    )
         except httpx.TimeoutException as exc:
             raise RuntimeError("翻译接口请求超时") from exc
         except httpx.HTTPError as exc:
@@ -85,3 +98,94 @@ class OpenAICompatibleProvider(TranslationProvider):
         if not isinstance(content, str):
             raise RuntimeError("翻译接口没有返回文本内容")
         return parse_translation_json(content)
+
+    async def _post(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        headers: dict[str, str],
+        payload: dict[str, object],
+        on_usage: ModelUsageCallback | None,
+    ) -> httpx.Response:
+        try:
+            response = await client.post(self.url, headers=headers, json=payload)
+        except httpx.HTTPError:
+            emit_model_usage(on_usage, self._unavailable_usage())
+            raise
+        emit_model_usage(on_usage, self._usage_from_response(response))
+        return response
+
+    def _unavailable_usage(self) -> ModelUsageSummary:
+        return ModelUsageSummary(
+            provider=self.provider_name,
+            model=self.model,
+            request_count=1,
+            source="unavailable",
+            complete=False,
+        )
+
+    def _usage_from_response(self, response: httpx.Response) -> ModelUsageSummary:
+        try:
+            payload = response.json()
+        except (ValueError, TypeError):
+            return self._unavailable_usage()
+        if not isinstance(payload, Mapping) or not isinstance(payload.get("usage"), Mapping):
+            return self._unavailable_usage()
+
+        usage = payload["usage"]
+        assert isinstance(usage, Mapping)
+        input_tokens = _first_token_count(usage, "prompt_tokens", "input_tokens")
+        output_tokens = _first_token_count(usage, "completion_tokens", "output_tokens")
+        total_tokens = _first_token_count(usage, "total_tokens")
+        if total_tokens is None and input_tokens is not None and output_tokens is not None:
+            total_tokens = input_tokens + output_tokens
+
+        prompt_details = usage.get("prompt_tokens_details")
+        completion_details = usage.get("completion_tokens_details")
+        cached_input_tokens = _first_token_count(usage, "cached_input_tokens", "cached_tokens")
+        if cached_input_tokens is None and isinstance(prompt_details, Mapping):
+            cached_input_tokens = _first_token_count(prompt_details, "cached_tokens")
+        reasoning_tokens = _first_token_count(
+            usage,
+            "reasoning_tokens",
+            "reasoning_output_tokens",
+        )
+        if reasoning_tokens is None and isinstance(completion_details, Mapping):
+            reasoning_tokens = _first_token_count(completion_details, "reasoning_tokens")
+
+        reported = any(
+            value is not None
+            for value in (
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                cached_input_tokens,
+                reasoning_tokens,
+            )
+        )
+        if not reported:
+            return self._unavailable_usage()
+        return ModelUsageSummary(
+            provider=self.provider_name,
+            model=self.model,
+            request_count=1,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+            cached_input_tokens=cached_input_tokens,
+            reasoning_tokens=reasoning_tokens,
+            source="provider",
+            complete=(
+                input_tokens is not None
+                and output_tokens is not None
+                and total_tokens is not None
+            ),
+        )
+
+
+def _first_token_count(payload: Mapping[object, object], *keys: str) -> int | None:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
+    return None

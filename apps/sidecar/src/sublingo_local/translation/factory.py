@@ -18,6 +18,7 @@ def create_translation_provider(settings: TranslationSettings) -> TranslationPro
             endpoint=settings.endpoint or "http://127.0.0.1:1234/v1",
             model=settings.model or "",
             api_key=api_key,
+            provider_name=settings.provider.value,
             timeout_seconds=settings.timeout_seconds,
         )
     if settings.provider == TranslationProviderName.DEEPSEEK:
@@ -25,6 +26,7 @@ def create_translation_provider(settings: TranslationSettings) -> TranslationPro
             endpoint=settings.endpoint or "https://api.deepseek.com",
             model=settings.model or "deepseek-v4-flash",
             api_key=api_key,
+            provider_name=settings.provider.value,
             timeout_seconds=settings.timeout_seconds,
         )
     raise ValueError(f"不支持的翻译 Provider：{settings.provider}")
