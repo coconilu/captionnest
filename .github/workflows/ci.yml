@@ -18,9 +18,11 @@ jobs:
         with:
           python-version: '3.12'
           enable-cache: true
-      - run: uv sync --extra asr --extra dev --locked
+      - run: uv sync --project apps/sidecar --extra asr --extra dev --locked
       - run: uv run --extra dev ruff check .
-      - run: uv run --extra asr --extra dev pytest
+        working-directory: apps/sidecar
+      - run: uv run --project apps/sidecar --extra dev ruff check --config apps/sidecar/pyproject.toml tooling
+      - run: uv run --project apps/sidecar --extra asr --extra dev pytest
 
   frontend:
     runs-on: ubuntu-latest
@@ -30,13 +32,13 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-          cache-dependency-path: web/package-lock.json
+          cache-dependency-path: apps/web/package-lock.json
       - run: npm ci
-        working-directory: web
+        working-directory: apps/web
       - run: npm run lint
-        working-directory: web
+        working-directory: apps/web
       - run: npm run build
-        working-directory: web
+        working-directory: apps/web
 
   desktop-check:
     runs-on: windows-latest
@@ -46,12 +48,12 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-          cache-dependency-path: web/package-lock.json
+          cache-dependency-path: apps/web/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
       - run: npm ci
-        working-directory: web
+        working-directory: apps/web
       - name: Parse PowerShell build scripts
         shell: pwsh
         run: |
@@ -73,14 +75,14 @@ jobs:
       - name: Prepare build-script placeholders
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force src-tauri\binaries\_internal | Out-Null
-          New-Item -ItemType File -Force src-tauri\binaries\_internal\.placeholder | Out-Null
-          New-Item -ItemType File -Force src-tauri\binaries\captionnest-sidecar-x86_64-pc-windows-msvc.exe | Out-Null
-          New-Item -ItemType Directory -Force packaging\dist | Out-Null
+          New-Item -ItemType Directory -Force apps\desktop\binaries\_internal | Out-Null
+          New-Item -ItemType File -Force apps\desktop\binaries\_internal\.placeholder | Out-Null
+          New-Item -ItemType File -Force apps\desktop\binaries\captionnest-sidecar-x86_64-pc-windows-msvc.exe | Out-Null
+          New-Item -ItemType Directory -Force tooling\packaging\dist | Out-Null
           @'
           CI STATIC CHECK PLACEHOLDER — NOT A RELEASE LICENSE REPORT.
           The Windows Release workflow replaces this file with evidence generated
           from the exact PyAV/FFmpeg wheel bundled into the installer.
-          '@ | Set-Content -Encoding utf8 packaging\dist\FFMPEG_BUILD_INFO.txt
-      - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
-      - run: cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc --locked
+          '@ | Set-Content -Encoding utf8 tooling\packaging\dist\FFMPEG_BUILD_INFO.txt
+      - run: cargo fmt --manifest-path apps/desktop/Cargo.toml --check
+      - run: cargo check --manifest-path apps/desktop/Cargo.toml --target x86_64-pc-windows-msvc --locked

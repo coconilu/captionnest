@@ -1,0 +1,72 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_runtime_projects_and_tooling_have_explicit_roots() -> None:
+    expected = (
+        ROOT / "apps" / "sidecar" / "pyproject.toml",
+        ROOT / "apps" / "sidecar" / "src" / "sublingo_local" / "app.py",
+        ROOT / "apps" / "web" / "package.json",
+        ROOT / "apps" / "desktop" / "Cargo.toml",
+        ROOT / "tooling" / "packaging" / "captionnest-sidecar.spec",
+        ROOT / "tooling" / "release" / "version.py",
+    )
+    assert all(path.is_file() for path in expected)
+
+    legacy_entries = (
+        ROOT / "pyproject.toml",
+        ROOT / "src" / "sublingo_local",
+        ROOT / "tests" / "test_api.py",
+        ROOT / "web" / "package.json",
+        ROOT / "src-tauri" / "Cargo.toml",
+        ROOT / "packaging" / "captionnest-sidecar.spec",
+    )
+    assert all(not path.exists() for path in legacy_entries)
+
+
+def test_sidecar_distribution_copies_match_repository_license_sources() -> None:
+    sidecar = ROOT / "apps" / "sidecar"
+
+    assert (sidecar / "LICENSE").read_text(encoding="utf-8").rstrip().splitlines() == (
+        ROOT / "LICENSE"
+    ).read_text(encoding="utf-8").rstrip().splitlines()
+    assert (sidecar / "THIRD_PARTY_NOTICES.md").read_text(
+        encoding="utf-8"
+    ).rstrip().splitlines() == (ROOT / "THIRD_PARTY_NOTICES.md").read_text(
+        encoding="utf-8"
+    ).rstrip().splitlines()
+
+
+def test_tauri_paths_join_the_new_app_and_tooling_boundaries() -> None:
+    desktop = ROOT / "apps" / "desktop"
+    config = json.loads((desktop / "tauri.conf.json").read_text(encoding="utf-8"))
+
+    assert (desktop / config["build"]["frontendDist"]).resolve() == (
+        ROOT / "apps" / "web" / "dist"
+    ).resolve()
+
+    resources = config["bundle"]["resources"]
+    expected_sources = {
+        (desktop / "binaries" / "_internal").resolve(),
+        (ROOT / "LICENSE").resolve(),
+        (ROOT / "THIRD_PARTY_NOTICES.md").resolve(),
+        (ROOT / "licenses").resolve(),
+        (ROOT / "tooling" / "packaging" / "dist" / "FFMPEG_BUILD_INFO.txt").resolve(),
+    }
+    actual_sources = {(desktop / source).resolve() for source in resources}
+    assert actual_sources == expected_sources
+
+
+def test_pyinstaller_spec_uses_repository_level_roots() -> None:
+    spec = (ROOT / "tooling" / "packaging" / "captionnest-sidecar.spec").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'SIDECAR_ROOT = ROOT / "apps" / "sidecar"' in spec
+    assert 'PACKAGING_ROOT = ROOT / "tooling" / "packaging"' in spec
+    assert 'DESKTOP_ROOT = ROOT / "apps" / "desktop"' in spec
+    assert 'pathex=[str(SIDECAR_ROOT / "src")]' in spec

@@ -27,27 +27,27 @@ if ($PythonExecutable) {
     }
 }
 
-$DistRoot = Assert-PathInsideWorkspace (Join-Path $Root 'packaging\dist')
-$WorkRoot = Assert-PathInsideWorkspace (Join-Path $Root 'packaging\build')
+$DistRoot = Assert-PathInsideWorkspace (Join-Path $Root 'tooling\packaging\dist')
+$WorkRoot = Assert-PathInsideWorkspace (Join-Path $Root 'tooling\packaging\build')
 $SidecarDist = Join-Path $DistRoot 'captionnest-sidecar'
-$DestinationRoot = Assert-PathInsideWorkspace (Join-Path $Root 'src-tauri\binaries')
+$DestinationRoot = Assert-PathInsideWorkspace (Join-Path $Root 'apps\desktop\binaries')
 $TargetExecutable = Join-Path $DestinationRoot "captionnest-sidecar-$TargetTriple.exe"
 $TargetInternal = Join-Path $DestinationRoot '_internal'
 
 & (Join-Path $PSScriptRoot 'check-media-license.ps1') `
-    -OutputPath 'packaging\dist\FFMPEG_BUILD_INFO.txt' `
+    -OutputPath 'tooling\packaging\dist\FFMPEG_BUILD_INFO.txt' `
     -PythonExecutable $PythonExecutable
 
 $PyInstallerArguments = @(
     '--noconfirm', '--clean',
     '--distpath', $DistRoot,
     '--workpath', $WorkRoot,
-    (Join-Path $Root 'packaging\captionnest-sidecar.spec')
+    (Join-Path $Root 'tooling\packaging\captionnest-sidecar.spec')
 )
 if ($PythonExecutable) {
     & $PythonExecutable -m PyInstaller @PyInstallerArguments
 } else {
-    & uv run --extra asr --extra desktop pyinstaller @PyInstallerArguments
+    & uv run --project apps/sidecar --extra asr --extra desktop pyinstaller @PyInstallerArguments
 }
 if ($LASTEXITCODE -ne 0) {
     throw 'PyInstaller sidecar build failed.'

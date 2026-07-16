@@ -58,7 +58,7 @@ Web/API 开发环境：
 源码环境仍保留 Qwen3-ASR 1.7B 与 ForcedAligner 的实验兼容代码：
 
 ```powershell
-uv sync --extra asr --extra qwen --extra dev
+uv sync --project apps/sidecar --extra asr --extra qwen --extra dev
 ```
 
 Qwen3-ASR 由 CaptionNest Python Provider 直接加载，不经过 LM Studio。当前产品界面和公开能力
@@ -69,22 +69,23 @@ ForcedAligner 返回零时长堆积或跨越异常长度的单词时，质量门
 Windows 桌面开发：
 
 ```powershell
-npm --prefix web run desktop:dev
+npm --prefix apps/web run desktop:dev
 ```
 
 构建 NSIS 安装包与 SHA-256：
 
 ```powershell
-npm --prefix web run desktop:build
+npm --prefix apps/web run desktop:build
 ```
 
 完整环境和命令见 [开发指南](docs/development.md)。核心测试命令：
 
 ```powershell
-uv run --extra asr --extra dev pytest
-uv run --extra dev ruff check .
-npm --prefix web run lint
-npm --prefix web run build
+uv run --project apps/sidecar --extra asr --extra dev pytest
+uv run --project apps/sidecar --extra dev ruff check apps/sidecar
+uv run --project apps/sidecar --extra dev ruff check --config apps/sidecar/pyproject.toml tooling
+npm --prefix apps/web run lint
+npm --prefix apps/web run build
 ```
 
 ## 运行结构

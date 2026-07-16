@@ -8,8 +8,8 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "desktop:dev": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/dev-desktop.ps1",
-    "desktop:build": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/build-desktop.ps1"
+    "desktop:dev": "powershell -NoProfile -ExecutionPolicy Bypass -File ../../scripts/dev-desktop.ps1",
+    "desktop:build": "powershell -NoProfile -ExecutionPolicy Bypass -File ../../scripts/build-desktop.ps1"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",

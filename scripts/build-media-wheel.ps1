@@ -2,7 +2,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$VcpkgRoot,
     [string]$PythonExecutable = '',
-    [string]$OutputDirectory = 'packaging\dist\media-wheel'
+    [string]$OutputDirectory = 'tooling\packaging\dist\media-wheel'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -49,7 +49,7 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
 }
 
 if (-not $PythonExecutable) {
-    $PythonExecutable = Join-Path $Root '.venv\Scripts\python.exe'
+    $PythonExecutable = Join-Path $Root 'apps\sidecar\.venv\Scripts\python.exe'
 }
 $PythonExecutable = if ([IO.Path]::IsPathFullyQualified($PythonExecutable)) {
     [IO.Path]::GetFullPath($PythonExecutable)
@@ -70,9 +70,9 @@ if (-not (Test-Path -LiteralPath $VcpkgExecutable -PathType Leaf)) {
     throw "Bootstrapped vcpkg executable not found: $VcpkgExecutable"
 }
 
-$ManifestRoot = Join-Path $Root 'packaging\media-runtime'
-$WorkRoot = Resolve-WorkspacePath 'packaging\build\media-wheel'
-$InstallRoot = Resolve-WorkspacePath 'packaging\build\media-runtime-installed'
+$ManifestRoot = Join-Path $Root 'tooling\packaging\media-runtime'
+$WorkRoot = Resolve-WorkspacePath 'tooling\packaging\build\media-wheel'
+$InstallRoot = Resolve-WorkspacePath 'tooling\packaging\build\media-runtime-installed'
 $OutputRoot = Resolve-WorkspacePath $OutputDirectory
 $SourceArchive = Join-Path $WorkRoot "av-$PyAvVersion.tar.gz"
 $SourceRoot = Join-Path $WorkRoot "av-$PyAvVersion"
@@ -190,7 +190,7 @@ $Provenance = [ordered]@{
     ffmpeg_version = $FfmpegVersion
     vcpkg_baseline = $VcpkgBaseline
     vcpkg_triplet = $Triplet
-    vcpkg_manifest = 'packaging/media-runtime/vcpkg.json'
+    vcpkg_manifest = 'tooling/packaging/media-runtime/vcpkg.json'
 }
 $ProvenancePath = Join-Path $OutputRoot 'MEDIA_WHEEL_PROVENANCE.json'
 $Provenance | ConvertTo-Json | Set-Content -LiteralPath $ProvenancePath -Encoding UTF8

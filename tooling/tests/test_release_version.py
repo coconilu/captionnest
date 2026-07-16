@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from sublingo_local.release_version import (
+from tooling.release.version import (
     VERSION_LOCATIONS,
     VersionUpdateError,
     get_project_versions,
@@ -10,7 +10,7 @@ from sublingo_local.release_version import (
     set_project_version,
 )
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _copy_version_files(destination: Path) -> None:
@@ -58,11 +58,12 @@ def test_set_project_version_is_idempotent(tmp_path: Path) -> None:
 
 def test_set_project_version_does_not_partially_write(tmp_path: Path) -> None:
     _copy_version_files(tmp_path)
-    cargo_lock = tmp_path / "src-tauri" / "Cargo.lock"
+    cargo_lock = tmp_path / "apps" / "desktop" / "Cargo.lock"
     cargo_lock.write_text("missing package metadata\n", encoding="utf-8")
-    before = (tmp_path / "pyproject.toml").read_bytes()
+    pyproject = tmp_path / "apps" / "sidecar" / "pyproject.toml"
+    before = pyproject.read_bytes()
 
     with pytest.raises(VersionUpdateError):
         set_project_version(tmp_path, "1.2.3")
 
-    assert (tmp_path / "pyproject.toml").read_bytes() == before
+    assert pyproject.read_bytes() == before

@@ -62,7 +62,7 @@ if ($PythonExecutable) {
     if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
         throw 'uv is required when -PythonExecutable is not provided.'
     }
-    $Json = & uv run --extra asr python @Arguments
+    $Json = & uv run --project apps/sidecar --extra asr python @Arguments
 }
 if ($LASTEXITCODE -ne 0) {
     throw 'Unable to inspect the PyAV/FFmpeg build metadata.'

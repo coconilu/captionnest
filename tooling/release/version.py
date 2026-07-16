@@ -26,7 +26,7 @@ def _pattern(expression: str) -> re.Pattern[str]:
 VERSION_LOCATIONS = (
     VersionLocation(
         "Python",
-        "pyproject.toml",
+        "apps/sidecar/pyproject.toml",
         _pattern(
             r'(?P<prefix>^\[project\].*?^version\s*=\s*")'
             r'(?P<version>[^"]+)(?P<suffix>")'
@@ -34,7 +34,7 @@ VERSION_LOCATIONS = (
     ),
     VersionLocation(
         "PythonLock",
-        "uv.lock",
+        "apps/sidecar/uv.lock",
         _pattern(
             r'(?P<prefix>^\[\[package\]\]\s*\r?\nname\s*=\s*"captionnest"\s*\r?\n'
             r'version\s*=\s*")(?P<version>[^"]+)(?P<suffix>")'
@@ -42,7 +42,7 @@ VERSION_LOCATIONS = (
     ),
     VersionLocation(
         "Web",
-        "web/package.json",
+        "apps/web/package.json",
         _pattern(
             r'(?P<prefix>\A\{\s*"name"\s*:\s*"captionnest-web"\s*,.*?'
             r'"version"\s*:\s*")'
@@ -51,7 +51,7 @@ VERSION_LOCATIONS = (
     ),
     VersionLocation(
         "WebLock",
-        "web/package-lock.json",
+        "apps/web/package-lock.json",
         _pattern(
             r'(?P<prefix>\A\{\s*"name"\s*:\s*"captionnest-web"\s*,\s*"version"\s*:\s*")'
             r'(?P<version>[^"]+)(?P<suffix>")'
@@ -59,7 +59,7 @@ VERSION_LOCATIONS = (
     ),
     VersionLocation(
         "WebLockRoot",
-        "web/package-lock.json",
+        "apps/web/package-lock.json",
         _pattern(
             r'(?P<prefix>"packages"\s*:\s*\{\s*""\s*:\s*\{\s*'
             r'"name"\s*:\s*"captionnest-web"\s*,\s*"version"\s*:\s*")'
@@ -68,7 +68,7 @@ VERSION_LOCATIONS = (
     ),
     VersionLocation(
         "Tauri",
-        "src-tauri/tauri.conf.json",
+        "apps/desktop/tauri.conf.json",
         _pattern(
             r'(?P<prefix>\A\{.*?"productName"\s*:\s*"CaptionNest"\s*,\s*'
             r'"version"\s*:\s*")(?P<version>[^"]+)(?P<suffix>")'
@@ -76,7 +76,7 @@ VERSION_LOCATIONS = (
     ),
     VersionLocation(
         "Cargo",
-        "src-tauri/Cargo.toml",
+        "apps/desktop/Cargo.toml",
         _pattern(
             r'(?P<prefix>^\[package\].*?^version\s*=\s*")'
             r'(?P<version>[^"]+)(?P<suffix>")'
@@ -84,7 +84,7 @@ VERSION_LOCATIONS = (
     ),
     VersionLocation(
         "CargoLock",
-        "src-tauri/Cargo.lock",
+        "apps/desktop/Cargo.lock",
         _pattern(
             r'(?P<prefix>^\[\[package\]\]\s*\r?\n'
             r'name\s*=\s*"captionnest-desktop"\s*\r?\nversion\s*=\s*")'

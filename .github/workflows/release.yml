@@ -28,7 +28,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       RELEASE_VERSION_INPUT: ${{ inputs.version }}
       RELEASE_PYTHON_VERSION: '3.12'
-      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\packaging\build\vcpkg-binary-cache
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\tooling\packaging\build\vcpkg-binary-cache
     steps:
       - name: Check out main with tags
         uses: actions/checkout@v4
@@ -86,9 +86,9 @@ jobs:
         id: restore_media_wheel_cache
         uses: actions/cache/restore@v4
         with:
-          path: packaging/dist/media-wheel
+          path: tooling/packaging/dist/media-wheel
           key: >-
-            media-wheel-${{ runner.os }}-${{ runner.arch }}-python-${{ env.RELEASE_PYTHON_VERSION }}-${{ hashFiles('scripts/build-media-wheel.ps1', 'packaging/media-runtime/vcpkg.json') }}
+            media-wheel-${{ runner.os }}-${{ runner.arch }}-python-${{ env.RELEASE_PYTHON_VERSION }}-${{ hashFiles('scripts/build-media-wheel.ps1', 'tooling/packaging/media-runtime/vcpkg.json') }}
 
       - name: Check out pinned vcpkg baseline
         if: steps.restore_media_wheel_cache.outputs.cache-hit != 'true'
@@ -96,13 +96,13 @@ jobs:
         with:
           repository: microsoft/vcpkg
           ref: db4723bd0a99eab031f1a3dee4336dca43049c87
-          path: packaging/build/vcpkg
+          path: tooling/packaging/build/vcpkg
 
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
-          cache-dependency-path: web/package-lock.json
+          cache-dependency-path: apps/web/package-lock.json
 
       - uses: astral-sh/setup-uv@v6
         with:
@@ -118,15 +118,15 @@ jobs:
         id: restore_vcpkg_cache
         uses: actions/cache/restore@v4
         with:
-          path: packaging/build/vcpkg-binary-cache
-          key: vcpkg-windows-x64-${{ hashFiles('packaging/media-runtime/vcpkg.json') }}
+          path: tooling/packaging/build/vcpkg-binary-cache
+          key: vcpkg-windows-x64-${{ hashFiles('tooling/packaging/media-runtime/vcpkg.json') }}
 
       - name: Bootstrap pinned vcpkg
         if: steps.restore_media_wheel_cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
-          & .\packaging\build\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+          & .\tooling\packaging\build\vcpkg\bootstrap-vcpkg.bat -disableMetrics
           if ($LASTEXITCODE -ne 0) { throw 'Unable to bootstrap pinned vcpkg.' }
 
       - name: Update every project version
@@ -134,18 +134,18 @@ jobs:
         run: |
           $Python = (& uv python find $env:RELEASE_PYTHON_VERSION).Trim()
           if (-not $Python) { throw 'Unable to locate the release Python runtime.' }
-          & $Python .\src\sublingo_local\release_version.py $env:RELEASE_VERSION --root .
+          & $Python .\tooling\release\version.py $env:RELEASE_VERSION --root .
           if ($LASTEXITCODE -ne 0) { throw 'Unable to update project versions.' }
 
       - run: npm ci
-        working-directory: web
+        working-directory: apps/web
 
-      - run: uv sync --extra asr --extra desktop --extra dev --locked
+      - run: uv sync --project apps/sidecar --extra asr --extra desktop --extra dev --locked
 
       - name: Select release Python runtime
         shell: pwsh
         run: |
-          $Python = (Resolve-Path '.venv\Scripts\python.exe').Path
+          $Python = (Resolve-Path 'apps\sidecar\.venv\Scripts\python.exe').Path
           "CAPTIONNEST_BUILD_PYTHON=$Python" | Add-Content -LiteralPath $env:GITHUB_ENV
 
       - name: Build LGPL media wheel
@@ -153,7 +153,7 @@ jobs:
         shell: pwsh
         run: |
           .\scripts\build-media-wheel.ps1 `
-            -VcpkgRoot 'packaging\build\vcpkg' `
+            -VcpkgRoot 'tooling\packaging\build\vcpkg' `
             -PythonExecutable $env:CAPTIONNEST_BUILD_PYTHON
 
       - name: Install and verify LGPL media wheel
@@ -166,9 +166,9 @@ jobs:
         if: steps.restore_media_wheel_cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          path: packaging/dist/media-wheel
+          path: tooling/packaging/dist/media-wheel
           key: >-
-            media-wheel-${{ runner.os }}-${{ runner.arch }}-python-${{ env.RELEASE_PYTHON_VERSION }}-${{ hashFiles('scripts/build-media-wheel.ps1', 'packaging/media-runtime/vcpkg.json') }}
+            media-wheel-${{ runner.os }}-${{ runner.arch }}-python-${{ env.RELEASE_PYTHON_VERSION }}-${{ hashFiles('scripts/build-media-wheel.ps1', 'tooling/packaging/media-runtime/vcpkg.json') }}
 
       - name: Save vcpkg binary cache
         if: >-
@@ -176,21 +176,26 @@ jobs:
           steps.restore_vcpkg_cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          path: packaging/build/vcpkg-binary-cache
-          key: vcpkg-windows-x64-${{ hashFiles('packaging/media-runtime/vcpkg.json') }}
+          path: tooling/packaging/build/vcpkg-binary-cache
+          key: vcpkg-windows-x64-${{ hashFiles('tooling/packaging/media-runtime/vcpkg.json') }}
 
       - name: Lint Python
         shell: pwsh
         run: '& $env:CAPTIONNEST_BUILD_PYTHON -m ruff check .'
+        working-directory: apps/sidecar
+
+      - name: Lint repository tooling
+        shell: pwsh
+        run: '& $env:CAPTIONNEST_BUILD_PYTHON -m ruff check --config apps/sidecar/pyproject.toml tooling'
 
       - name: Test Python with release media runtime
         shell: pwsh
         run: '& $env:CAPTIONNEST_BUILD_PYTHON -m pytest'
 
       - run: npm run lint
-        working-directory: web
+        working-directory: apps/web
 
-      - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+      - run: cargo fmt --manifest-path apps/desktop/Cargo.toml --check
 
       - name: Verify every project and lock-file version
         shell: pwsh
@@ -203,17 +208,17 @@ jobs:
       - name: Stage release files
         shell: pwsh
         run: |
-          $Stage = 'packaging\dist\release-candidate'
+          $Stage = 'tooling\packaging\dist\release-candidate'
           if (Test-Path -LiteralPath $Stage) {
             Remove-Item -LiteralPath $Stage -Recurse -Force
           }
           New-Item -ItemType Directory -Path $Stage -Force | Out-Null
-          $Nsis = 'src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis'
+          $Nsis = 'apps\desktop\target\x86_64-pc-windows-msvc\release\bundle\nsis'
           Copy-Item -Path "$Nsis\CaptionNest_*_x64-setup.exe" -Destination $Stage
           Copy-Item -Path "$Nsis\CaptionNest_*_x64-setup.exe.sha256" -Destination $Stage
-          Copy-Item -LiteralPath 'packaging\dist\FFMPEG_BUILD_INFO.txt' -Destination $Stage
+          Copy-Item -LiteralPath 'tooling\packaging\dist\FFMPEG_BUILD_INFO.txt' -Destination $Stage
           Copy-Item `
-            -LiteralPath 'packaging\dist\media-wheel\MEDIA_WHEEL_PROVENANCE.json' `
+            -LiteralPath 'tooling\packaging\dist\media-wheel\MEDIA_WHEEL_PROVENANCE.json' `
             -Destination $Stage
 
       - name: Smoke-test the exact installer
@@ -222,7 +227,7 @@ jobs:
         run: |
           $Installers = @(
             Get-ChildItem `
-              -LiteralPath 'packaging\dist\release-candidate' `
+              -LiteralPath 'tooling\packaging\dist\release-candidate' `
               -Filter 'CaptionNest_*_x64-setup.exe' `
               -File
           )
@@ -238,7 +243,7 @@ jobs:
         with:
           name: captionnest-windows-x64-v${{ inputs.version }}
           if-no-files-found: error
-          path: packaging/dist/release-candidate/*
+          path: tooling/packaging/dist/release-candidate/*
 
       - name: Commit the version and create the tag
         shell: pwsh
@@ -251,13 +256,13 @@ jobs:
           }
 
           $VersionFiles = @(
-            'pyproject.toml',
-            'uv.lock',
-            'web/package.json',
-            'web/package-lock.json',
-            'src-tauri/tauri.conf.json',
-            'src-tauri/Cargo.toml',
-            'src-tauri/Cargo.lock'
+            'apps/sidecar/pyproject.toml',
+            'apps/sidecar/uv.lock',
+            'apps/web/package.json',
+            'apps/web/package-lock.json',
+            'apps/desktop/tauri.conf.json',
+            'apps/desktop/Cargo.toml',
+            'apps/desktop/Cargo.lock'
           )
           if ($env:RELEASE_TAG_EXISTS -eq 'true') {
             & git diff --exit-code -- $VersionFiles
@@ -298,7 +303,7 @@ jobs:
 
             `FFMPEG_BUILD_INFO.txt` 与 `MEDIA_WHEEL_PROVENANCE.json` 记录了 LGPL 媒体运行时的许可证门禁结果、固定版本和构建来源。
           files: |
-            packaging/dist/release-candidate/CaptionNest_*_x64-setup.exe
-            packaging/dist/release-candidate/CaptionNest_*_x64-setup.exe.sha256
-            packaging/dist/release-candidate/FFMPEG_BUILD_INFO.txt
-            packaging/dist/release-candidate/MEDIA_WHEEL_PROVENANCE.json
+            tooling/packaging/dist/release-candidate/CaptionNest_*_x64-setup.exe
+            tooling/packaging/dist/release-candidate/CaptionNest_*_x64-setup.exe.sha256
+            tooling/packaging/dist/release-candidate/FFMPEG_BUILD_INFO.txt
+            tooling/packaging/dist/release-candidate/MEDIA_WHEEL_PROVENANCE.json

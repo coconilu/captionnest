@@ -31,6 +31,6 @@ uv sync --extra asr --extra desktop --extra dev --locked
   -PythonExecutable .\.venv\Scripts\python.exe
 ```
 
-The repaired wheel and provenance record are written to `packaging/dist/media-wheel/`. Build
-and download directories under `packaging/build/` and `packaging/dist/` are intentionally not
+The repaired wheel and provenance record are written to `tooling/packaging/dist/media-wheel/`. Build
+and download directories under `tooling/packaging/build/` and `tooling/packaging/dist/` are intentionally not
 committed.

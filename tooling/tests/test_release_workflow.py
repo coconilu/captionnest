@@ -1,6 +1,6 @@
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_release_workflow_is_one_click_and_main_only() -> None:
@@ -108,9 +108,9 @@ def test_release_reuses_a_verified_final_media_wheel_cache() -> None:
     ].split("- uses: actions/setup-node@v4", 1)[0]
 
     assert "id: restore_media_wheel_cache" in workflow
-    assert "path: packaging/dist/media-wheel" in workflow
+    assert "path: tooling/packaging/dist/media-wheel" in workflow
     assert "scripts/build-media-wheel.ps1" in workflow
-    assert "packaging/media-runtime/vcpkg.json" in workflow
+    assert "tooling/packaging/media-runtime/vcpkg.json" in workflow
     assert "if: steps.restore_media_wheel_cache.outputs.cache-hit != 'true'" in (
         build_step
     )

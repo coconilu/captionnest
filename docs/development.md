@@ -10,7 +10,7 @@
 
 系统 `ffmpeg.exe` 不是依赖。ASR Provider 通过 PyAV wheel 解码媒体；GPU 是可选能力。
 
-> PyPI 的官方 PyAV 18 Windows wheel 含 x264/x265，许可证门禁仍会有意阻止它进入 sidecar。正式 `Windows Release` workflow 会先构建并安装锁定的 LGPL 媒体 wheel；本地构建安装包时请按 [媒体运行时说明](../packaging/media-runtime/README.md) 准备相同 wheel。API / Web 调试和源码测试不受影响；不要为方便开发把 `-AllowGpl` 写入默认脚本。
+> PyPI 的官方 PyAV 18 Windows wheel 含 x264/x265，许可证门禁仍会有意阻止它进入 sidecar。正式 `Windows Release` workflow 会先构建并安装锁定的 LGPL 媒体 wheel；本地构建安装包时请按 [媒体运行时说明](../tooling/packaging/media-runtime/README.md) 准备相同 wheel。API / Web 调试和源码测试不受影响；不要为方便开发把 `-AllowGpl` 写入默认脚本。
 
 ## 初始化与调试
 
@@ -22,7 +22,7 @@
 如需维护隐藏的 Qwen3-ASR 实验兼容 Provider：
 
 ```powershell
-uv sync --extra asr --extra qwen --extra dev
+uv sync --project apps/sidecar --extra asr --extra qwen --extra dev
 ```
 
 Windows/Linux 的 `qwen` extra 固定使用 PyTorch 2.10 CUDA 12.8 wheel。Provider 在进程内直接
@@ -32,28 +32,30 @@ Release 构建不包含该 extra，产品界面和公开能力列表也不会展
 桌面调试会先生成 PyInstaller onedir sidecar，再启动 Vite 和 Tauri：
 
 ```powershell
-npm --prefix web run desktop:dev
+npm --prefix apps/web run desktop:dev
 ```
 
 主要目录：
 
 | 路径 | 内容 |
 |---|---|
-| `src/sublingo_local/` | Python API、流水线和 Provider |
-| `tests/` | Python 测试 |
-| `web/` | React/Vite 界面 |
-| `src-tauri/` | Tauri Rust 壳、权限和 NSIS 配置 |
-| `packaging/` | PyInstaller 入口与 spec |
+| `apps/sidecar/src/sublingo_local/` | Python API、流水线和 Provider |
+| `apps/sidecar/tests/` | Python 业务测试 |
+| `apps/web/` | React/Vite 界面 |
+| `apps/desktop/` | Tauri Rust 壳、权限和 NSIS 配置 |
+| `tooling/packaging/` | PyInstaller 入口、媒体运行时与 spec |
+| `tooling/tests/` | 发布和桌面打包等仓库级测试 |
 | `scripts/` | 初始化、sidecar、桌面与许可证门禁脚本 |
 
 ## 验证矩阵
 
 ```powershell
-uv run --extra asr --extra dev pytest
-uv run --extra dev ruff check .
-npm --prefix web run lint
-npm --prefix web run build
-cargo check --manifest-path src-tauri\Cargo.toml --target x86_64-pc-windows-msvc
+uv run --project apps/sidecar --extra asr --extra dev pytest
+uv run --project apps/sidecar --extra dev ruff check apps/sidecar
+uv run --project apps/sidecar --extra dev ruff check --config apps/sidecar/pyproject.toml tooling
+npm --prefix apps/web run lint
+npm --prefix apps/web run build
+cargo check --manifest-path apps/desktop\Cargo.toml --target x86_64-pc-windows-msvc
 ```
 
 真实浏览器至少覆盖：页面无 console error、环境刷新、模型状态/下载按钮、三种目标语言、Provider 字段切换、创建任务与完成态路径。桌面改动还需验证：随机端口、错误令牌返回 401、退出后 sidecar 消失、安装/卸载均不需要管理员权限。
@@ -73,15 +75,15 @@ flowchart LR
 一键命令：
 
 ```powershell
-npm --prefix web run desktop:build
+npm --prefix apps/web run desktop:build
 ```
 
-生成位置为 `src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/`。不要直接执行 `tauri build`，否则 clean checkout 缺少 sidecar 与媒体许可证证据。
+生成位置为 `apps/desktop/target/x86_64-pc-windows-msvc/release/bundle/nsis/`。不要直接执行 `tauri build`，否则 clean checkout 缺少 sidecar 与媒体许可证证据。
 
 也不要用裸 `cargo build --release` 验证生产界面。直接 Cargo 构建不会建立 Tauri 的生产环境上下文，EXE 可能仍带 `cfg(dev)` 并访问 `devUrl` 的 `127.0.0.1:5173`，从而误显示本机其他开发服务。只做不打安装包的本地隔离验证时，应先按正式步骤准备 sidecar，再使用仓库锁定的 Tauri CLI：
 
 ```powershell
-.\web\node_modules\.bin\tauri.cmd build --config src-tauri\tauri.conf.json --target x86_64-pc-windows-msvc --no-bundle
+.\apps\web\node_modules\.bin\tauri.cmd build --config apps\desktop\tauri.conf.json --target x86_64-pc-windows-msvc --no-bundle
 ```
 
 ## 关键约束
@@ -91,4 +93,4 @@ npm --prefix web run desktop:build
 - Codex Spark 只能通过本机 `codex exec` 与现有登录调用。
 - 时间轴由程序持有，模型只翻译稳定 ID。
 - 外部进程调用必须传参数数组，禁止拼接 shell 命令。
-- 不要提交 `src-tauri/binaries/_internal`、PyInstaller build/dist 或模型文件。
+- 不要提交 `apps/desktop/binaries/_internal`、PyInstaller build/dist 或模型文件。

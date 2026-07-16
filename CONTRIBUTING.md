@@ -6,8 +6,9 @@
 
 | 改动 | 必须满足 |
 |---|---|
-| Python | 放在 `src/sublingo_local/`，测试放在 `tests/`；Faster-Whisper 延迟导入 |
-| React | 放在 `web/`，组件小而专一；默认简体中文 |
+| Python | 放在 `apps/sidecar/src/sublingo_local/`，业务测试放在 `apps/sidecar/tests/`；Faster-Whisper 延迟导入 |
+| React | 放在 `apps/web/`，组件小而专一；默认简体中文 |
+| 桌面与构建 | Tauri 放在 `apps/desktop/`；仓库级测试和打包工具放在 `tooling/` |
 | 翻译 Provider | 统一接口；不改变时间轴；不记录 API Key |
 | 外部进程 | 参数数组调用；禁止拼接 shell 命令 |
 | 桌面/打包 | 不扩大 capability；验证 sidecar 退出；更新许可证声明 |

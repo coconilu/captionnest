@@ -27,8 +27,8 @@ if (-not [Environment]::Is64BitOperatingSystem) {
     throw 'M1-M5 desktop builds support Windows x64 only.'
 }
 
-if (-not (Test-Path (Join-Path $Root 'web\node_modules\.bin\tauri.cmd'))) {
-    & npm --prefix web install
+if (-not (Test-Path (Join-Path $Root 'apps\web\node_modules\.bin\tauri.cmd'))) {
+    & npm --prefix apps/web install
     if ($LASTEXITCODE -ne 0) { throw 'Failed to install frontend dependencies.' }
 }
 
@@ -36,8 +36,8 @@ if (-not (Test-Path (Join-Path $Root 'web\node_modules\.bin\tauri.cmd'))) {
 if ($LASTEXITCODE -ne 0) { throw "Failed to install Rust target: $TargetTriple" }
 
 foreach ($Icon in @('32x32.png', '128x128.png', '128x128@2x.png', 'icon.ico')) {
-    if (-not (Test-Path -LiteralPath (Join-Path $Root "src-tauri\icons\$Icon") -PathType Leaf)) {
-        throw "Missing application icon: src-tauri\icons\$Icon"
+    if (-not (Test-Path -LiteralPath (Join-Path $Root "apps\desktop\icons\$Icon") -PathType Leaf)) {
+        throw "Missing application icon: apps\desktop\icons\$Icon"
     }
 }
 
@@ -48,14 +48,14 @@ foreach ($Icon in @('32x32.png', '128x128.png', '128x128@2x.png', 'icon.ico')) {
     -PythonExecutable $PythonExecutable
 
 $NsisDirectory = Assert-PathInsideWorkspace (
-    Join-Path $Root "src-tauri\target\$TargetTriple\release\bundle\nsis"
+    Join-Path $Root "apps\desktop\target\$TargetTriple\release\bundle\nsis"
 )
 if (Test-Path -LiteralPath $NsisDirectory -PathType Container) {
     Remove-Item -LiteralPath $NsisDirectory -Recurse -Force
 }
 
-$Tauri = Join-Path $Root 'web\node_modules\.bin\tauri.cmd'
-& $Tauri build --config 'src-tauri\tauri.conf.json' --target $TargetTriple
+$Tauri = Join-Path $Root 'apps\web\node_modules\.bin\tauri.cmd'
+& $Tauri build --config 'apps\desktop\tauri.conf.json' --target $TargetTriple
 if ($LASTEXITCODE -ne 0) { throw 'Tauri Windows bundle build failed.' }
 
 $Installers = @(Get-ChildItem -LiteralPath $NsisDirectory -Filter 'CaptionNest_*_x64-setup.exe' -File)

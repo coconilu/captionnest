@@ -1,6 +1,6 @@
 param(
     [string]$PythonExecutable = '',
-    [string]$WheelDirectory = 'packaging\dist\media-wheel'
+    [string]$WheelDirectory = 'tooling\packaging\dist\media-wheel'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -25,7 +25,7 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
     throw 'uv is required to install the CaptionNest media wheel.'
 }
 if (-not $PythonExecutable) {
-    $PythonExecutable = Join-Path $Root '.venv\Scripts\python.exe'
+    $PythonExecutable = Join-Path $Root 'apps\sidecar\.venv\Scripts\python.exe'
 }
 $PythonExecutable = if ([IO.Path]::IsPathFullyQualified($PythonExecutable)) {
     [IO.Path]::GetFullPath($PythonExecutable)

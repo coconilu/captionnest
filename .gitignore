@@ -6,6 +6,17 @@ __pycache__/
 .ruff_cache/
 *.py[cod]
 node_modules/
+apps/web/dist/
+apps/web/output/
+apps/sidecar/build/
+apps/sidecar/dist/
+tooling/packaging/build/
+tooling/packaging/dist/
+apps/desktop/binaries/_internal/
+apps/desktop/binaries/captionnest-sidecar-*.exe
+apps/desktop/target/
+
+# 迁移前可能仍被本地进程占用的旧构建缓存。
 web/dist/
 web/output/
 data/
