@@ -12,6 +12,7 @@ export interface SettingsValue {
   useCuda: boolean
   asrVadFilter: boolean
   asrDynamicChunking: boolean
+  asrSelectiveRetry: boolean
   asrBeamSize: number
   provider: TranslationProvider
   translationTimeoutSeconds: number
@@ -30,6 +31,7 @@ export const DEFAULT_SETTINGS: SettingsValue = {
   useCuda: true,
   asrVadFilter: true,
   asrDynamicChunking: true,
+  asrSelectiveRetry: true,
   asrBeamSize: 5,
   provider: 'codex_spark',
   translationTimeoutSeconds: 300,

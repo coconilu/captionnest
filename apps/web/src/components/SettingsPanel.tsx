@@ -96,6 +96,7 @@ export function SettingsPanel({
           <span>模型 · {MODEL_LABELS[value.asrModel]}</span>
           <span>切分 · {outputMode}</span>
           <span>边界 · {value.asrDynamicChunking ? '动态' : '固定'}</span>
+          <span>重识别 · {value.asrSelectiveRetry ? '有界开启' : '关闭'}</span>
           <span className="is-provider"><i aria-hidden="true" />{provider}</span>
         </div>
       </section>
@@ -185,6 +186,19 @@ export function SettingsPanel({
                 checked={value.asrDynamicChunking}
                 disabled={disabled}
                 onChange={(event) => patch('asrDynamicChunking', event.target.checked)}
+              />
+              <i aria-hidden="true" />
+            </label>
+            <label className="switch-row">
+              <span>
+                <strong>低置信片段二次识别</strong>
+                <small>只对可疑片段执行一次有界重识别</small>
+              </span>
+              <input
+                type="checkbox"
+                checked={value.asrSelectiveRetry}
+                disabled={disabled}
+                onChange={(event) => patch('asrSelectiveRetry', event.target.checked)}
               />
               <i aria-hidden="true" />
             </label>

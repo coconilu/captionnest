@@ -36,7 +36,8 @@ function configSummary(step: JobStepView): string {
     const device = config.device === 'cuda' ? 'CUDA' : 'CPU'
     const mode = config.output_mode === 'word_resegmented' ? '逐词重排' : '原始分片'
     const boundary = config.dynamic_chunking ? '动态边界' : '固定边界'
-    return `${config.model} · ${device} · ${mode} · ${boundary}`
+    const retry = config.selective_retry ? '二次识别' : '单次识别'
+    return `${config.model} · ${device} · ${mode} · ${boundary} · ${retry}`
   }
   if (step.id === 'translation') {
     const config = step.config as TranslationStepConfig

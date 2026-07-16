@@ -433,14 +433,17 @@ class JobRecord:
             isinstance(raw_asr, Mapping)
             and raw_asr.get("provider") == "qwen3_asr"
         )
-        if (
-            not legacy_asr
-            and isinstance(raw_asr, Mapping)
-            and "dynamic_chunking" not in raw_asr
-        ):
-            # Jobs created before #17 used fixed windows. Preserve their execution
-            # semantics when they are reopened or rerun; new requests still default on.
-            raw_asr = {**raw_asr, "dynamic_chunking": False}
+        if not legacy_asr and isinstance(raw_asr, Mapping):
+            compatibility_defaults: dict[str, bool] = {}
+            if "dynamic_chunking" not in raw_asr:
+                # Jobs created before #17 used fixed windows.
+                compatibility_defaults["dynamic_chunking"] = False
+            if "selective_retry" not in raw_asr:
+                # Jobs created before #16 only ran the first-pass decoder.
+                compatibility_defaults["selective_retry"] = False
+            if compatibility_defaults:
+                # Preserve historical rerun semantics; new requests still default on.
+                raw_asr = {**raw_asr, **compatibility_defaults}
         record = cls(
             id=str(payload["id"]),
             media=MediaStepSettings.model_validate(payload["media"]),
@@ -616,9 +619,14 @@ class ProcessingPipeline:
         chunking_label = (
             "VAD 动态分片" if record.asr.dynamic_chunking else "固定 60 秒分片"
         )
+        retry_label = (
+            "，低置信片段有界二次识别"
+            if record.asr.selective_retry
+            else "，仅单次识别"
+        )
         message = (
             f"正在使用 Faster-Whisper {record.asr.model} 进行{chunking_label}识别"
-            f"（{output_mode_label}）"
+            f"（{output_mode_label}{retry_label}）"
         )
         record.begin_step(JobStep.TRANSCRIPTION, message)
         asr = self._create_asr()

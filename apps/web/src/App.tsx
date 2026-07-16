@@ -202,6 +202,7 @@ export function App() {
         compute_type: settings.useCuda && cudaAvailable ? 'float16' : 'int8',
         vad_filter: settings.asrVadFilter,
         dynamic_chunking: settings.asrDynamicChunking,
+        selective_retry: settings.asrSelectiveRetry,
         beam_size: settings.asrBeamSize,
         output_mode: settings.asrOutputMode,
       },
