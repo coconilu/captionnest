@@ -9,6 +9,7 @@ import os
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -84,6 +85,9 @@ STEP_PROGRESS = {
 LEGACY_ASR_UNAVAILABLE_MESSAGE = (
     "Qwen3-ASR 已停用；历史任务仍可查看，请先在识别配置中改选 Faster-Whisper 模型"
 )
+SUMMARY_SNAPSHOT_TTL_SECONDS = 300.0
+SUMMARY_SNAPSHOT_MAX_ENTRIES = 64
+SUMMARY_SNAPSHOT_MAX_ITEMS = 20_000
 
 
 class _BlockingCallCancelled(RuntimeError):
@@ -167,14 +171,22 @@ def validate_output_target(path: Path, *, overwrite_existing: bool) -> None:
 
 @dataclass(frozen=True)
 class _SummaryCursor:
-    snapshot_time: datetime
-    position_created_at: datetime
-    position_job_id: str
+    snapshot_id: str
+    offset: int
+    filter_fingerprint: str
+
+
+@dataclass(frozen=True)
+class _SummarySnapshot:
+    snapshot_id: str
+    filter_fingerprint: str
+    server_time: datetime
     statuses: tuple[JobStatus, ...] | None
     batch_id: str | None
     query: str | None
     updated_after: datetime | None
-    total: int
+    items: tuple[JobSummaryView, ...]
+    expires_at_monotonic: float
 
 
 def _normalized_datetime(value: datetime) -> datetime:
@@ -199,29 +211,15 @@ def _summary_filter_payload(
 
 
 def _encode_summary_cursor(
-    summary: JobSummaryView,
-    *,
-    snapshot_time: datetime,
-    statuses: tuple[JobStatus, ...] | None,
-    batch_id: str | None,
-    query: str | None,
-    updated_after: datetime | None,
-    total: int,
+    snapshot: _SummarySnapshot,
+    offset: int,
 ) -> str:
-    filters = _summary_filter_payload(
-        statuses=statuses,
-        batch_id=batch_id,
-        query=query,
-        updated_after=updated_after,
-    )
     payload = json.dumps(
         {
-            "v": 2,
-            "snapshot": snapshot_time.isoformat(),
-            "position": [summary.created_at.isoformat(), summary.id],
-            "filters": filters,
-            "filter_fingerprint": _fingerprint(filters),
-            "total": total,
+            "v": 3,
+            "snapshot_id": snapshot.snapshot_id,
+            "offset": offset,
+            "filter_fingerprint": snapshot.filter_fingerprint,
         },
         separators=(",", ":"),
     ).encode("utf-8")
@@ -237,66 +235,30 @@ def _decode_summary_cursor(cursor: str) -> _SummaryCursor:
             validate=True,
         )
         payload = json.loads(decoded.decode("utf-8"))
-        if not isinstance(payload, dict) or payload.get("v") != 2:
+        if not isinstance(payload, dict) or payload.get("v") != 3:
             raise ValueError
-        filters = payload["filters"]
-        position = payload["position"]
+        snapshot_id = payload["snapshot_id"]
+        offset = payload["offset"]
+        filter_fingerprint = payload["filter_fingerprint"]
+        if not isinstance(snapshot_id, str) or len(snapshot_id) != 32:
+            raise ValueError
+        if any(character not in "0123456789abcdef" for character in snapshot_id):
+            raise ValueError
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 1:
+            raise ValueError
         if (
-            not isinstance(filters, dict)
-            or not isinstance(position, list)
-            or len(position) != 2
-            or payload.get("filter_fingerprint") != _fingerprint(filters)
-        ):
-            raise ValueError
-        snapshot_time = datetime.fromisoformat(str(payload["snapshot"]))
-        position_created_at = datetime.fromisoformat(str(position[0]))
-        if snapshot_time.tzinfo is None or position_created_at.tzinfo is None:
-            raise ValueError
-        job_id = str(position[1]).strip()
-        if not job_id:
-            raise ValueError
-        raw_statuses = filters.get("statuses")
-        if raw_statuses is None:
-            statuses = None
-        else:
-            if not isinstance(raw_statuses, list):
-                raise ValueError
-            statuses = tuple(
-                sorted(
-                    {JobStatus(str(status)) for status in raw_statuses},
-                    key=lambda status: status.value,
-                )
+            not isinstance(filter_fingerprint, str)
+            or len(filter_fingerprint) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in filter_fingerprint
             )
-        batch_id = filters.get("batch_id")
-        query = filters.get("query")
-        if batch_id is not None and not isinstance(batch_id, str):
-            raise ValueError
-        if query is not None and not isinstance(query, str):
-            raise ValueError
-        raw_updated_after = filters.get("updated_after")
-        updated_after = (
-            datetime.fromisoformat(raw_updated_after)
-            if isinstance(raw_updated_after, str)
-            else None
-        )
-        if raw_updated_after is not None and (
-            updated_after is None or updated_after.tzinfo is None
         ):
-            raise ValueError
-        total = payload["total"]
-        if isinstance(total, bool) or not isinstance(total, int) or total < 0:
             raise ValueError
         return _SummaryCursor(
-            snapshot_time=_normalized_datetime(snapshot_time),
-            position_created_at=_normalized_datetime(position_created_at),
-            position_job_id=job_id,
-            statuses=statuses,
-            batch_id=batch_id,
-            query=query,
-            updated_after=(
-                _normalized_datetime(updated_after) if updated_after is not None else None
-            ),
-            total=total,
+            snapshot_id=snapshot_id,
+            offset=offset,
+            filter_fingerprint=filter_fingerprint,
         )
     except (
         binascii.Error,
@@ -1435,6 +1397,12 @@ class JobManager:
         self.pipeline = pipeline
         self.store = job_store or getattr(pipeline, "store", None)
         self._mutation_lock = threading.RLock()
+        self._summary_snapshots: OrderedDict[str, _SummarySnapshot] = OrderedDict()
+        self._summary_snapshot_item_count = 0
+        self._summary_snapshot_clock: Callable[[], float] = time.monotonic
+        self._summary_snapshot_ttl_seconds = SUMMARY_SNAPSHOT_TTL_SECONDS
+        self._summary_snapshot_max_entries = SUMMARY_SNAPSHOT_MAX_ENTRIES
+        self._summary_snapshot_max_items = SUMMARY_SNAPSHOT_MAX_ITEMS
         self.repository = JobRepository(self.store, JobRecord.from_payload)
         self._jobs = self.repository.records
         self.scheduler = JobScheduler(
@@ -1785,6 +1753,84 @@ class JobManager:
         )
         return [record.to_summary() for record in records]
 
+    def _drop_summary_snapshot_locked(self, snapshot_id: str) -> None:
+        snapshot = self._summary_snapshots.pop(snapshot_id, None)
+        if snapshot is not None:
+            self._summary_snapshot_item_count -= len(snapshot.items)
+
+    def _purge_summary_snapshots_locked(self, now: float) -> None:
+        expired = [
+            snapshot_id
+            for snapshot_id, snapshot in self._summary_snapshots.items()
+            if snapshot.expires_at_monotonic <= now
+        ]
+        for snapshot_id in expired:
+            self._drop_summary_snapshot_locked(snapshot_id)
+
+    def _create_summary_snapshot_locked(
+        self,
+        items: list[JobSummaryView],
+        *,
+        server_time: datetime,
+        statuses: tuple[JobStatus, ...] | None,
+        batch_id: str | None,
+        query: str | None,
+        updated_after: datetime | None,
+    ) -> _SummarySnapshot:
+        max_items = max(1, self._summary_snapshot_max_items)
+        if len(items) > max_items:
+            raise ValueError("分页结果超过快照上限，请增加筛选条件后重试")
+
+        now = self._summary_snapshot_clock()
+        self._purge_summary_snapshots_locked(now)
+        max_entries = max(1, self._summary_snapshot_max_entries)
+        while self._summary_snapshots and (
+            len(self._summary_snapshots) >= max_entries
+            or self._summary_snapshot_item_count + len(items) > max_items
+        ):
+            oldest_id = next(iter(self._summary_snapshots))
+            self._drop_summary_snapshot_locked(oldest_id)
+
+        filters = _summary_filter_payload(
+            statuses=statuses,
+            batch_id=batch_id,
+            query=query,
+            updated_after=updated_after,
+        )
+        snapshot_id = uuid.uuid4().hex
+        while snapshot_id in self._summary_snapshots:
+            snapshot_id = uuid.uuid4().hex
+        snapshot = _SummarySnapshot(
+            snapshot_id=snapshot_id,
+            filter_fingerprint=_fingerprint(filters),
+            server_time=server_time,
+            statuses=statuses,
+            batch_id=batch_id,
+            query=query,
+            updated_after=updated_after,
+            items=tuple(item.model_copy(deep=True) for item in items),
+            expires_at_monotonic=now
+            + max(1.0, self._summary_snapshot_ttl_seconds),
+        )
+        self._summary_snapshots[snapshot_id] = snapshot
+        self._summary_snapshot_item_count += len(snapshot.items)
+        return snapshot
+
+    def _get_summary_snapshot_locked(
+        self,
+        cursor: _SummaryCursor,
+    ) -> _SummarySnapshot:
+        self._purge_summary_snapshots_locked(self._summary_snapshot_clock())
+        snapshot = self._summary_snapshots.get(cursor.snapshot_id)
+        if snapshot is None:
+            raise ValueError("分页 cursor 已过期或已被淘汰，请重新查询")
+        if snapshot.filter_fingerprint != cursor.filter_fingerprint:
+            raise ValueError("分页 cursor 无效")
+        if cursor.offset >= len(snapshot.items):
+            raise ValueError("分页 cursor 无效")
+        self._summary_snapshots.move_to_end(snapshot.snapshot_id)
+        return snapshot
+
     def list_summary_page(
         self,
         *,
@@ -1815,38 +1861,42 @@ class JobManager:
         with self._mutation_lock:
             cursor_state = _decode_summary_cursor(cursor) if cursor is not None else None
             if cursor_state is not None:
+                snapshot = self._get_summary_snapshot_locked(cursor_state)
                 mismatched = (
-                    (statuses is not None and provided_statuses != cursor_state.statuses)
+                    (statuses is not None and provided_statuses != snapshot.statuses)
                     or (
                         batch_id is not None
-                        and provided_batch_id != cursor_state.batch_id
+                        and provided_batch_id != snapshot.batch_id
                     )
-                    or (query is not None and provided_query != cursor_state.query)
+                    or (query is not None and provided_query != snapshot.query)
                     or (
                         updated_after is not None
-                        and provided_updated_after != cursor_state.updated_after
+                        and provided_updated_after != snapshot.updated_after
                     )
                 )
                 if mismatched:
                     raise ValueError("分页 cursor 与筛选条件不匹配")
-                effective_statuses = cursor_state.statuses
-                effective_batch_id = cursor_state.batch_id
-                effective_query = cursor_state.query
-                effective_updated_after = cursor_state.updated_after
-                server_time = cursor_state.snapshot_time
-                cursor_key = (
-                    cursor_state.position_created_at,
-                    cursor_state.position_job_id,
+                end = min(cursor_state.offset + limit, len(snapshot.items))
+                items = [
+                    item.model_copy(deep=True)
+                    for item in snapshot.items[cursor_state.offset : end]
+                ]
+                has_more = end < len(snapshot.items)
+                return JobSummaryPage(
+                    items=items,
+                    next_cursor=(
+                        _encode_summary_cursor(snapshot, end) if has_more else None
+                    ),
+                    has_more=has_more,
+                    total=len(snapshot.items),
+                    server_time=snapshot.server_time,
                 )
-            else:
-                effective_statuses = provided_statuses
-                effective_batch_id = provided_batch_id
-                effective_query = provided_query
-                effective_updated_after = provided_updated_after
-                # The immutable created_at order plus a fixed creation watermark
-                # prevents updates from moving an unread Job across page bounds.
-                server_time = utc_now() - timedelta(microseconds=1)
-                cursor_key = None
+
+            effective_statuses = provided_statuses
+            effective_batch_id = provided_batch_id
+            effective_query = provided_query
+            effective_updated_after = provided_updated_after
+            server_time = utc_now() - timedelta(microseconds=1)
 
             summaries = [record.to_summary() for record in self.repository.list()]
             filtered = [
@@ -1877,29 +1927,26 @@ class JobManager:
                 key=lambda summary: (summary.created_at, summary.id),
                 reverse=True,
             )
-            total = len(filtered) if cursor_state is None else cursor_state.total
-            if cursor_key is not None:
-                filtered = [
-                    summary
-                    for summary in filtered
-                    if (summary.created_at, summary.id) < cursor_key
-                ]
-            selected = filtered[: limit + 1]
-            has_more = len(selected) > limit
-            items = selected[:limit]
+            total = len(filtered)
+            items = filtered[:limit]
+            has_more = total > limit
+            snapshot = (
+                self._create_summary_snapshot_locked(
+                    filtered,
+                    server_time=server_time,
+                    statuses=effective_statuses,
+                    batch_id=effective_batch_id,
+                    query=effective_query,
+                    updated_after=effective_updated_after,
+                )
+                if has_more
+                else None
+            )
             return JobSummaryPage(
                 items=items,
                 next_cursor=(
-                    _encode_summary_cursor(
-                        items[-1],
-                        snapshot_time=server_time,
-                        statuses=effective_statuses,
-                        batch_id=effective_batch_id,
-                        query=effective_query,
-                        updated_after=effective_updated_after,
-                        total=total,
-                    )
-                    if has_more and items
+                    _encode_summary_cursor(snapshot, len(items))
+                    if snapshot is not None
                     else None
                 ),
                 has_more=has_more,
@@ -1929,3 +1976,6 @@ class JobManager:
 
     async def shutdown(self) -> None:
         await self.scheduler.shutdown()
+        with self._mutation_lock:
+            self._summary_snapshots.clear()
+            self._summary_snapshot_item_count = 0

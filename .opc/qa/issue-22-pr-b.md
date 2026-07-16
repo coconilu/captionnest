@@ -13,7 +13,7 @@
 | 同批规范化路径去重 | PASS |
 | 统一目录同名 SRT 冲突 | PASS；创建前阻断，可用单项 export 覆盖改目录 |
 | Summary 与 Detail 分离 | PASS；分页项不含 logs、steps、attempts |
-| 分页与增量刷新 | PASS；固定快照 cursor 封装筛选条件，`created_at` 稳定排序，增量窗口固定为 `updated_after < updated_at <= server_time` |
+| 分页与增量刷新 | PASS；首屏冻结轻量 Summary 副本，cursor 使用随机快照 ID、筛选指纹与偏移，增量窗口固定为 `updated_after < updated_at <= server_time` |
 | 旧列表和单文件 API | PASS；无查询参数仍返回完整数组，`POST /api/jobs` 不变 |
 | 批量动作部分失败隔离 | PASS；run/cancel/retry_failed/delete/update_config 逐 Job 返回 |
 | Batch 中单 Job 失败隔离 | PASS；其余 Job 继续完成 |
@@ -26,10 +26,10 @@
 
 | 检查 | 结果 |
 |---|---:|
-| Batch/API 定向测试 | 13 passed；含游标移动、跨筛选翻页、增量水位、跨 Batch 输出占用及入队写前/写后故障注入 |
-| Sidecar 全量 | 200 passed，1 个既有 Starlette 弃用警告 |
+| Batch/API 定向测试 | 15 passed；含未读成员再次更新、快照 TTL/淘汰/容量、跨 Batch 输出占用及入队写前/写后故障注入 |
+| Sidecar 全量 | 202 passed，1 个既有 Starlette 弃用警告 |
 | Tooling | 25 passed |
-| 仓库 Python 总计 | 225 passed |
+| 仓库 Python 总计 | 227 passed |
 | Sidecar / Tooling Ruff | passed |
 | Web lint/build | passed |
 | Desktop fmt/check | passed |
@@ -47,6 +47,7 @@
 | 跨 Batch 输出占用 | PASS；第二批同名源指向已占用目录时 `valid=0`，返回 `output_conflict` |
 | Summary keyset 分页 | PASS；`limit=1` 两页 Job 不重复、遗漏，第二页省略 `q` 仍继承筛选且 `server_time` 与首屏一致 |
 | 增量水位窗口 | PASS；首轮 `total=2` 且只返回首屏水位前的 newest/middle，水位后更新的 oldest 仅在下一轮返回一次 |
+| 未读成员再次更新 | PASS；当前轮返回其首屏 Summary 且累计数等于 `total`，水位后的新版本只在下一轮出现 |
 | Summary 轻量负载 | PASS；分页项不含 `logs` 或 `steps` |
 | 刷新后旧 UI 恢复任务 | PASS；显示批次中的源文件名 |
 | console warning/error/pageerror | 0 |
@@ -61,6 +62,7 @@
 - 所有未删除 Job 跨 Batch 共享规范化输出占用；预检、创建、配置修改和运行前均重验，`overwrite_existing=true` 不能静默覆盖另一个 Job 的 SRT。
 - Job 创建/删除与 Batch 关联均有失败补偿；启动时双向修复 `Batch.job_ids` 与 `Job.batch_id`，Windows 目录锁导致删除失败时 Job 仍保持可见且重启一致。
 - 入队时步骤失效和 queued 状态只持久化一次；写前失败恢复为可重试的非活跃状态且不创建 completion，写入成功后才报错则用磁盘精确回读确认提交并继续进入真实 active queue。
+- 分页快照不含日志、步骤或 API Key；采用 5 分钟 TTL、64 个快照与合计 20,000 个 Summary 的 LRU 上限，过期或淘汰 cursor 明确拒绝。
 
 ## 后续 PR 接口
 

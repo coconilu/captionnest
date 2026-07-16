@@ -643,6 +643,155 @@ def test_incremental_cursor_excludes_updates_after_first_page_watermark(
         ]
 
 
+def test_incremental_cursor_freezes_unread_member_summary(
+    tmp_path: Path,
+) -> None:
+    app = create_app(data_dir=tmp_path / "data", pipeline=ImmediatePipeline())  # type: ignore[arg-type]
+
+    def update_target(
+        client: TestClient,
+        job_id: str,
+        target: str,
+    ) -> dict[str, object]:
+        job = client.get(f"/api/jobs/{job_id}").json()
+        translation = next(
+            step for step in job["steps"] if step["id"] == "translation"
+        )
+        config = dict(translation["config"])
+        config["target_language"] = target
+        response = client.patch(
+            f"/api/jobs/{job_id}/steps/translation/config",
+            json={"config": config},
+        )
+        assert response.status_code == 200
+        return response.json()
+
+    with TestClient(app) as client:
+        created_ids = []
+        for name in ("member-oldest.mp4", "member-middle.mp4", "member-newest.mp4"):
+            response = client.post(
+                "/api/jobs",
+                json={"video_path": str(_video(tmp_path / name))},
+            )
+            assert response.status_code == 200
+            created_ids.append(response.json()["id"])
+
+        baseline = client.get("/api/jobs", params={"limit": 1}).json()[
+            "server_time"
+        ]
+        update_target(client, created_ids[2], "en")
+        middle_at_snapshot = update_target(client, created_ids[1], "ko")
+
+        first = client.get(
+            "/api/jobs",
+            params={"limit": 1, "updated_after": baseline},
+        ).json()
+        assert first["total"] == 2
+        assert [item["id"] for item in first["items"]] == [created_ids[2]]
+        watermark = first["server_time"]
+
+        middle_after_snapshot = update_target(client, created_ids[1], "en")
+        assert middle_after_snapshot["updated_at"] != middle_at_snapshot["updated_at"]
+
+        second = client.get(
+            "/api/jobs",
+            params={"limit": 1, "cursor": first["next_cursor"]},
+        )
+        assert second.status_code == 200
+        second_page = second.json()
+        assert second_page["total"] == 2
+        assert second_page["server_time"] == watermark
+        assert second_page["has_more"] is False
+        assert [item["id"] for item in second_page["items"]] == [created_ids[1]]
+        assert second_page["items"][0]["updated_at"] == middle_at_snapshot[
+            "updated_at"
+        ]
+
+        next_round = client.get(
+            "/api/jobs",
+            params={"limit": 20, "updated_after": watermark},
+        )
+        assert next_round.status_code == 200
+        assert next_round.json()["total"] == 1
+        assert [item["id"] for item in next_round.json()["items"]] == [
+            created_ids[1]
+        ]
+        assert next_round.json()["items"][0]["updated_at"] == middle_after_snapshot[
+            "updated_at"
+        ]
+
+
+def test_summary_snapshot_cursor_expires_and_obeys_memory_bounds(
+    tmp_path: Path,
+) -> None:
+    app = create_app(data_dir=tmp_path / "data", pipeline=ImmediatePipeline())  # type: ignore[arg-type]
+    with TestClient(app) as client:
+        for name in (
+            "group-a-one.mp4",
+            "group-a-two.mp4",
+            "group-b-one.mp4",
+            "group-b-two.mp4",
+        ):
+            response = client.post(
+                "/api/jobs",
+                json={"video_path": str(_video(tmp_path / name))},
+            )
+            assert response.status_code == 200
+
+        manager = app.state.job_manager
+        first = client.get(
+            "/api/jobs",
+            params={"limit": 1, "q": "group-a"},
+        ).json()
+        assert first["next_cursor"]
+        snapshot = next(iter(manager._summary_snapshots.values()))
+        assert len(snapshot.snapshot_id) == 32
+        assert all(
+            {"logs", "steps", "api_key"}.isdisjoint(item.model_dump())
+            for item in snapshot.items
+        )
+
+        manager._summary_snapshot_clock = (
+            lambda: snapshot.expires_at_monotonic + 0.001
+        )
+        expired = client.get(
+            "/api/jobs",
+            params={"limit": 1, "cursor": first["next_cursor"]},
+        )
+        assert expired.status_code == 400
+        assert "已过期或已被淘汰" in expired.json()["detail"]
+        manager._summary_snapshot_clock = time.monotonic
+
+        manager._summary_snapshot_max_entries = 1
+        older = client.get(
+            "/api/jobs",
+            params={"limit": 1, "q": "group-a"},
+        ).json()
+        newer = client.get(
+            "/api/jobs",
+            params={"limit": 1, "q": "group-b"},
+        ).json()
+        evicted = client.get(
+            "/api/jobs",
+            params={"limit": 1, "cursor": older["next_cursor"]},
+        )
+        assert evicted.status_code == 400
+        assert "已过期或已被淘汰" in evicted.json()["detail"]
+        assert client.get(
+            "/api/jobs",
+            params={"limit": 1, "cursor": newer["next_cursor"]},
+        ).status_code == 200
+
+        manager._summary_snapshot_max_entries = 64
+        manager._summary_snapshot_max_items = 1
+        over_limit = client.get(
+            "/api/jobs",
+            params={"limit": 1, "q": "group-a"},
+        )
+        assert over_limit.status_code == 400
+        assert "超过快照上限" in over_limit.json()["detail"]
+
+
 def test_output_claims_span_batches_and_reject_non_file_targets(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
     output = tmp_path / "output"
