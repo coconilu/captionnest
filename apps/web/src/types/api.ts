@@ -36,6 +36,7 @@ export interface AsrStepConfig {
   selective_retry?: boolean
   beam_size: number
   output_mode: AsrOutputMode
+  hotwords?: string[]
 }
 
 export interface TranslationStepConfig {
@@ -198,6 +199,7 @@ export interface JobRequest {
     selective_retry: boolean
     beam_size: number
     output_mode: AsrOutputMode
+    hotwords: string[]
   }
   translation: {
     provider: TranslationProvider

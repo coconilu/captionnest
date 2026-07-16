@@ -34,6 +34,11 @@ class ASROutputMode(StrEnum):
     WORD_RESEGMENTED = "word_resegmented"
 
 
+ASR_HOTWORD_MAX_ENTRIES = 50
+ASR_HOTWORD_MAX_ENTRY_CHARACTERS = 64
+ASR_HOTWORD_MAX_TOTAL_CHARACTERS = 512
+
+
 class TargetLanguage(StrEnum):
     ZH_CN = "zh-CN"
     EN = "en"
@@ -98,6 +103,14 @@ class ASRSettings(BaseModel):
     selective_retry: bool = True
     beam_size: int = Field(default=5, ge=1, le=20)
     output_mode: ASROutputMode = ASROutputMode.WORD_RESEGMENTED
+    hotwords: list[str] = Field(
+        default_factory=list,
+        max_length=ASR_HOTWORD_MAX_ENTRIES,
+        json_schema_extra={
+            "max_item_characters": ASR_HOTWORD_MAX_ENTRY_CHARACTERS,
+            "max_total_characters": ASR_HOTWORD_MAX_TOTAL_CHARACTERS,
+        },
+    )
 
     @field_validator("model", mode="before")
     @classmethod
@@ -111,6 +124,50 @@ class ASRSettings(BaseModel):
         if not value:
             raise ValueError("不能为空")
         return value
+
+    @field_validator("hotwords", mode="before")
+    @classmethod
+    def normalize_hotwords(cls, value: object) -> list[str]:
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("提示词必须是字符串数组")
+
+        normalized: list[str] = []
+        seen: set[str] = set()
+        total_characters = 0
+        for index, raw_item in enumerate(value, start=1):
+            if not isinstance(raw_item, str):
+                raise ValueError(f"第 {index} 个提示词必须是文本")
+            item = raw_item.strip()
+            if not item:
+                continue
+            if any(
+                ord(character) < 32
+                or ord(character) == 127
+                or character in {"\u2028", "\u2029"}
+                for character in item
+            ):
+                raise ValueError(f"第 {index} 个提示词不能包含换行或控制字符")
+            if len(item) > ASR_HOTWORD_MAX_ENTRY_CHARACTERS:
+                raise ValueError(
+                    f"单个提示词不能超过 {ASR_HOTWORD_MAX_ENTRY_CHARACTERS} 个字符"
+                    f"（第 {index} 项）"
+                )
+            if item in seen:
+                continue
+
+            seen.add(item)
+            normalized.append(item)
+            total_characters += len(item)
+            if len(normalized) > ASR_HOTWORD_MAX_ENTRIES:
+                raise ValueError(
+                    f"提示词不能超过 {ASR_HOTWORD_MAX_ENTRIES} 条"
+                )
+            if total_characters > ASR_HOTWORD_MAX_TOTAL_CHARACTERS:
+                raise ValueError(
+                    "提示词总字符数不能超过 "
+                    f"{ASR_HOTWORD_MAX_TOTAL_CHARACTERS} 个"
+                )
+        return normalized
 
 
 class LegacyASRSettings(BaseModel):

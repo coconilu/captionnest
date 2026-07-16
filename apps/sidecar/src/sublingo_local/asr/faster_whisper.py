@@ -60,6 +60,37 @@ _CJK_LANGUAGES = {"zh", "yue", "ja", "ko", "chinese", "japanese", "korean"}
 _TEXT_KEY_PATTERN = re.compile(r"[\s、。,.!?！？「」『』（）()…〜~・]+")
 
 
+def _serialize_hotwords(hotwords: Sequence[str]) -> str | None:
+    """Adapt the validated task list to Faster-Whisper's string parameter."""
+    serialized = ", ".join(hotwords)
+    return serialized or None
+
+
+def _validate_hotword_token_budget(
+    model: Any,
+    serialized_hotwords: str | None,
+) -> int:
+    """Reject prompts that Faster-Whisper would otherwise silently truncate."""
+    if serialized_hotwords is None:
+        return 0
+
+    # Faster-Whisper's Tokenizer.encode delegates to this exact tokenizer call.
+    # Its get_prompt keeps at most max_length // 2 - 1 hotword tokens.
+    encoding = model.hf_tokenizer.encode(
+        " " + serialized_hotwords.strip(),
+        add_special_tokens=False,
+    )
+    token_count = len(encoding.ids)
+    token_budget = max(0, int(model.max_length) // 2 - 1)
+    if token_count > token_budget:
+        raise ValueError(
+            f"提示词经当前语音模型分词后为 {token_count} 个 Token，"
+            f"超过 {token_budget} 个 Token 的模型上限；"
+            "请减少提示词条数或缩短内容后重试"
+        )
+    return token_count
+
+
 @dataclass(frozen=True)
 class _ChunkWindow:
     index: int
@@ -696,6 +727,7 @@ def _apply_selective_retries(
     windows: Sequence[_ChunkWindow],
     detected_language: str,
     settings: ASRSettings,
+    serialized_hotwords: str | None,
     audio_analysis: ASRAudioAnalysis,
     duration_seconds: float,
     window_candidate_counts: list[int],
@@ -741,6 +773,11 @@ def _apply_selective_retries(
                 vad_filter=settings.vad_filter,
                 word_timestamps=True,
                 condition_on_previous_text=False,
+                **(
+                    {"hotwords": serialized_hotwords}
+                    if serialized_hotwords is not None
+                    else {}
+                ),
             )
             raw_segments = list(iterator)
             retry_segments: list[_ChunkSegment] = []
@@ -1036,6 +1073,8 @@ class FasterWhisperProvider(ASRProvider):
         audio: Any | None = None
         try:
             model = WhisperModel(model_reference, device=device, compute_type=compute_type)
+            serialized_hotwords = _serialize_hotwords(settings.hotwords)
+            _validate_hotword_token_budget(model, serialized_hotwords)
             audio = decode_audio(str(audio_path), sampling_rate=_SAMPLE_RATE)
             duration = len(audio) / _SAMPLE_RATE
             fixed_windows = _chunk_windows(len(audio))
@@ -1103,6 +1142,11 @@ class FasterWhisperProvider(ASRProvider):
                     vad_filter=settings.vad_filter,
                     word_timestamps=True,
                     condition_on_previous_text=False,
+                    **(
+                        {"hotwords": serialized_hotwords}
+                        if serialized_hotwords is not None
+                        else {}
+                    ),
                 )
                 chunk_segments = list(iterator)
                 info_language = str(getattr(info, "language", "") or "").strip()
@@ -1177,6 +1221,7 @@ class FasterWhisperProvider(ASRProvider):
                     windows=windows,
                     detected_language=detected_language,
                     settings=settings,
+                    serialized_hotwords=serialized_hotwords,
                     audio_analysis=audio_analysis,
                     duration_seconds=duration,
                     window_candidate_counts=window_candidate_counts,

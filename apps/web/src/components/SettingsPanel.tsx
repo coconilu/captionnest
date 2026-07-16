@@ -1,6 +1,12 @@
 import { Eye, EyeOff, Play, ShieldCheck, SlidersHorizontal } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 
+import {
+  HOTWORD_MAX_ENTRIES,
+  HOTWORD_MAX_ENTRY_CHARACTERS,
+  HOTWORD_MAX_TOTAL_CHARACTERS,
+  validateHotwordText,
+} from '../lib/hotwords'
 import type { AsrModel, AsrOutputMode, TargetLanguage, TranslationProvider } from '../types/api'
 import type { SettingsValue } from '../types/settings'
 
@@ -70,6 +76,7 @@ export function SettingsPanel({
   const targetLanguage = TARGET_LANGUAGES.find((item) => item.value === value.targetLanguage)?.label ?? value.targetLanguage
   const provider = PROVIDERS.find((item) => item.value === value.provider)?.label ?? value.provider
   const outputMode = OUTPUT_MODES.find((item) => item.value === value.asrOutputMode)?.label ?? value.asrOutputMode
+  const hotwordValidation = validateHotwordText(value.asrHotwordsText)
 
   return (
     <aside className="settings-sidebar" aria-label="新任务默认设置">
@@ -97,6 +104,7 @@ export function SettingsPanel({
           <span>切分 · {outputMode}</span>
           <span>边界 · {value.asrDynamicChunking ? '动态' : '固定'}</span>
           <span>重识别 · {value.asrSelectiveRetry ? '有界开启' : '关闭'}</span>
+          <span>提示词 · {hotwordValidation.hotwords.length} 个</span>
           <span className="is-provider"><i aria-hidden="true" />{provider}</span>
         </div>
       </section>
@@ -215,6 +223,25 @@ export function SettingsPanel({
                   Math.max(1, Math.min(20, Number(event.target.value) || 1)),
                 )}
               />
+            </label>
+            <label className={`field hotwords-field ${hotwordValidation.error ? 'is-invalid' : ''}`}>
+              <span>专有词 / Hotwords</span>
+              <textarea
+                rows={5}
+                value={value.asrHotwordsText}
+                disabled={disabled}
+                aria-invalid={Boolean(hotwordValidation.error)}
+                aria-describedby="new-task-hotwords-hint"
+                onChange={(event) => patch('asrHotwordsText', event.target.value)}
+                placeholder={'每行一个词，例如：\nCaptionNest\n初音未来'}
+              />
+              <small
+                id="new-task-hotwords-hint"
+                className={hotwordValidation.error ? 'field-error-text' : undefined}
+              >
+                {hotwordValidation.error
+                  ?? `${hotwordValidation.hotwords.length}/${HOTWORD_MAX_ENTRIES} 条 · ${hotwordValidation.characterCount}/${HOTWORD_MAX_TOTAL_CHARACTERS} 字符 · 单条最多 ${HOTWORD_MAX_ENTRY_CHARACTERS} 字符`}
+              </small>
             </label>
           </section>
 

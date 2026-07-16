@@ -37,7 +37,8 @@ function configSummary(step: JobStepView): string {
     const mode = config.output_mode === 'word_resegmented' ? '逐词重排' : '原始分片'
     const boundary = config.dynamic_chunking ? '动态边界' : '固定边界'
     const retry = config.selective_retry ? '二次识别' : '单次识别'
-    return `${config.model} · ${device} · ${mode} · ${boundary} · ${retry}`
+    const hotwords = config.hotwords?.length ? ` · ${config.hotwords.length} 个提示词` : ''
+    return `${config.model} · ${device} · ${mode} · ${boundary} · ${retry}${hotwords}`
   }
   if (step.id === 'translation') {
     const config = step.config as TranslationStepConfig
@@ -62,7 +63,8 @@ function artifactSummary(step: JobStepView): string | null {
     return `${String(summary.name ?? '媒体文件')} · ${formatBytes(Number(summary.size ?? 0))}`
   }
   if (step.id === 'transcription') {
-    return `${String(summary.segment_count ?? 0)} 条字幕 · 语言 ${String(summary.language ?? '未知')}`
+    const hotwords = Number(summary.hotword_count ?? 0)
+    return `${String(summary.segment_count ?? 0)} 条字幕 · 语言 ${String(summary.language ?? '未知')}${hotwords ? ` · ${hotwords} 个提示词` : ''}`
   }
   if (step.id === 'translation') {
     return `${String(summary.item_count ?? 0)} 条译文 · ${String(summary.target_language ?? '')}`

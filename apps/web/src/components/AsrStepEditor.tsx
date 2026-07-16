@@ -1,6 +1,12 @@
 import { AlertCircle } from 'lucide-react'
 import { useState } from 'react'
 
+import {
+  HOTWORD_MAX_ENTRIES,
+  HOTWORD_MAX_ENTRY_CHARACTERS,
+  HOTWORD_MAX_TOTAL_CHARACTERS,
+  validateHotwordText,
+} from '../lib/hotwords'
 import type { AsrModel, AsrStepConfig } from '../types/api'
 
 interface AsrStepEditorProps {
@@ -19,6 +25,8 @@ export function AsrStepEditor({
   onSave,
 }: AsrStepEditorProps) {
   const [draft, setDraft] = useState(value)
+  const [hotwordText, setHotwordText] = useState((value.hotwords ?? []).join('\n'))
+  const hotwordValidation = validateHotwordText(hotwordText)
   const legacy = draft.provider === 'qwen3_asr'
   const useCuda = draft.device === 'cuda' && cudaAvailable
 
@@ -40,7 +48,8 @@ export function AsrStepEditor({
       className="pipeline-editor-form"
       onSubmit={(event) => {
         event.preventDefault()
-        onSave(draft)
+        if (hotwordValidation.error) return
+        onSave({ ...draft, hotwords: hotwordValidation.hotwords })
       }}
     >
       <label className="field">
@@ -158,9 +167,32 @@ export function AsrStepEditor({
           }))}
         />
       </label>
+      <label className={`field hotwords-field ${hotwordValidation.error ? 'is-invalid' : ''}`}>
+        <span>专有词 / Hotwords</span>
+        <textarea
+          rows={5}
+          value={hotwordText}
+          disabled={saving || legacy}
+          aria-invalid={Boolean(hotwordValidation.error)}
+          aria-describedby="task-hotwords-hint"
+          onChange={(event) => setHotwordText(event.target.value)}
+          placeholder={'每行一个词，例如：\nCaptionNest\n初音未来'}
+        />
+        <small
+          id="task-hotwords-hint"
+          className={hotwordValidation.error ? 'field-error-text' : undefined}
+        >
+          {hotwordValidation.error
+            ?? `${hotwordValidation.hotwords.length}/${HOTWORD_MAX_ENTRIES} 条 · ${hotwordValidation.characterCount}/${HOTWORD_MAX_TOTAL_CHARACTERS} 字符 · 单条最多 ${HOTWORD_MAX_ENTRY_CHARACTERS} 字符`}
+        </small>
+      </label>
       <div className="pipeline-editor-actions">
         <button type="button" onClick={onCancel} disabled={saving}>取消</button>
-        <button type="submit" className="button-primary" disabled={saving || legacy}>
+        <button
+          type="submit"
+          className="button-primary"
+          disabled={saving || legacy || Boolean(hotwordValidation.error)}
+        >
           {saving ? '保存中…' : '保存识别配置'}
         </button>
       </div>

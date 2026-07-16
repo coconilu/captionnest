@@ -67,6 +67,10 @@ function loadSettings(): SettingsValue {
         DEFAULT_SETTINGS.asrSelectiveRetry,
       ),
       asrBeamSize: numberValue(value.asrBeamSize, DEFAULT_SETTINGS.asrBeamSize, 1, 20),
+      asrHotwordsText: stringValue(
+        value.asrHotwordsText,
+        DEFAULT_SETTINGS.asrHotwordsText,
+      ),
       provider: TRANSLATION_PROVIDERS.has(provider)
         ? provider as SettingsValue['provider']
         : DEFAULT_SETTINGS.provider,
@@ -113,6 +117,7 @@ function persistedValue(settings: SettingsValue) {
       asrDynamicChunking: settings.asrDynamicChunking,
       asrSelectiveRetry: settings.asrSelectiveRetry,
       asrBeamSize: settings.asrBeamSize,
+      asrHotwordsText: settings.asrHotwordsText,
       provider: settings.provider,
       translationTimeoutSeconds: settings.translationTimeoutSeconds,
       lmstudioEndpoint: settings.lmstudioEndpoint,

@@ -17,11 +17,42 @@ from sublingo_local.asr.faster_whisper import (
     _optional_non_negative_float,
     _optional_probability,
     _preserve_equivalent_initial_timeline,
+    _serialize_hotwords,
     _valid_word_offsets,
+    _validate_hotword_token_budget,
     _word_resegmented_subtitles,
     _WordItem,
 )
 from sublingo_local.models import ASROutputMode, ASRSettings
+
+
+def test_serialize_hotwords_adapts_validated_list_for_faster_whisper() -> None:
+    assert _serialize_hotwords([]) is None
+    assert _serialize_hotwords(["CaptionNest", "初音未来", "葬送のフリーレン"]) == (
+        "CaptionNest, 初音未来, 葬送のフリーレン"
+    )
+
+
+def test_validate_hotword_token_budget_matches_faster_whisper_boundary() -> None:
+    class FakeTokenizer:
+        def __init__(self, token_count: int) -> None:
+            self.token_count = token_count
+
+        def encode(self, text: str, *, add_special_tokens: bool):
+            assert text.startswith(" ")
+            assert add_special_tokens is False
+            return SimpleNamespace(ids=range(self.token_count))
+
+    model = SimpleNamespace(
+        hf_tokenizer=FakeTokenizer(223),
+        max_length=448,
+    )
+    assert _validate_hotword_token_budget(model, "CaptionNest") == 223
+
+    model.hf_tokenizer = FakeTokenizer(224)
+    with pytest.raises(ValueError, match="224 个 Token.*223 个 Token") as exc_info:
+        _validate_hotword_token_budget(model, "DO-NOT-LEAK-HOTWORD")
+    assert "DO-NOT-LEAK-HOTWORD" not in str(exc_info.value)
 
 
 def test_chunk_windows_use_non_overlapping_cores_with_context() -> None:
@@ -375,6 +406,12 @@ def _install_selective_retry_fakes(
 
         def __init__(self, model, **kwargs):  # type: ignore[no-untyped-def]
             calls["model"] = model
+            self.hf_tokenizer = SimpleNamespace(
+                encode=lambda text, add_special_tokens=False: SimpleNamespace(
+                    ids=range(len(text))
+                )
+            )
+            self.max_length = 448
 
         def transcribe(self, audio, **kwargs):  # type: ignore[no-untyped-def]
             index = self.transcription_calls
@@ -478,6 +515,7 @@ def test_provider_selectively_retries_only_suspicious_core_once(
         "word_timestamps": True,
         "condition_on_previous_text": False,
     }
+    assert all("hotwords" not in kwargs for kwargs in transcribe_kwargs)
     assert calls["vad_count"] == 1
     assert calls["slices"] == [(0, 30 * 16_000), (1 * 16_000, 11 * 16_000)]
     assert [segment.text for segment in result.segments] == ["清晰片段"]
@@ -505,6 +543,60 @@ def test_provider_selectively_retries_only_suspicious_core_once(
     diagnostics_payload = diagnostics.model_dump_json()
     assert "疑似片段" not in diagnostics_payload
     assert "清晰片段" not in diagnostics_payload
+
+
+def test_provider_passes_same_normalized_hotwords_to_first_pass_and_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: dict[str, object] = {}
+    _install_selective_retry_fakes(monkeypatch, calls)
+
+    result = FasterWhisperProvider().transcribe(
+        tmp_path / "video.mp4",
+        language="ja",
+        settings=ASRSettings(
+            dynamic_chunking=False,
+            selective_retry=True,
+            output_mode=ASROutputMode.CHUNK_SEGMENTS,
+            hotwords=[" CaptionNest ", "初音未来", "CaptionNest"],
+        ),
+    )
+
+    transcribe_kwargs = calls["transcribe_kwargs"]
+    assert isinstance(transcribe_kwargs, list)
+    assert len(transcribe_kwargs) == 2
+    assert [kwargs["hotwords"] for kwargs in transcribe_kwargs] == [
+        "CaptionNest, 初音未来",
+        "CaptionNest, 初音未来",
+    ]
+    assert result.diagnostics is not None
+    assert "CaptionNest" not in result.diagnostics.model_dump_json()
+    assert "初音未来" not in result.diagnostics.model_dump_json()
+
+
+def test_provider_rejects_character_valid_cjk_hotwords_over_model_token_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: dict[str, object] = {}
+    _install_selective_retry_fakes(monkeypatch, calls)
+    hotwords = [f"葬送芙莉莲角色{index:02d}" for index in range(50)]
+    settings = ASRSettings(hotwords=hotwords)
+
+    assert len(settings.hotwords) == 50
+    assert sum(len(item) for item in settings.hotwords) <= 512
+    with pytest.raises(ValueError, match="超过 223 个 Token") as exc_info:
+        FasterWhisperProvider().transcribe(
+            tmp_path / "video.mp4",
+            language="ja",
+            settings=settings,
+        )
+
+    error = str(exc_info.value)
+    assert hotwords[0] not in error
+    assert hotwords[-1] not in error
+    assert "transcribe_kwargs" not in calls
 
 
 @pytest.mark.parametrize(
@@ -922,10 +1014,17 @@ def test_provider_uses_vad_dynamic_windows_for_both_output_modes(
     class FakeModel:
         def __init__(self, model, **kwargs):  # type: ignore[no-untyped-def]
             calls["model"] = model
+            self.hf_tokenizer = SimpleNamespace(
+                encode=lambda text, add_special_tokens=False: SimpleNamespace(
+                    ids=range(len(text))
+                )
+            )
+            self.max_length = 448
 
         def transcribe(self, audio, **kwargs):  # type: ignore[no-untyped-def]
             index = int(calls["transcription_count"])
             calls["transcription_count"] = index + 1
+            calls.setdefault("transcribe_kwargs", []).append(kwargs)  # type: ignore[union-attr]
             start = 1.0 if index == 0 else 3.0
             text = "前半" if index == 0 else "后半"
             segment = SimpleNamespace(
@@ -969,11 +1068,17 @@ def test_provider_uses_vad_dynamic_windows_for_both_output_modes(
     result = FasterWhisperProvider().transcribe(
         tmp_path / "video.mp4",
         language="zh",
-        settings=ASRSettings(output_mode=output_mode),
+        settings=ASRSettings(
+            output_mode=output_mode,
+            hotwords=["CaptionNest", "初音未来"],
+        ),
     )
 
     assert calls["vad_count"] == 1
     assert calls["transcription_count"] == 2
+    assert [
+        kwargs["hotwords"] for kwargs in calls["transcribe_kwargs"]  # type: ignore[index]
+    ] == ["CaptionNest, 初音未来", "CaptionNest, 初音未来"]
     assert [item.text for item in result.segments] == ["前半", "后半"]
     assert [item.start_ms for item in result.segments] == [1_000, 64_000]
     assert result.diagnostics is not None
