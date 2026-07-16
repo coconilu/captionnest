@@ -6,7 +6,7 @@ import os
 import re
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Literal
@@ -17,11 +17,26 @@ from .base import ASRProgress, ASRProvider, TranscriptionResult
 from .diagnostics import (
     ASRAudioAnalysis,
     ASRDiagnosticsSummary,
+    ASRRetryRequestDiagnostics,
     ASRRunDiagnostics,
     ASRSegmentDiagnostics,
     ASRWindowDiagnostics,
     AudioInterval,
     normalize_intervals,
+)
+from .retry import (
+    CandidateQualityFacts,
+    RetryCandidateFacts,
+    RetryRequestPlan,
+    covered_samples,
+    evaluate_retry_reasons,
+    interval_coverage_ratio,
+    intrinsic_reason_severity,
+    meaningfully_improves_speech_coverage,
+    plan_retry_requests,
+    score_candidate_bundle,
+    should_select_retry,
+    text_repetition_score,
 )
 
 _SAMPLE_RATE = 16_000
@@ -73,6 +88,7 @@ class _ChunkSegment:
     words: tuple[_WordItem, ...]
     chunk_index: int
     avg_logprob: float
+    candidate_id: str = ""
 
 
 def _optional_finite_float(value: object) -> float | None:
@@ -101,6 +117,183 @@ def _sample_interval(start: float, end: float, *, total_samples: int) -> AudioIn
     start_sample = max(0, min(total_samples - 1, round(start * _SAMPLE_RATE)))
     end_sample = max(start_sample + 1, min(total_samples, round(end * _SAMPLE_RATE)))
     return AudioInterval(start_sample=start_sample, end_sample=end_sample)
+
+
+def _segment_bounds(
+    raw_segment: Any,
+    *,
+    context_start: float,
+    duration_seconds: float,
+) -> tuple[float, float] | None:
+    relative_start = _optional_finite_float(getattr(raw_segment, "start", None))
+    relative_end = _optional_finite_float(getattr(raw_segment, "end", None))
+    if relative_start is None or relative_end is None or relative_end <= relative_start:
+        return None
+    start = max(0.0, context_start + relative_start)
+    end = min(duration_seconds, context_start + relative_end)
+    if start >= duration_seconds or end <= start:
+        return None
+    return start, end
+
+
+def _speech_intervals(
+    audio_analysis: ASRAudioAnalysis,
+) -> tuple[AudioInterval, ...] | None:
+    return (
+        audio_analysis.speech_intervals
+        if audio_analysis.vad_status == "available"
+        else None
+    )
+
+
+def _parse_candidate(
+    raw_segment: Any,
+    *,
+    candidate_id: str,
+    window_index: int,
+    start: float,
+    end: float,
+    context_start: float,
+    context_end: float,
+    duration_seconds: float,
+    total_samples: int,
+    audio_analysis: ASRAudioAnalysis,
+) -> tuple[_ChunkSegment, ASRSegmentDiagnostics] | None:
+    text = str(getattr(raw_segment, "text", "")).strip()
+    if not text:
+        return None
+    words: list[_WordItem] = []
+    raw_words = [
+        raw_word
+        for raw_word in (getattr(raw_segment, "words", None) or [])
+        if str(getattr(raw_word, "word", "")).strip()
+    ]
+    for raw_word in raw_words:
+        word_text = str(getattr(raw_word, "word", ""))
+        relative_word_start = _optional_finite_float(getattr(raw_word, "start", None))
+        relative_word_end = _optional_finite_float(getattr(raw_word, "end", None))
+        if relative_word_start is None or relative_word_end is None:
+            continue
+        if not _valid_word_offsets(
+            relative_word_start,
+            relative_word_end,
+            window_duration=context_end - context_start,
+        ):
+            continue
+        word_start = max(0.0, context_start + relative_word_start)
+        word_end = min(duration_seconds, context_start + relative_word_end)
+        if word_end <= word_start:
+            continue
+        words.append(_WordItem(text=word_text, start=word_start, end=word_end))
+
+    interval = _sample_interval(start, end, total_samples=total_samples)
+    avg_logprob = _optional_finite_float(getattr(raw_segment, "avg_logprob", None))
+    speech = _speech_intervals(audio_analysis)
+    diagnostics = ASRSegmentDiagnostics(
+        candidate_id=candidate_id,
+        window_index=window_index,
+        interval=interval,
+        avg_logprob=avg_logprob,
+        no_speech_prob=_optional_probability(
+            getattr(raw_segment, "no_speech_prob", None)
+        ),
+        compression_ratio=_optional_non_negative_float(
+            getattr(raw_segment, "compression_ratio", None)
+        ),
+        temperature=_optional_non_negative_float(
+            getattr(raw_segment, "temperature", None)
+        ),
+        word_count=len(raw_words),
+        valid_word_timestamp_count=len(words),
+        word_timestamp_coverage=len(words) / len(raw_words) if raw_words else 0.0,
+        text_repetition_score=text_repetition_score(text),
+        vad_speech_coverage=(
+            interval_coverage_ratio(interval, speech) if speech is not None else None
+        ),
+    )
+    return (
+        _ChunkSegment(
+            text=text,
+            start=start,
+            end=end,
+            words=tuple(words),
+            chunk_index=window_index,
+            avg_logprob=avg_logprob if avg_logprob is not None else float("-inf"),
+            candidate_id=candidate_id,
+        ),
+        diagnostics,
+    )
+
+
+def _clip_retry_candidate_to_core(
+    segment: _ChunkSegment,
+    diagnostics: ASRSegmentDiagnostics,
+    *,
+    core: AudioInterval,
+    total_samples: int,
+    audio_analysis: ASRAudioAnalysis,
+) -> tuple[_ChunkSegment, ASRSegmentDiagnostics] | None:
+    """Keep only word-owned retry text inside the replaceable core."""
+
+    core_start = core.start_sample / _SAMPLE_RATE
+    core_end = core.end_sample / _SAMPLE_RATE
+    segment_inside_core = (
+        diagnostics.interval.start_sample >= core.start_sample
+        and diagnostics.interval.end_sample <= core.end_sample
+    )
+    words_inside_core = all(
+        word.start >= core_start and word.end <= core_end
+        for word in segment.words
+    )
+    if segment_inside_core and words_inside_core:
+        return segment, diagnostics
+
+    owned_words: list[_WordItem] = []
+    for word in segment.words:
+        midpoint_sample = round((word.start + word.end) / 2 * _SAMPLE_RATE)
+        if not core.start_sample <= midpoint_sample < core.end_sample:
+            continue
+        clipped_start = max(core_start, word.start)
+        clipped_end = min(core_end, word.end)
+        if clipped_end <= clipped_start:
+            continue
+        owned_words.append(
+            replace(word, start=clipped_start, end=clipped_end)
+        )
+    if not owned_words:
+        return None
+
+    text = "".join(word.text for word in owned_words).strip()
+    if not text:
+        return None
+    start = owned_words[0].start
+    end = owned_words[-1].end
+    interval = _sample_interval(start, end, total_samples=total_samples)
+    speech = _speech_intervals(audio_analysis)
+    clipped_diagnostics = diagnostics.model_copy(
+        update={
+            "interval": interval,
+            "word_count": len(owned_words),
+            "valid_word_timestamp_count": len(owned_words),
+            "word_timestamp_coverage": 1.0,
+            "text_repetition_score": text_repetition_score(text),
+            "vad_speech_coverage": (
+                interval_coverage_ratio(interval, speech)
+                if speech is not None
+                else None
+            ),
+        }
+    )
+    return (
+        replace(
+            segment,
+            text=text,
+            start=start,
+            end=end,
+            words=tuple(owned_words),
+        ),
+        clipped_diagnostics,
+    )
 
 
 def _make_chunk_window(
@@ -351,6 +544,334 @@ def _deduplicate_boundary_segments(items: list[_ChunkSegment]) -> list[_ChunkSeg
     return sorted(kept, key=lambda value: (value.start, value.end))
 
 
+def _preserve_equivalent_initial_timeline(
+    initial: Sequence[_ChunkSegment],
+    retry: Sequence[_ChunkSegment],
+) -> list[_ChunkSegment]:
+    """Keep program-owned timing when retry only improves confidence facts."""
+
+    ordered_initial = sorted(initial, key=lambda item: (item.start, item.end))
+    ordered_retry = sorted(retry, key=lambda item: (item.start, item.end))
+    if len(ordered_initial) != len(ordered_retry) or any(
+        not _text_key(original.text)
+        or _text_key(original.text) != _text_key(replacement.text)
+        for original, replacement in zip(
+            ordered_initial,
+            ordered_retry,
+            strict=True,
+        )
+    ):
+        return list(retry)
+    return [
+        replace(
+            replacement,
+            start=original.start,
+            end=original.end,
+            words=original.words,
+            chunk_index=original.chunk_index,
+        )
+        for original, replacement in zip(
+            ordered_initial,
+            ordered_retry,
+            strict=True,
+        )
+    ]
+
+
+def _prepare_retry_plans(
+    kept_segments: Sequence[_ChunkSegment],
+    candidate_diagnostics: list[ASRSegmentDiagnostics],
+    *,
+    audio_analysis: ASRAudioAnalysis,
+    total_samples: int,
+    enabled: bool,
+) -> tuple[RetryRequestPlan, ...]:
+    diagnostic_indexes = {
+        diagnostics.candidate_id: index
+        for index, diagnostics in enumerate(candidate_diagnostics)
+    }
+    speech = _speech_intervals(audio_analysis)
+    facts: list[RetryCandidateFacts] = []
+    for index, segment in enumerate(kept_segments):
+        diagnostic_index = diagnostic_indexes[segment.candidate_id]
+        diagnostics = candidate_diagnostics[diagnostic_index]
+        gap_after_samples = 0
+        gap_after_speech_coverage: float | None = None
+        if index + 1 < len(kept_segments):
+            next_diagnostics = candidate_diagnostics[
+                diagnostic_indexes[kept_segments[index + 1].candidate_id]
+            ]
+            gap_after_samples = max(
+                0,
+                next_diagnostics.interval.start_sample
+                - diagnostics.interval.end_sample,
+            )
+            if gap_after_samples and speech is not None:
+                gap = AudioInterval(
+                    start_sample=diagnostics.interval.end_sample,
+                    end_sample=next_diagnostics.interval.start_sample,
+                )
+                gap_after_speech_coverage = interval_coverage_ratio(gap, speech)
+        diagnostics = diagnostics.model_copy(
+            update={
+                "gap_after_samples": gap_after_samples,
+                "gap_after_speech_coverage": gap_after_speech_coverage,
+            }
+        )
+        candidate_diagnostics[diagnostic_index] = diagnostics
+        facts.append(RetryCandidateFacts.from_diagnostics(diagnostics))
+
+    if not enabled:
+        return ()
+    assessments, plans = plan_retry_requests(
+        facts,
+        total_samples=total_samples,
+        sample_rate=_SAMPLE_RATE,
+    )
+    for segment, assessment in zip(kept_segments, assessments, strict=True):
+        if not assessment.should_retry:
+            continue
+        diagnostic_index = diagnostic_indexes[segment.candidate_id]
+        candidate_diagnostics[diagnostic_index] = candidate_diagnostics[
+            diagnostic_index
+        ].model_copy(
+            update={
+                "retry_candidate": True,
+                "retry_reasons": assessment.reasons,
+            }
+        )
+    return plans
+
+
+def _window_index_for_time(
+    value: float,
+    windows: Sequence[_ChunkWindow],
+) -> int:
+    for window in windows:
+        if window.core_start <= value < window.core_end:
+            return window.index
+    return windows[-1].index
+
+
+def _score_segments(
+    segments: Sequence[_ChunkSegment],
+    diagnostics_by_id: Mapping[str, ASRSegmentDiagnostics],
+    *,
+    speech_intervals: Sequence[AudioInterval] | None,
+):
+    quality_facts: list[CandidateQualityFacts] = []
+    for segment in segments:
+        diagnostics = diagnostics_by_id[segment.candidate_id]
+        assessment = evaluate_retry_reasons(
+            RetryCandidateFacts.from_diagnostics(diagnostics),
+            sample_rate=_SAMPLE_RATE,
+        )
+        quality_facts.append(
+            CandidateQualityFacts(
+                interval=diagnostics.interval,
+                avg_logprob=diagnostics.avg_logprob,
+                no_speech_prob=diagnostics.no_speech_prob,
+                compression_ratio=diagnostics.compression_ratio,
+                word_count=diagnostics.word_count,
+                valid_word_timestamp_count=diagnostics.valid_word_timestamp_count,
+                text_repetition_score=diagnostics.text_repetition_score,
+                vad_speech_coverage=diagnostics.vad_speech_coverage,
+                reason_severity=intrinsic_reason_severity(assessment),
+                text_character_count=len(_text_key(segment.text)),
+            )
+        )
+    return score_candidate_bundle(
+        quality_facts,
+        speech_intervals=speech_intervals,
+    )
+
+
+def _apply_selective_retries(
+    model: Any,
+    audio: Any,
+    initial_segments: Sequence[_ChunkSegment],
+    candidate_diagnostics: list[ASRSegmentDiagnostics],
+    plans: Sequence[RetryRequestPlan],
+    *,
+    windows: Sequence[_ChunkWindow],
+    detected_language: str,
+    settings: ASRSettings,
+    audio_analysis: ASRAudioAnalysis,
+    duration_seconds: float,
+    window_candidate_counts: list[int],
+    on_progress: ASRProgress | None,
+) -> tuple[list[_ChunkSegment], tuple[ASRRetryRequestDiagnostics, ...]]:
+    selected = list(initial_segments)
+    diagnostics_by_id = {
+        diagnostics.candidate_id: diagnostics
+        for diagnostics in candidate_diagnostics
+    }
+    speech = _speech_intervals(audio_analysis)
+    retry_diagnostics: list[ASRRetryRequestDiagnostics] = []
+
+    for request_index, plan in enumerate(plans):
+        target_ids = set(plan.candidate_ids)
+        initial = [item for item in selected if item.candidate_id in target_ids]
+        initial_score = _score_segments(
+            initial,
+            diagnostics_by_id,
+            speech_intervals=speech,
+        )
+        if initial_score is None:
+            raise RuntimeError("二次识别计划未引用有效首轮候选")
+
+        status: Literal[
+            "selected_initial",
+            "selected_retry",
+            "selected_empty",
+            "failed",
+        ]
+        retry_score_value: float | None = None
+        retry_segment_count = 0
+        try:
+            iterator, _ = model.transcribe(
+                audio[plan.context.start_sample : plan.context.end_sample],
+                language=detected_language,
+                task="transcribe",
+                beam_size=min(20, max(8, settings.beam_size + 3)),
+                patience=1.2,
+                temperature=0.0,
+                repetition_penalty=1.1,
+                no_repeat_ngram_size=3,
+                vad_filter=settings.vad_filter,
+                word_timestamps=True,
+                condition_on_previous_text=False,
+            )
+            raw_segments = list(iterator)
+            retry_segments: list[_ChunkSegment] = []
+            parsed_diagnostics: list[ASRSegmentDiagnostics] = []
+            context_start = plan.context.start_sample / _SAMPLE_RATE
+            context_end = plan.context.end_sample / _SAMPLE_RATE
+            for raw_segment_index, raw_segment in enumerate(raw_segments):
+                bounds = _segment_bounds(
+                    raw_segment,
+                    context_start=context_start,
+                    duration_seconds=duration_seconds,
+                )
+                if bounds is None:
+                    continue
+                start, end = bounds
+                start_sample = round(start * _SAMPLE_RATE)
+                end_sample = round(end * _SAMPLE_RATE)
+                if (
+                    start_sample >= plan.core.end_sample
+                    or end_sample <= plan.core.start_sample
+                ):
+                    continue
+                owned_start = max(start, plan.core.start_sample / _SAMPLE_RATE)
+                owned_end = min(end, plan.core.end_sample / _SAMPLE_RATE)
+                window_index = _window_index_for_time(
+                    (owned_start + owned_end) / 2,
+                    windows,
+                )
+                parsed = _parse_candidate(
+                    raw_segment,
+                    candidate_id=(
+                        "candidate-"
+                        f"retry-{request_index:06d}-segment-{raw_segment_index:06d}"
+                    ),
+                    window_index=window_index,
+                    start=start,
+                    end=end,
+                    context_start=context_start,
+                    context_end=context_end,
+                    duration_seconds=duration_seconds,
+                    total_samples=len(audio),
+                    audio_analysis=audio_analysis,
+                )
+                if parsed is None:
+                    continue
+                clipped = _clip_retry_candidate_to_core(
+                    *parsed,
+                    core=plan.core,
+                    total_samples=len(audio),
+                    audio_analysis=audio_analysis,
+                )
+                if clipped is None:
+                    continue
+                retry_segment, segment_diagnostics = clipped
+                retry_segments.append(retry_segment)
+                parsed_diagnostics.append(segment_diagnostics)
+
+            retry_diagnostics_by_id = {
+                diagnostics.candidate_id: diagnostics
+                for diagnostics in parsed_diagnostics
+            }
+            retry_score = _score_segments(
+                retry_segments,
+                retry_diagnostics_by_id,
+                speech_intervals=speech,
+            )
+            retry_score_value = (
+                retry_score.quality_score if retry_score is not None else None
+            )
+            retry_segment_count = len(retry_segments)
+            core_speech_samples = (
+                covered_samples(plan.core, speech) if speech is not None else None
+            )
+            select_retry = should_select_retry(
+                initial_score,
+                retry_score,
+                core_speech_samples=core_speech_samples,
+                sample_rate=_SAMPLE_RATE,
+            )
+            coverage_improved = (
+                retry_score is not None
+                and meaningfully_improves_speech_coverage(
+                    initial_score,
+                    retry_score,
+                    sample_rate=_SAMPLE_RATE,
+                )
+            )
+
+            candidate_diagnostics.extend(parsed_diagnostics)
+            diagnostics_by_id.update(retry_diagnostics_by_id)
+            for diagnostics in parsed_diagnostics:
+                window_candidate_counts[diagnostics.window_index] += 1
+            if select_retry:
+                selected = [
+                    item for item in selected if item.candidate_id not in target_ids
+                ]
+                selected.extend(
+                    retry_segments
+                    if coverage_improved
+                    else _preserve_equivalent_initial_timeline(
+                        initial,
+                        retry_segments,
+                    )
+                )
+                status = "selected_retry" if retry_segments else "selected_empty"
+            else:
+                status = "selected_initial"
+        except Exception:
+            status = "failed"
+            retry_score_value = None
+            retry_segment_count = 0
+
+        retry_diagnostics.append(
+            ASRRetryRequestDiagnostics(
+                request_id=plan.request_id,
+                candidate_ids=plan.candidate_ids,
+                core=plan.core,
+                context=plan.context,
+                reasons=plan.reasons,
+                status=status,
+                initial_score=initial_score.quality_score,
+                retry_score=retry_score_value,
+                retry_segment_count=retry_segment_count,
+            )
+        )
+        if on_progress:
+            on_progress(0.8 + (request_index + 1) / len(plans) * 0.2)
+
+    return _deduplicate_boundary_segments(selected), tuple(retry_diagnostics)
+
+
 def _subtitle_segment(index: int, *, start: float, end: float, text: str) -> SubtitleSegment:
     start_ms = max(0, round(start * 1_000))
     end_ms = max(start_ms + 1, round(end * 1_000))
@@ -520,8 +1041,10 @@ class FasterWhisperProvider(ASRProvider):
             fixed_windows = _chunk_windows(len(audio))
             if not fixed_windows:
                 raise RuntimeError("音频为空，无法执行 Faster-Whisper")
-            if settings.dynamic_chunking:
-                window_strategy: Literal["fixed", "vad_dynamic"] = "vad_dynamic"
+            needs_audio_analysis = (
+                settings.dynamic_chunking or settings.selective_retry
+            )
+            if needs_audio_analysis:
                 try:
                     from faster_whisper.vad import VadOptions, get_speech_timestamps
 
@@ -530,24 +1053,30 @@ class FasterWhisperProvider(ASRProvider):
                         get_speech_timestamps=get_speech_timestamps,
                         vad_options_type=VadOptions,
                     )
-                    windows = _dynamic_chunk_windows(
-                        len(audio),
-                        audio_analysis.non_speech_intervals,
-                    )
                 except Exception:
                     audio_analysis = ASRAudioAnalysis.failed(
                         sample_rate=_SAMPLE_RATE,
                         total_samples=len(audio),
                         vad_source="faster_whisper",
                     )
-                    windows = _fixed_fallback_windows(len(audio))
             else:
-                window_strategy = "fixed"
                 audio_analysis = ASRAudioAnalysis.unavailable(
                     sample_rate=_SAMPLE_RATE,
                     total_samples=len(audio),
                     vad_source="disabled",
                 )
+
+            if settings.dynamic_chunking:
+                window_strategy: Literal["fixed", "vad_dynamic"] = "vad_dynamic"
+                if audio_analysis.vad_status == "available":
+                    windows = _dynamic_chunk_windows(
+                        len(audio),
+                        audio_analysis.non_speech_intervals,
+                    )
+                else:
+                    windows = _fixed_fallback_windows(len(audio))
+            else:
+                window_strategy = "fixed"
                 windows = fixed_windows
             if on_progress:
                 on_progress(0.03)
@@ -565,7 +1094,7 @@ class FasterWhisperProvider(ASRProvider):
             window_candidate_counts = [0 for _ in windows]
             fallback_languages: list[str] = []
             fallback_probabilities: list[float] = []
-            for window_index, window in enumerate(windows, start=1):
+            for window_number, window in enumerate(windows, start=1):
                 iterator, info = model.transcribe(
                     audio[window.sample_start : window.sample_end],
                     language=detected_language,
@@ -586,100 +1115,43 @@ class FasterWhisperProvider(ASRProvider):
                         detected_probability = info_probability
 
                 for raw_segment_index, raw_segment in enumerate(chunk_segments):
-                    text = str(getattr(raw_segment, "text", "")).strip()
-                    if not text:
+                    bounds = _segment_bounds(
+                        raw_segment,
+                        context_start=window.context_start,
+                        duration_seconds=duration,
+                    )
+                    if bounds is None:
                         continue
-                    start = max(0.0, window.context_start + float(raw_segment.start))
-                    end = min(duration, window.context_start + float(raw_segment.end))
-                    end = max(start + 0.001, end)
+                    start, end = bounds
                     midpoint = (start + end) / 2
-                    if midpoint < window.core_start or (
-                        midpoint >= window.core_end and window.index < len(windows) - 1
-                    ):
+                    if not window.core_start <= midpoint < window.core_end:
                         continue
-                    words: list[_WordItem] = []
-                    raw_words = [
-                        raw_word
-                        for raw_word in (getattr(raw_segment, "words", None) or [])
-                        if str(getattr(raw_word, "word", "")).strip()
-                    ]
-                    for raw_word in raw_words:
-                        word_text = str(getattr(raw_word, "word", ""))
-                        relative_word_start = _optional_finite_float(
-                            getattr(raw_word, "start", None)
-                        )
-                        relative_word_end = _optional_finite_float(
-                            getattr(raw_word, "end", None)
-                        )
-                        if relative_word_start is None or relative_word_end is None:
-                            continue
-                        if not _valid_word_offsets(
-                            relative_word_start,
-                            relative_word_end,
-                            window_duration=window.context_end - window.context_start,
-                        ):
-                            continue
-                        word_start = max(
-                            0.0, window.context_start + relative_word_start
-                        )
-                        word_end = min(
-                            duration,
-                            window.context_start + relative_word_end,
-                        )
-                        words.append(
-                            _WordItem(
-                                text=word_text,
-                                start=word_start,
-                                end=max(word_start + 0.001, word_end),
-                            )
-                        )
-                    avg_logprob = _optional_finite_float(
-                        getattr(raw_segment, "avg_logprob", None)
+                    parsed = _parse_candidate(
+                        raw_segment,
+                        candidate_id=(
+                            "candidate-"
+                            f"chunk-{window.index:06d}-segment-{raw_segment_index:06d}"
+                        ),
+                        window_index=window.index,
+                        start=start,
+                        end=end,
+                        context_start=window.context_start,
+                        context_end=window.context_end,
+                        duration_seconds=duration,
+                        total_samples=len(audio),
+                        audio_analysis=audio_analysis,
                     )
-                    candidates.append(
-                        _ChunkSegment(
-                            text=text,
-                            start=start,
-                            end=end,
-                            words=tuple(words),
-                            chunk_index=window.index,
-                            avg_logprob=(
-                                avg_logprob if avg_logprob is not None else float("-inf")
-                            ),
-                        )
-                    )
-                    candidate_diagnostics.append(
-                        ASRSegmentDiagnostics(
-                            candidate_id=(
-                                "candidate-"
-                                f"chunk-{window.index:06d}-segment-{raw_segment_index:06d}"
-                            ),
-                            window_index=window.index,
-                            interval=_sample_interval(
-                                start,
-                                end,
-                                total_samples=len(audio),
-                            ),
-                            avg_logprob=avg_logprob,
-                            no_speech_prob=_optional_probability(
-                                getattr(raw_segment, "no_speech_prob", None)
-                            ),
-                            compression_ratio=_optional_non_negative_float(
-                                getattr(raw_segment, "compression_ratio", None)
-                            ),
-                            temperature=_optional_non_negative_float(
-                                getattr(raw_segment, "temperature", None)
-                            ),
-                            word_count=len(raw_words),
-                            valid_word_timestamp_count=len(words),
-                            word_timestamp_coverage=(
-                                len(words) / len(raw_words) if raw_words else 0.0
-                            ),
-                        )
-                    )
+                    if parsed is None:
+                        continue
+                    candidate, segment_diagnostics = parsed
+                    candidates.append(candidate)
+                    candidate_diagnostics.append(segment_diagnostics)
                     window_candidate_counts[window.index] += 1
                 if on_progress:
-                    on_progress(0.08 + window_index / len(windows) * 0.92)
+                    first_pass_span = 0.72 if settings.selective_retry else 0.92
+                    on_progress(
+                        0.08 + window_number / len(windows) * first_pass_span
+                    )
 
             chunk_segments = _deduplicate_boundary_segments(candidates)
             if not chunk_segments:
@@ -688,6 +1160,32 @@ class FasterWhisperProvider(ASRProvider):
                 detected_language = Counter(fallback_languages).most_common(1)[0][0]
                 detected_probability = max(fallback_probabilities, default=0.0)
             detected_language = detected_language or language
+            retry_plans = _prepare_retry_plans(
+                chunk_segments,
+                candidate_diagnostics,
+                audio_analysis=audio_analysis,
+                total_samples=len(audio),
+                enabled=settings.selective_retry,
+            )
+            if retry_plans:
+                chunk_segments, retry_diagnostics = _apply_selective_retries(
+                    model,
+                    audio,
+                    chunk_segments,
+                    candidate_diagnostics,
+                    retry_plans,
+                    windows=windows,
+                    detected_language=detected_language,
+                    settings=settings,
+                    audio_analysis=audio_analysis,
+                    duration_seconds=duration,
+                    window_candidate_counts=window_candidate_counts,
+                    on_progress=on_progress,
+                )
+            else:
+                retry_diagnostics = ()
+                if settings.selective_retry and on_progress:
+                    on_progress(1.0)
             segments = (
                 _word_resegmented_subtitles(
                     chunk_segments,
@@ -714,11 +1212,18 @@ class FasterWhisperProvider(ASRProvider):
                 )
                 for window in windows
             )
+            retry_reason_counts = Counter(
+                reason
+                for diagnostics in candidate_diagnostics
+                if diagnostics.retry_candidate
+                for reason in diagnostics.retry_reasons
+            )
             diagnostics = ASRRunDiagnostics(
                 window_strategy=window_strategy,
                 audio=audio_analysis,
                 windows=window_diagnostics,
                 segments=tuple(candidate_diagnostics),
+                retries=retry_diagnostics,
                 summary=ASRDiagnosticsSummary(
                     window_count=len(window_diagnostics),
                     fallback_window_count=sum(
@@ -728,8 +1233,28 @@ class FasterWhisperProvider(ASRProvider):
                         abs(window.boundary_shift_samples) for window in windows
                     ),
                     candidate_segment_count=len(candidate_diagnostics),
-                    deduplicated_segment_count=len(candidates) - len(chunk_segments),
+                    deduplicated_segment_count=(
+                        len(candidate_diagnostics) - len(chunk_segments)
+                    ),
                     output_segment_count=len(segments),
+                    retry_candidate_count=sum(
+                        diagnostics.retry_candidate
+                        for diagnostics in candidate_diagnostics
+                    ),
+                    retry_request_count=len(retry_diagnostics),
+                    retry_selected_count=sum(
+                        diagnostics.status in {"selected_retry", "selected_empty"}
+                        for diagnostics in retry_diagnostics
+                    ),
+                    retry_initial_selected_count=sum(
+                        diagnostics.status == "selected_initial"
+                        for diagnostics in retry_diagnostics
+                    ),
+                    retry_failed_count=sum(
+                        diagnostics.status == "failed"
+                        for diagnostics in retry_diagnostics
+                    ),
+                    retry_reason_counts=dict(retry_reason_counts),
                 ),
             )
             return TranscriptionResult(

@@ -33,6 +33,7 @@ export interface AsrStepConfig {
   compute_type: string
   vad_filter: boolean
   dynamic_chunking?: boolean
+  selective_retry?: boolean
   beam_size: number
   output_mode: AsrOutputMode
 }
@@ -173,6 +174,7 @@ export interface JobRequest {
     compute_type: 'float16' | 'int8'
     vad_filter: boolean
     dynamic_chunking: boolean
+    selective_retry: boolean
     beam_size: number
     output_mode: AsrOutputMode
   }

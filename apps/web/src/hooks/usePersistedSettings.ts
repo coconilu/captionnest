@@ -62,6 +62,10 @@ function loadSettings(): SettingsValue {
         value.asrDynamicChunking,
         DEFAULT_SETTINGS.asrDynamicChunking,
       ),
+      asrSelectiveRetry: booleanValue(
+        value.asrSelectiveRetry,
+        DEFAULT_SETTINGS.asrSelectiveRetry,
+      ),
       asrBeamSize: numberValue(value.asrBeamSize, DEFAULT_SETTINGS.asrBeamSize, 1, 20),
       provider: TRANSLATION_PROVIDERS.has(provider)
         ? provider as SettingsValue['provider']
@@ -107,6 +111,7 @@ function persistedValue(settings: SettingsValue) {
       useCuda: settings.useCuda,
       asrVadFilter: settings.asrVadFilter,
       asrDynamicChunking: settings.asrDynamicChunking,
+      asrSelectiveRetry: settings.asrSelectiveRetry,
       asrBeamSize: settings.asrBeamSize,
       provider: settings.provider,
       translationTimeoutSeconds: settings.translationTimeoutSeconds,

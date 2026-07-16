@@ -9,6 +9,7 @@ from sublingo_local.asr.diagnostics import (
     ASRDiagnosticsSummary,
     ASRExperimentReport,
     ASRExperimentVariant,
+    ASRRetryRequestDiagnostics,
     ASRRunDiagnostics,
     ASRSegmentDiagnostics,
     ASRWindowDiagnostics,
@@ -45,6 +46,56 @@ def _single_candidate_diagnostics(**summary_updates: int) -> ASRRunDiagnostics:
                 candidate_id="candidate-chunk-000000-segment-000000",
                 window_index=0,
                 interval=AudioInterval(start_sample=0, end_sample=8_000),
+            ),
+        ),
+        summary=summary,
+    )
+
+
+def _single_retry_diagnostics(**summary_updates: object) -> ASRRunDiagnostics:
+    total_samples = 16_000
+    summary = ASRDiagnosticsSummary(
+        window_count=1,
+        candidate_segment_count=1,
+        output_segment_count=1,
+        retry_candidate_count=1,
+        retry_request_count=1,
+        retry_initial_selected_count=1,
+        retry_reason_counts={"low_avg_logprob": 1},
+    ).model_copy(update=summary_updates)
+    candidate_id = "candidate-chunk-000000-segment-000000"
+    return ASRRunDiagnostics(
+        audio=ASRAudioAnalysis.unavailable(
+            sample_rate=16_000,
+            total_samples=total_samples,
+        ),
+        windows=(
+            ASRWindowDiagnostics(
+                index=0,
+                core=AudioInterval(start_sample=0, end_sample=total_samples),
+                context=AudioInterval(start_sample=0, end_sample=total_samples),
+                candidate_count=1,
+            ),
+        ),
+        segments=(
+            ASRSegmentDiagnostics(
+                candidate_id=candidate_id,
+                window_index=0,
+                interval=AudioInterval(start_sample=0, end_sample=8_000),
+                avg_logprob=-1.6,
+                retry_candidate=True,
+                retry_reasons=("low_avg_logprob",),
+            ),
+        ),
+        retries=(
+            ASRRetryRequestDiagnostics(
+                request_id="retry-000000",
+                candidate_ids=(candidate_id,),
+                core=AudioInterval(start_sample=0, end_sample=8_000),
+                context=AudioInterval(start_sample=0, end_sample=total_samples),
+                reasons=("low_avg_logprob",),
+                status="selected_initial",
+                initial_score=-2.0,
             ),
         ),
         summary=summary,
@@ -154,30 +205,83 @@ def test_candidate_ids_cannot_masquerade_as_final_subtitle_ids() -> None:
         )
 
 
-@pytest.mark.parametrize(
-    ("summary_updates", "message"),
-    [
-        ({"retry_candidate_count": 2}, "重试候选数量"),
-        (
-            {"retry_candidate_count": 1, "retry_request_count": 2},
-            "二次识别请求数量",
-        ),
-        (
-            {
-                "retry_candidate_count": 1,
-                "retry_request_count": 0,
-                "retry_selected_count": 1,
-            },
-            "采用二次结果数量",
-        ),
-    ],
-)
-def test_retry_summary_counts_are_bounded(
-    summary_updates: dict[str, int],
-    message: str,
-) -> None:
-    with pytest.raises(ValidationError, match=message):
-        _single_candidate_diagnostics(**summary_updates)
+def test_retry_summary_counts_must_exactly_match_details() -> None:
+    with pytest.raises(ValidationError, match="重试候选汇总数量"):
+        _single_candidate_diagnostics(retry_candidate_count=1)
+    with pytest.raises(ValidationError, match="二次识别请求汇总数量"):
+        _single_retry_diagnostics(retry_request_count=2)
+    with pytest.raises(ValidationError, match="采用二次结果数量"):
+        _single_retry_diagnostics(retry_selected_count=1)
+    with pytest.raises(ValidationError, match="二次识别命中原因汇总"):
+        _single_retry_diagnostics(retry_reason_counts={"speech_gap": 1})
+
+
+def test_retry_request_contract_rejects_inconsistent_result_shape() -> None:
+    common = {
+        "request_id": "retry-000000",
+        "candidate_ids": ("candidate-a",),
+        "core": AudioInterval(start_sample=0, end_sample=8_000),
+        "context": AudioInterval(start_sample=0, end_sample=16_000),
+        "reasons": ("low_avg_logprob",),
+        "status": "selected_initial",
+        "initial_score": -2.0,
+    }
+
+    with pytest.raises(ValidationError, match="评分必须与返回片段数量同时存在"):
+        ASRRetryRequestDiagnostics(**common, retry_segment_count=1)
+    with pytest.raises(ValidationError, match="评分必须与返回片段数量同时存在"):
+        ASRRetryRequestDiagnostics(**common, retry_score=-1.0)
+    with pytest.raises(ValidationError, match="正整数"):
+        ASRDiagnosticsSummary(retry_reason_counts={"speech_gap": 0})
+
+
+def test_retry_request_must_match_referenced_candidates() -> None:
+    valid = _single_retry_diagnostics()
+    request = valid.retries[0]
+
+    with pytest.raises(ValidationError, match="核心区必须包含"):
+        ASRRunDiagnostics.model_validate(
+            valid.model_copy(
+                update={
+                    "retries": (
+                        request.model_copy(
+                            update={
+                                "core": AudioInterval(
+                                    start_sample=1,
+                                    end_sample=8_000,
+                                )
+                            }
+                        ),
+                    )
+                }
+            ).model_dump()
+        )
+    with pytest.raises(ValidationError, match="原因必须等于引用候选原因并集"):
+        ASRRunDiagnostics.model_validate(
+            valid.model_copy(
+                update={
+                    "retries": (
+                        request.model_copy(update={"reasons": ("speech_gap",)}),
+                    )
+                }
+            ).model_dump()
+        )
+
+
+def test_old_run_diagnostics_payload_defaults_to_no_retries() -> None:
+    payload = _single_candidate_diagnostics().model_dump(mode="json")
+    payload.pop("retries")
+    for field in (
+        "retry_initial_selected_count",
+        "retry_failed_count",
+        "retry_reason_counts",
+    ):
+        payload["summary"].pop(field)
+
+    restored = ASRRunDiagnostics.model_validate(payload)
+
+    assert restored.retries == ()
+    assert restored.summary.retry_reason_counts == {}
 
 
 def test_transcription_result_binds_output_summary_to_subtitle_count() -> None:

@@ -95,6 +95,7 @@ class ASRSettings(BaseModel):
     compute_type: str = "auto"
     vad_filter: bool = True
     dynamic_chunking: bool = True
+    selective_retry: bool = True
     beam_size: int = Field(default=5, ge=1, le=20)
     output_mode: ASROutputMode = ASROutputMode.WORD_RESEGMENTED
 

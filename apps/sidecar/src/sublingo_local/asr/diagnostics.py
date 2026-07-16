@@ -11,7 +11,23 @@ from ..models import SubtitleSegment
 
 _IDENTIFIER_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,95}$")
 _CANDIDATE_ID_PATTERN = re.compile(r"^candidate-[a-z0-9][a-z0-9._-]{0,85}$")
+_RETRY_ID_PATTERN = re.compile(r"^retry-[a-z0-9][a-z0-9._-]{0,87}$")
 _METRIC_KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
+ASRRetryReason = Literal[
+    "low_avg_logprob",
+    "generation_repetition",
+    "speech_conflict",
+    "word_timestamps_incomplete",
+    "speech_gap",
+]
+_RETRY_REASON_ORDER: tuple[ASRRetryReason, ...] = (
+    "low_avg_logprob",
+    "generation_repetition",
+    "speech_conflict",
+    "word_timestamps_incomplete",
+    "speech_gap",
+)
 
 
 class AudioInterval(BaseModel):
@@ -180,6 +196,12 @@ class ASRSegmentDiagnostics(BaseModel):
     word_count: int = Field(default=0, ge=0)
     valid_word_timestamp_count: int = Field(default=0, ge=0)
     word_timestamp_coverage: float = Field(default=0, ge=0, le=1)
+    text_repetition_score: float = Field(default=0, ge=0, le=1)
+    vad_speech_coverage: float | None = Field(default=None, ge=0, le=1)
+    gap_after_samples: int = Field(default=0, ge=0)
+    gap_after_speech_coverage: float | None = Field(default=None, ge=0, le=1)
+    retry_candidate: bool = False
+    retry_reasons: tuple[ASRRetryReason, ...] = ()
 
     @field_validator("candidate_id")
     @classmethod
@@ -188,7 +210,15 @@ class ASRSegmentDiagnostics(BaseModel):
             raise ValueError("候选片段 ID 必须使用 candidate- 专用命名空间")
         return value
 
-    @field_validator("avg_logprob", "no_speech_prob", "compression_ratio", "temperature")
+    @field_validator(
+        "avg_logprob",
+        "no_speech_prob",
+        "compression_ratio",
+        "temperature",
+        "text_repetition_score",
+        "vad_speech_coverage",
+        "gap_after_speech_coverage",
+    )
     @classmethod
     def finite_optional_metric(cls, value: float | None) -> float | None:
         if value is not None and not math.isfinite(value):
@@ -202,6 +232,82 @@ class ASRSegmentDiagnostics(BaseModel):
         expected = self.valid_word_timestamp_count / self.word_count if self.word_count else 0.0
         if not math.isclose(self.word_timestamp_coverage, expected, abs_tol=1e-9):
             raise ValueError("词时间戳覆盖率与计数不一致")
+        if self.gap_after_samples == 0 and self.gap_after_speech_coverage is not None:
+            raise ValueError("零长度空洞不能携带 VAD 语音覆盖率")
+        if self.retry_candidate and not self.retry_reasons:
+            raise ValueError("重试候选必须记录至少一个命中原因")
+        if not self.retry_candidate and self.retry_reasons:
+            raise ValueError("非重试候选不能记录命中原因")
+        expected_reasons = tuple(
+            reason for reason in _RETRY_REASON_ORDER if reason in self.retry_reasons
+        )
+        if expected_reasons != self.retry_reasons or len(set(self.retry_reasons)) != len(
+            self.retry_reasons
+        ):
+            raise ValueError("重试原因必须唯一并使用稳定顺序")
+        return self
+
+
+class ASRRetryRequestDiagnostics(BaseModel):
+    request_id: str = Field(min_length=1, max_length=96)
+    candidate_ids: tuple[str, ...] = Field(min_length=1)
+    core: AudioInterval
+    context: AudioInterval
+    reasons: tuple[ASRRetryReason, ...] = Field(min_length=1)
+    status: Literal[
+        "selected_initial",
+        "selected_retry",
+        "selected_empty",
+        "failed",
+    ]
+    initial_score: float
+    retry_score: float | None = None
+    retry_segment_count: int = Field(default=0, ge=0)
+
+    @field_validator("request_id")
+    @classmethod
+    def stable_request_id(cls, value: str) -> str:
+        if not _RETRY_ID_PATTERN.fullmatch(value):
+            raise ValueError("二次识别请求 ID 必须使用 retry- 专用命名空间")
+        return value
+
+    @field_validator("initial_score", "retry_score")
+    @classmethod
+    def finite_score(cls, value: float | None) -> float | None:
+        if value is not None and not math.isfinite(value):
+            raise ValueError("二次识别评分必须是有限数值")
+        return value
+
+    @model_validator(mode="after")
+    def validate_request(self) -> ASRRetryRequestDiagnostics:
+        if self.context.start_sample > self.core.start_sample or (
+            self.context.end_sample < self.core.end_sample
+        ):
+            raise ValueError("二次识别上下文必须完整包含替换核心区")
+        if len(set(self.candidate_ids)) != len(self.candidate_ids) or any(
+            not _CANDIDATE_ID_PATTERN.fullmatch(candidate_id)
+            for candidate_id in self.candidate_ids
+        ):
+            raise ValueError("二次识别引用的候选 ID 必须唯一且有效")
+        expected_reasons = tuple(
+            reason for reason in _RETRY_REASON_ORDER if reason in self.reasons
+        )
+        if expected_reasons != self.reasons or len(set(self.reasons)) != len(self.reasons):
+            raise ValueError("二次识别原因必须唯一并使用稳定顺序")
+        if (self.retry_score is None) != (self.retry_segment_count == 0):
+            raise ValueError("二次识别评分必须与返回片段数量同时存在")
+        if self.status == "failed" and (
+            self.retry_score is not None or self.retry_segment_count != 0
+        ):
+            raise ValueError("失败的二次识别不能携带结果评分或片段")
+        if self.status == "selected_retry" and (
+            self.retry_score is None or self.retry_segment_count == 0
+        ):
+            raise ValueError("采用二次结果时必须包含有效评分和片段")
+        if self.status == "selected_empty" and (
+            self.retry_score is not None or self.retry_segment_count != 0
+        ):
+            raise ValueError("采用空结果时不能携带结果评分或片段")
         return self
 
 
@@ -215,6 +321,19 @@ class ASRDiagnosticsSummary(BaseModel):
     retry_candidate_count: int = Field(default=0, ge=0)
     retry_request_count: int = Field(default=0, ge=0)
     retry_selected_count: int = Field(default=0, ge=0)
+    retry_initial_selected_count: int = Field(default=0, ge=0)
+    retry_failed_count: int = Field(default=0, ge=0)
+    retry_reason_counts: dict[ASRRetryReason, int] = Field(default_factory=dict)
+
+    @field_validator("retry_reason_counts")
+    @classmethod
+    def positive_retry_reason_counts(
+        cls,
+        value: dict[ASRRetryReason, int],
+    ) -> dict[ASRRetryReason, int]:
+        if any(isinstance(count, bool) or count <= 0 for count in value.values()):
+            raise ValueError("二次识别原因汇总只能包含正整数")
+        return value
 
 
 class ASRRunDiagnostics(BaseModel):
@@ -223,6 +342,7 @@ class ASRRunDiagnostics(BaseModel):
     audio: ASRAudioAnalysis
     windows: tuple[ASRWindowDiagnostics, ...] = ()
     segments: tuple[ASRSegmentDiagnostics, ...] = ()
+    retries: tuple[ASRRetryRequestDiagnostics, ...] = ()
     summary: ASRDiagnosticsSummary = Field(default_factory=ASRDiagnosticsSummary)
 
     @model_validator(mode="after")
@@ -245,15 +365,25 @@ class ASRRunDiagnostics(BaseModel):
             raise ValueError("窗口核心区必须覆盖完整音频")
 
         candidate_ids: set[str] = set()
+        segments_by_id: dict[str, ASRSegmentDiagnostics] = {}
+        retry_candidate_ids: set[str] = set()
+        reason_counts = {reason: 0 for reason in _RETRY_REASON_ORDER}
         for segment in self.segments:
             if segment.candidate_id in candidate_ids:
                 raise ValueError("候选片段 ID 不能重复")
             candidate_ids.add(segment.candidate_id)
+            segments_by_id[segment.candidate_id] = segment
             if segment.window_index >= len(self.windows):
                 raise ValueError("候选片段引用了不存在的窗口")
             if segment.interval.end_sample > self.audio.total_samples:
                 raise ValueError("候选片段不能超出音频范围")
+            if segment.interval.end_sample + segment.gap_after_samples > self.audio.total_samples:
+                raise ValueError("候选片段后的空洞不能超出音频范围")
             candidate_counts[segment.window_index] += 1
+            if segment.retry_candidate:
+                retry_candidate_ids.add(segment.candidate_id)
+                for reason in segment.retry_reasons:
+                    reason_counts[reason] += 1
         if candidate_counts != [window.candidate_count for window in self.windows]:
             raise ValueError("窗口候选数量与片段明细不一致")
 
@@ -269,12 +399,73 @@ class ASRRunDiagnostics(BaseModel):
             raise ValueError("边界吸附距离汇总与窗口明细不一致")
         if self.summary.deduplicated_segment_count > self.summary.candidate_segment_count:
             raise ValueError("去重数量不能超过候选片段数量")
-        if self.summary.retry_candidate_count > self.summary.candidate_segment_count:
-            raise ValueError("重试候选数量不能超过候选片段数量")
-        if self.summary.retry_request_count > self.summary.retry_candidate_count:
-            raise ValueError("二次识别请求数量不能超过重试候选数量")
-        if self.summary.retry_selected_count > self.summary.retry_request_count:
-            raise ValueError("采用二次结果数量不能超过二次识别请求数量")
+        if self.summary.retry_candidate_count != len(retry_candidate_ids):
+            raise ValueError("重试候选汇总数量与片段明细不一致")
+
+        request_ids: set[str] = set()
+        requested_candidate_ids: set[str] = set()
+        for retry in self.retries:
+            if retry.request_id in request_ids:
+                raise ValueError("二次识别请求 ID 不能重复")
+            request_ids.add(retry.request_id)
+            if retry.context.end_sample > self.audio.total_samples:
+                raise ValueError("二次识别请求不能超出音频范围")
+            retry_candidate_prefix = f"candidate-{retry.request_id}-segment-"
+            returned_retry_segments = tuple(
+                segment
+                for segment in self.segments
+                if segment.candidate_id.startswith(retry_candidate_prefix)
+            )
+            if len(returned_retry_segments) != retry.retry_segment_count:
+                raise ValueError("二次识别返回片段数量与候选明细不一致")
+            if any(
+                segment.interval.start_sample < retry.core.start_sample
+                or segment.interval.end_sample > retry.core.end_sample
+                for segment in returned_retry_segments
+            ):
+                raise ValueError("二次识别返回片段不能超出替换核心区")
+            referenced_reasons: set[ASRRetryReason] = set()
+            for candidate_id in retry.candidate_ids:
+                if candidate_id not in retry_candidate_ids:
+                    raise ValueError("二次识别请求只能引用已标记的首轮候选")
+                if candidate_id in requested_candidate_ids:
+                    raise ValueError("同一首轮候选最多进入一个二次识别请求")
+                requested_candidate_ids.add(candidate_id)
+                candidate = segments_by_id[candidate_id]
+                if (
+                    candidate.interval.start_sample < retry.core.start_sample
+                    or candidate.interval.end_sample > retry.core.end_sample
+                ):
+                    raise ValueError("二次识别核心区必须包含所有引用候选")
+                referenced_reasons.update(candidate.retry_reasons)
+            expected_request_reasons = tuple(
+                reason for reason in _RETRY_REASON_ORDER if reason in referenced_reasons
+            )
+            if retry.reasons != expected_request_reasons:
+                raise ValueError("二次识别请求原因必须等于引用候选原因并集")
+        if self.summary.retry_request_count != len(self.retries):
+            raise ValueError("二次识别请求汇总数量与明细不一致")
+        selected_count = sum(
+            retry.status in {"selected_retry", "selected_empty"}
+            for retry in self.retries
+        )
+        initial_count = sum(
+            retry.status == "selected_initial" for retry in self.retries
+        )
+        failed_count = sum(retry.status == "failed" for retry in self.retries)
+        if self.summary.retry_selected_count != selected_count:
+            raise ValueError("采用二次结果数量与请求明细不一致")
+        if self.summary.retry_initial_selected_count != initial_count:
+            raise ValueError("保留首轮结果数量与请求明细不一致")
+        if self.summary.retry_failed_count != failed_count:
+            raise ValueError("二次识别失败数量与请求明细不一致")
+        if selected_count + initial_count + failed_count != len(self.retries):
+            raise ValueError("二次识别请求状态汇总不完整")
+        expected_reason_counts = {
+            reason: count for reason, count in reason_counts.items() if count
+        }
+        if self.summary.retry_reason_counts != expected_reason_counts:
+            raise ValueError("二次识别命中原因汇总与候选明细不一致")
         return self
 
 
@@ -371,5 +562,9 @@ def collect_transcription_metrics(
             retry_candidate_count=summary.retry_candidate_count,
             retry_request_count=summary.retry_request_count,
             retry_selected_count=summary.retry_selected_count,
+            retry_initial_selected_count=summary.retry_initial_selected_count,
+            retry_failed_count=summary.retry_failed_count,
         )
+        for reason, count in summary.retry_reason_counts.items():
+            metrics[f"retry_reason_{reason}_count"] = count
     return metrics

@@ -161,6 +161,9 @@ def test_path_pipeline_writes_artifacts_and_one_bilingual_subtitle(
         "retry_candidate_count": 0,
         "retry_request_count": 0,
         "retry_selected_count": 0,
+        "retry_initial_selected_count": 0,
+        "retry_failed_count": 0,
+        "retry_reason_counts": {},
     }
     persisted = store.read_artifact(Path(transcription.path))
     assert persisted["diagnostics"]["audio"]["total_samples"] == 19_200
@@ -364,7 +367,7 @@ def test_legacy_qwen_job_remains_visible_until_asr_config_is_migrated(
     )
 
 
-def test_job_created_before_dynamic_chunking_keeps_fixed_windows(
+def test_job_created_before_new_asr_features_keeps_historical_behavior(
     tmp_path: Path,
 ) -> None:
     payload = JobRecord(
@@ -376,13 +379,17 @@ def test_job_created_before_dynamic_chunking_keeps_fixed_windows(
         ),
     ).to_payload()
     payload["asr"].pop("dynamic_chunking")
+    payload["asr"].pop("selective_retry")
 
     record = JobRecord.from_payload(payload)
 
     assert isinstance(record.asr, ASRSettings)
     assert record.asr.dynamic_chunking is False
+    assert record.asr.selective_retry is False
     assert record.to_view().steps[1].config["dynamic_chunking"] is False
+    assert record.to_view().steps[1].config["selective_retry"] is False
     assert ASRSettings().dynamic_chunking is True
+    assert ASRSettings().selective_retry is True
 
 
 def test_job_request_exposes_only_target_language() -> None:
@@ -390,6 +397,7 @@ def test_job_request_exposes_only_target_language() -> None:
 
     assert request.target_language == TargetLanguage.ZH_CN
     assert request.asr.output_mode == ASROutputMode.WORD_RESEGMENTED
+    assert request.asr.selective_retry is True
     assert "source_language" not in JobCreateRequest.model_fields
     assert "output" not in JobCreateRequest.model_fields
     for value in ("zh-CN", "en", "ko"):

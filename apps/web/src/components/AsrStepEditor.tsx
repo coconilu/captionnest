@@ -28,6 +28,8 @@ export function AsrStepEditor({
       model,
       provider: 'faster_whisper',
       device: current.device === 'cuda' && cudaAvailable ? 'cuda' : 'cpu',
+      dynamic_chunking: current.dynamic_chunking ?? false,
+      selective_retry: current.selective_retry ?? false,
       compute_type:
         current.device === 'cuda' && cudaAvailable ? current.compute_type : 'int8',
     }))
@@ -122,6 +124,22 @@ export function AsrStepEditor({
           onChange={(event) => setDraft((current) => ({
             ...current,
             dynamic_chunking: event.target.checked,
+          }))}
+        />
+        <i aria-hidden="true" />
+      </label>
+      <label className="switch-row">
+        <span>
+          <strong>低置信片段二次识别</strong>
+          <small>只对可疑片段执行一次有界重识别</small>
+        </span>
+        <input
+          type="checkbox"
+          checked={draft.selective_retry ?? false}
+          disabled={saving || legacy}
+          onChange={(event) => setDraft((current) => ({
+            ...current,
+            selective_retry: event.target.checked,
           }))}
         />
         <i aria-hidden="true" />
