@@ -44,16 +44,6 @@
 .\scripts\stop-local-services.ps1
 ```
 
-如需维护隐藏的 Qwen3-ASR 实验兼容 Provider：
-
-```powershell
-uv sync --project apps/sidecar --extra asr --extra qwen --extra dev
-```
-
-Windows/Linux 的 `qwen` extra 固定使用 PyTorch 2.10 CUDA 12.8 wheel。Provider 在进程内直接
-加载 Qwen3-ASR-1.7B 与 Qwen3-ForcedAligner-0.6B，不需要也不会连接 LM Studio。当前桌面
-Release 构建不包含该 extra，产品界面和公开能力列表也不会展示 Qwen。
-
 桌面调试会先生成 PyInstaller onedir sidecar，再启动 Vite 和 Tauri：
 
 ```powershell
@@ -113,7 +103,7 @@ npm --prefix apps/web run desktop:build
 
 ## 关键约束
 
-- `faster_whisper`、`torch` 与 `qwen_asr` 必须延迟导入，缺 GPU 依赖时 Web UI 和单测仍能启动。
+- `faster_whisper` 必须延迟导入，缺 GPU 依赖时 Web UI 和单测仍能启动。
 - 翻译器必须实现统一 Provider 接口；API Key 不得进入日志或持久文件。
 - Codex Spark 只能通过本机 `codex exec` 与现有登录调用。
 - 时间轴由程序持有，模型只翻译稳定 ID。

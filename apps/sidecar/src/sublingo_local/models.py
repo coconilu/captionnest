@@ -20,7 +20,13 @@ class TranslationProviderName(StrEnum):
 
 class ASRProviderName(StrEnum):
     FASTER_WHISPER = "faster_whisper"
-    QWEN3_ASR = "qwen3_asr"
+
+
+class ASRModelName(StrEnum):
+    SMALL = "small"
+    MEDIUM = "medium"
+    LARGE_V3_TURBO = "large-v3-turbo"
+    LARGE_V3 = "large-v3"
 
 
 class ASROutputMode(StrEnum):
@@ -84,34 +90,45 @@ class LogLevel(StrEnum):
 
 class ASRSettings(BaseModel):
     provider: ASRProviderName = ASRProviderName.FASTER_WHISPER
-    model: str = "small"
+    model: ASRModelName = ASRModelName.SMALL
     device: Literal["auto", "cpu", "cuda"] = "auto"
     compute_type: str = "auto"
     vad_filter: bool = True
     beam_size: int = Field(default=5, ge=1, le=20)
     output_mode: ASROutputMode = ASROutputMode.WORD_RESEGMENTED
 
-    @field_validator("model", "compute_type")
+    @field_validator("model", mode="before")
     @classmethod
-    def non_empty(cls, value: str) -> str:
+    def strip_model(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("compute_type")
+    @classmethod
+    def non_empty_compute_type(cls, value: str) -> str:
         value = value.strip()
         if not value:
             raise ValueError("不能为空")
         return value
 
-    @model_validator(mode="after")
-    def provider_matches_model(self) -> ASRSettings:
-        qwen_model = "qwen3-asr-1.7b"
-        if self.provider == ASRProviderName.QWEN3_ASR and self.model != qwen_model:
-            raise ValueError(f"Qwen3-ASR Provider 只支持模型 {qwen_model}")
-        if self.provider == ASRProviderName.FASTER_WHISPER and self.model == qwen_model:
-            raise ValueError("Qwen3-ASR 模型必须使用 qwen3_asr Provider")
-        if (
-            self.provider == ASRProviderName.QWEN3_ASR
-            and self.output_mode != ASROutputMode.WORD_RESEGMENTED
-        ):
-            raise ValueError("Qwen3-ASR 兼容模式只支持逐词重排输出")
-        return self
+
+class LegacyASRSettings(BaseModel):
+    """Read-only shape for persisted Qwen jobs created by older versions."""
+
+    provider: Literal["qwen3_asr"] = "qwen3_asr"
+    model: Literal["qwen3-asr-1.7b"] = "qwen3-asr-1.7b"
+    device: Literal["auto", "cpu", "cuda"] = "auto"
+    compute_type: str = "auto"
+    vad_filter: bool = True
+    beam_size: int = Field(default=5, ge=1, le=20)
+    output_mode: Literal[ASROutputMode.WORD_RESEGMENTED] = ASROutputMode.WORD_RESEGMENTED
+
+    @field_validator("compute_type")
+    @classmethod
+    def non_empty_compute_type(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("不能为空")
+        return value
 
 
 class TranslationSettings(BaseModel):
@@ -284,7 +301,7 @@ class JobView(BaseModel):
     source_kind: SourceKind
     detected_language: str | None = None
     target_language: TargetLanguage
-    asr_provider: ASRProviderName
+    asr_provider: ASRProviderName | Literal["qwen3_asr"]
     translation_provider: TranslationProviderName
     created_at: datetime
     updated_at: datetime

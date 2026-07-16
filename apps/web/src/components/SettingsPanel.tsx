@@ -32,7 +32,6 @@ const MODEL_LABELS: Record<AsrModel, string> = {
   medium: 'medium',
   'large-v3': 'large-v3',
   'large-v3-turbo': 'large-v3-turbo',
-  'qwen3-asr-1.7b': 'Qwen3-ASR-1.7B',
 }
 
 const OUTPUT_MODES: Array<{

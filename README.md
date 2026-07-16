@@ -76,17 +76,6 @@ Web/API 开发环境：
 .\scripts\dev.ps1
 ```
 
-源码环境仍保留 Qwen3-ASR 1.7B 与 ForcedAligner 的实验兼容代码：
-
-```powershell
-uv sync --project apps/sidecar --extra asr --extra qwen --extra dev
-```
-
-Qwen3-ASR 由 CaptionNest Python Provider 直接加载，不经过 LM Studio。当前产品界面和公开能力
-列表只提供 Faster-Whisper；Qwen 不再作为用户可选模型或推荐路径，已有源码集成与模型包仍可兼容。
-Qwen 音频会按低能量边界分成最长约 60 秒的对齐窗口，并在自动检测到首个可靠语言后锁定语言。
-ForcedAligner 返回零时长堆积或跨越异常长度的单词时，质量门会中止任务，避免静默写出误导性 SRT。
-
 Windows 桌面开发：
 
 ```powershell

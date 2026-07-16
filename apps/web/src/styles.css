@@ -2115,6 +2115,7 @@ select:disabled {
 
 .pipeline-editor-form > .provider-fieldset,
 .pipeline-editor-form > .switch-row,
+.pipeline-editor-form > .pipeline-step-error,
 .pipeline-editor-form > .pipeline-secret-note,
 .pipeline-editor-form > .pipeline-editor-actions {
   grid-column: 1 / -1;

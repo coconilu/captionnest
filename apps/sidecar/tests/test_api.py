@@ -136,6 +136,35 @@ def test_job_rejects_missing_or_ambiguous_source(tmp_path: Path) -> None:
         assert ambiguous.status_code == 422
 
 
+def test_job_rejects_removed_or_unknown_asr_models(tmp_path: Path) -> None:
+    video = tmp_path / "lesson.mp4"
+    video.write_bytes(b"fake video")
+    app = create_app(data_dir=tmp_path / "data", pipeline=FakePipeline())  # type: ignore[arg-type]
+
+    invalid_settings = (
+        {"provider": "faster_whisper", "model": "qwen3-asr-1.7b"},
+        {"provider": "qwen3_asr", "model": "qwen3-asr-1.7b"},
+        {"provider": "faster_whisper", "model": "not-a-model"},
+    )
+    with TestClient(app) as client:
+        for asr in invalid_settings:
+            response = client.post(
+                "/api/jobs",
+                json={"video_path": str(video), "asr": asr},
+            )
+            assert response.status_code == 422
+
+        for model in ("small", "medium", "large-v3-turbo", "large-v3"):
+            response = client.post(
+                "/api/jobs",
+                json={
+                    "video_path": str(video),
+                    "asr": {"provider": "faster_whisper", "model": model},
+                },
+            )
+            assert response.status_code == 200
+
+
 def test_validation_error_never_echoes_api_key(tmp_path: Path) -> None:
     app = create_app(data_dir=tmp_path / "data", pipeline=FakePipeline())  # type: ignore[arg-type]
     secret = "deepseek-secret-in-invalid-request"
@@ -229,10 +258,15 @@ def test_model_catalog_and_download_endpoint(
         assert catalog.status_code == 200
         assert catalog.json()["model_root"] == str((tmp_path / "data" / "models").resolve())
         assert {item["status"] for item in catalog.json()["items"]} == {"missing"}
-        qwen = next(
-            item for item in catalog.json()["items"] if item["id"] == "qwen3-asr-1.7b"
-        )
-        assert qwen["provider"] == "qwen3_asr"
+        assert {item["id"] for item in catalog.json()["items"]} == {
+            "small",
+            "medium",
+            "large-v3-turbo",
+            "large-v3",
+        }
+        assert {item["provider"] for item in catalog.json()["items"]} == {
+            "faster_whisper"
+        }
 
         calls: list[str] = []
 
