@@ -104,6 +104,7 @@ export function SettingsPanel({
           <span>切分 · {outputMode}</span>
           <span>边界 · {value.asrDynamicChunking ? '动态' : '固定'}</span>
           <span>重识别 · {value.asrSelectiveRetry ? '有界开启' : '关闭'}</span>
+          <span>校时 · {value.asrTimestampNormalization ? '实验开启' : '关闭'}</span>
           <span>提示词 · {hotwordValidation.hotwords.length} 个</span>
           <span className="is-provider"><i aria-hidden="true" />{provider}</span>
         </div>
@@ -207,6 +208,22 @@ export function SettingsPanel({
                 checked={value.asrSelectiveRetry}
                 disabled={disabled}
                 onChange={(event) => patch('asrSelectiveRetry', event.target.checked)}
+              />
+              <i aria-hidden="true" />
+            </label>
+            <label className="switch-row">
+              <span>
+                <strong>实验性时间轴校正</strong>
+                <small>利用共享 VAD 收紧静音边界并修正异常 gap</small>
+              </span>
+              <input
+                type="checkbox"
+                checked={value.asrTimestampNormalization}
+                disabled={disabled}
+                onChange={(event) => patch(
+                  'asrTimestampNormalization',
+                  event.target.checked,
+                )}
               />
               <i aria-hidden="true" />
             </label>

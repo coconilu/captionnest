@@ -336,6 +336,8 @@ def test_experiment_report_contains_only_opaque_ids_and_numeric_metrics() -> Non
         "subtitle_count": 2,
         "text_character_count": 7,
         "timeline_covered_ms": 1_200,
+        "subtitle_overlap_count": 1,
+        "subtitle_overlap_ms": 100,
     }
     assert "秘密" not in payload
     assert "字幕" not in payload
@@ -354,3 +356,55 @@ def test_experiment_report_contains_only_opaque_ids_and_numeric_metrics() -> Non
             elapsed_ms=1,
             metrics={"score": math.inf},
         )
+
+
+def test_experiment_metrics_include_timestamp_overlap_and_normalization_counts() -> None:
+    diagnostics = ASRRunDiagnostics(
+        audio=ASRAudioAnalysis(
+            sample_rate=1_000,
+            total_samples=3_000,
+            vad_source="test_vad",
+            vad_status="available",
+            speech_intervals=(AudioInterval(start_sample=500, end_sample=2_500),),
+        ),
+        windows=(
+            ASRWindowDiagnostics(
+                index=0,
+                core=AudioInterval(start_sample=0, end_sample=3_000),
+                context=AudioInterval(start_sample=0, end_sample=3_000),
+                candidate_count=1,
+            ),
+        ),
+        segments=(
+            ASRSegmentDiagnostics(
+                candidate_id="candidate-chunk-000000-segment-000000",
+                window_index=0,
+                interval=AudioInterval(start_sample=400, end_sample=2_600),
+            ),
+        ),
+        summary=ASRDiagnosticsSummary(
+            window_count=1,
+            candidate_segment_count=1,
+            output_segment_count=2,
+            timestamp_normalization_status="applied",
+            timestamp_word_boundary_shift_count=2,
+            timestamp_segment_boundary_shift_count=2,
+            timestamp_boundary_shift_abs_total_samples=400,
+            timestamp_unsafe_adjustment_count=1,
+        ),
+    )
+    segments = [
+        SubtitleSegment(id="seg-000001", start_ms=400, end_ms=1_100, text="甲"),
+        SubtitleSegment(id="seg-000002", start_ms=1_000, end_ms=2_600, text="乙"),
+    ]
+
+    metrics = collect_transcription_metrics(segments, diagnostics)
+
+    assert metrics["subtitle_overlap_count"] == 1
+    assert metrics["subtitle_overlap_ms"] == 100
+    assert metrics["subtitle_boundary_nonspeech_overlap_samples"] == 200
+    assert metrics["timestamp_normalization_applied"] == 1
+    assert metrics["timestamp_word_boundary_shift_count"] == 2
+    assert metrics["timestamp_segment_boundary_shift_count"] == 2
+    assert metrics["timestamp_boundary_shift_abs_total_samples"] == 400
+    assert metrics["timestamp_unsafe_adjustment_count"] == 1

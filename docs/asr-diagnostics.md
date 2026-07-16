@@ -63,7 +63,7 @@ flowchart LR
 | 归属与去重 | 沿用片段中点归属核心区和现有跨边界去重，不改变两种输出模式 |
 | 开关 | `dynamic_chunking=false` 直接使用固定窗口；若局部重识别仍开启，共享 VAD 仍会运行一次供质量判定使用 |
 
-停顿选择使用 sample 级确定性排序；同一份音频和配置必须生成相同窗口。`vad_filter` 仍原样传给每个 Faster-Whisper 窗口，它与共享边界分析是独立开关。只有 `dynamic_chunking=false` 且 `selective_retry=false` 时，才完全不导入或调用共享 VAD。
+停顿选择使用 sample 级确定性排序；同一份音频和配置必须生成相同窗口。`vad_filter` 仍原样传给每个 Faster-Whisper 窗口，它与共享边界分析是独立开关。只有 `dynamic_chunking=false`、`selective_retry=false` 且 `timestamp_normalization=false` 时，才完全不导入或调用共享 VAD。
 
 ## #16 选择性二次识别契约
 
@@ -95,7 +95,23 @@ flowchart LR
 | 空词表 | 不向 `transcribe` 传 `hotwords` 参数，保持原有调用路径 |
 | 隐私 | 任务配置可保存结构化词表；日志、识别产物、诊断和 A/B 报告不得保存正文，只记录数量或数值 |
 
-## 后续功能接入顺序
+## #19 实验性时间戳规范化契约
+
+| 项目 | 规则 |
+|---|---|
+| 位置 | 跨窗口去重和 #16 择优全部结束后、两种字幕渲染器之前执行 |
+| 输入 | 父分片、逐词时间戳与共享 VAD 的 speech 补集；统一转换为 sample 级半开区间 |
+| 静音收紧 | 不少于 120 ms 的非语音区间可用于收紧落入静音的起止边界 |
+| gap adjustment | 优先采用可安全到达的静音两侧；否则只修正重叠或不超过 120 ms 的小 gap，并使用确定性中点 |
+| 硬上限 | 每个边界最多移动 300 ms；词和父分片均至少 100 ms |
+| 内容与身份 | 文本、顺序、条目数不变；逐词分组使用校时前快照，确保两种输出模式的稳定 ID 不漂移 |
+| 回退 | 单点不安全时保留原边界；最终结构越界、倒序或父子不包含时整轨回退 |
+| 开关 | `timestamp_normalization=false` 为默认；VAD 不可用时状态为 `unavailable` 并精确保持原时间轴 |
+| 依赖 | 独立实现，不引入 stable-ts、PyTorch 或额外模型调用；来源与差异见[时间戳规范化说明](timestamp-normalization.md) |
+
+诊断汇总记录状态、词/父分片边界移动次数、绝对移动 sample 总量、不安全候选数和整轨回退次数。A/B 指标另记录字幕重叠与边界侵入非语音的数值，仍不得保存字幕正文或媒体路径。
+
+## 功能接入状态
 
 | Issue | 复用方式 |
 |---|---|
@@ -103,4 +119,4 @@ flowchart LR
 | #16 | 读取同一 audio/segment 诊断做纯函数判定，执行有界局部重识别并累计原因与择优计数 |
 | #21 | 独立记录 Attempt 单调时钟耗时与模型 Token；不复用 A/B 的 `elapsed_ms` 冒充运行指标 |
 | #18 | 每个窗口和二次识别继承同一任务词表；A/B 报告继续只保存数值 |
-| #19 | 从 speech 补集得到 non-speech，调整时间戳但不改变文本和 ID |
+| #19 | 从 speech 补集得到 non-speech，在两种渲染前有界调整时间戳；分组、文本和 ID 保持不变 |

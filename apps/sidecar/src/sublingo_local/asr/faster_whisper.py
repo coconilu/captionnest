@@ -38,6 +38,12 @@ from .retry import (
     should_select_retry,
     text_repetition_score,
 )
+from .timestamp_normalization import (
+    DEFAULT_TIMESTAMP_NORMALIZATION_POLICY,
+    TimestampNormalizationStats,
+    TimestampTrackItem,
+    normalize_timestamp_track,
+)
 
 _SAMPLE_RATE = 16_000
 _CORE_SECONDS = 60.0
@@ -927,6 +933,65 @@ def _chunk_segments_to_subtitles(items: list[_ChunkSegment]) -> list[SubtitleSeg
     ]
 
 
+def _normalize_chunk_segment_timestamps(
+    items: Sequence[_ChunkSegment],
+    *,
+    audio_analysis: ASRAudioAnalysis,
+) -> tuple[
+    list[_ChunkSegment],
+    TimestampNormalizationStats,
+    tuple[AudioInterval, ...],
+]:
+    track = tuple(
+        TimestampTrackItem(
+            interval=_sample_interval(
+                item.start,
+                item.end,
+                total_samples=audio_analysis.total_samples,
+            ),
+            words=tuple(
+                _sample_interval(
+                    word.start,
+                    word.end,
+                    total_samples=audio_analysis.total_samples,
+                )
+                for word in item.words
+            ),
+        )
+        for item in items
+    )
+    result = normalize_timestamp_track(
+        track,
+        non_speech_intervals=audio_analysis.non_speech_intervals,
+        sample_rate=audio_analysis.sample_rate,
+        total_samples=audio_analysis.total_samples,
+    )
+    normalized: list[_ChunkSegment] = []
+    for item, normalized_item in zip(items, result.items, strict=True):
+        normalized.append(
+            replace(
+                item,
+                start=(
+                    normalized_item.interval.start_sample / audio_analysis.sample_rate
+                ),
+                end=normalized_item.interval.end_sample / audio_analysis.sample_rate,
+                words=tuple(
+                    replace(
+                        word,
+                        start=normalized_word.start_sample / audio_analysis.sample_rate,
+                        end=normalized_word.end_sample / audio_analysis.sample_rate,
+                    )
+                    for word, normalized_word in zip(
+                        item.words,
+                        normalized_item.words,
+                        strict=True,
+                    )
+                ),
+            )
+        )
+    return normalized, result.stats, result.eligible_non_speech_intervals
+
+
 def _flush_word_group(
     cues: list[tuple[float, float, str]], current: list[_WordItem]
 ) -> None:
@@ -943,39 +1008,71 @@ def _word_resegmented_subtitles(
     *,
     language: str,
     duration_seconds: float,
+    grouping_items: Sequence[_ChunkSegment] | None = None,
+    readability_silences: Sequence[AudioInterval] = (),
+    readability_sample_rate: int = _SAMPLE_RATE,
 ) -> list[SubtitleSegment]:
     normalized_language = language.strip().lower().replace("_", "-").split("-", 1)[0]
     max_characters = 28 if normalized_language in _CJK_LANGUAGES else 52
     cues: list[tuple[float, float, str]] = []
+    grouping_items = items if grouping_items is None else grouping_items
+    if len(grouping_items) != len(items):
+        raise ValueError("时间戳规范化前后的父分片数量不一致")
 
-    for parent in items:
+    for parent, grouping_parent in zip(items, grouping_items, strict=True):
         joined_words = "".join(word.text for word in parent.words).strip()
-        if not parent.words or re.sub(r"\s+", "", joined_words) != re.sub(
-            r"\s+", "", parent.text
+        grouping_joined_words = "".join(
+            word.text for word in grouping_parent.words
+        ).strip()
+        words_match = len(parent.words) == len(grouping_parent.words) and all(
+            word.text == grouping_word.text
+            for word, grouping_word in zip(
+                parent.words,
+                grouping_parent.words,
+                strict=True,
+            )
+        )
+        if (
+            not parent.words
+            or not words_match
+            or re.sub(r"\s+", "", joined_words) != re.sub(r"\s+", "", parent.text)
+            or re.sub(r"\s+", "", grouping_joined_words)
+            != re.sub(r"\s+", "", grouping_parent.text)
         ):
             cues.append((parent.start, parent.end, parent.text))
             continue
 
         current: list[_WordItem] = []
+        grouping_current: list[_WordItem] = []
 
-        for word in parent.words:
-            if current:
-                gap = max(0.0, word.start - current[-1].end)
-                proposed_duration = word.end - current[0].start
-                proposed_text = "".join(item.text for item in current) + word.text
+        for word, grouping_word in zip(
+            parent.words,
+            grouping_parent.words,
+            strict=True,
+        ):
+            if grouping_current:
+                gap = max(0.0, grouping_word.start - grouping_current[-1].end)
+                proposed_duration = grouping_word.end - grouping_current[0].start
+                proposed_text = (
+                    "".join(item.text for item in grouping_current)
+                    + grouping_word.text
+                )
                 if (
                     gap >= _MAX_CUE_GAP_SECONDS
                     or proposed_duration > _MAX_CUE_SECONDS
                     or len(re.sub(r"\s+", "", proposed_text)) > max_characters
                 ):
                     _flush_word_group(cues, current)
+                    grouping_current.clear()
             current.append(word)
-            current_text = "".join(item.text for item in current).rstrip()
+            grouping_current.append(grouping_word)
+            current_text = "".join(item.text for item in grouping_current).rstrip()
             if (
                 current_text.endswith(_TERMINAL_PUNCTUATION)
-                and word.end - current[0].start >= 0.45
+                and grouping_word.end - grouping_current[0].start >= 0.45
             ):
                 _flush_word_group(cues, current)
+                grouping_current.clear()
         _flush_word_group(cues, current)
 
     raw_segments = [
@@ -988,6 +1085,17 @@ def _word_resegmented_subtitles(
         desired_end = min(duration_ms, segment.start_ms + _MIN_CUE_DURATION_MS)
         if index + 1 < len(raw_segments) and raw_segments[index + 1].start_ms > segment.end_ms:
             desired_end = min(desired_end, raw_segments[index + 1].start_ms - 1)
+        for silence in readability_silences:
+            silence_start_ms = round(
+                silence.start_sample / readability_sample_rate * 1_000
+            )
+            if (
+                segment.end_ms <= silence_start_ms < desired_end
+                and desired_end - silence_start_ms
+                <= DEFAULT_TIMESTAMP_NORMALIZATION_POLICY.max_boundary_shift_ms
+            ):
+                desired_end = silence_start_ms
+                break
         readable.append(
             segment.model_copy(
                 update={
@@ -1081,7 +1189,9 @@ class FasterWhisperProvider(ASRProvider):
             if not fixed_windows:
                 raise RuntimeError("音频为空，无法执行 Faster-Whisper")
             needs_audio_analysis = (
-                settings.dynamic_chunking or settings.selective_retry
+                settings.dynamic_chunking
+                or settings.selective_retry
+                or settings.timestamp_normalization
             )
             if needs_audio_analysis:
                 try:
@@ -1231,11 +1341,40 @@ class FasterWhisperProvider(ASRProvider):
                 retry_diagnostics = ()
                 if settings.selective_retry and on_progress:
                     on_progress(1.0)
+            grouping_segments = list(chunk_segments)
+            timestamp_stats = TimestampNormalizationStats()
+            timestamp_status: Literal[
+                "disabled",
+                "unavailable",
+                "applied",
+                "fallback",
+            ] = "disabled"
+            readability_silences: Sequence[AudioInterval] = ()
+            if settings.timestamp_normalization:
+                if audio_analysis.vad_status != "available":
+                    timestamp_status = "unavailable"
+                else:
+                    chunk_segments, timestamp_stats, eligible_silences = (
+                        _normalize_chunk_segment_timestamps(
+                            chunk_segments,
+                            audio_analysis=audio_analysis,
+                        )
+                    )
+                    timestamp_status = (
+                        "fallback"
+                        if timestamp_stats.fallback_to_original_count
+                        else "applied"
+                    )
+                    if timestamp_status == "applied":
+                        readability_silences = eligible_silences
             segments = (
                 _word_resegmented_subtitles(
                     chunk_segments,
                     language=detected_language,
                     duration_seconds=duration,
+                    grouping_items=grouping_segments,
+                    readability_silences=readability_silences,
+                    readability_sample_rate=audio_analysis.sample_rate,
                 )
                 if settings.output_mode == ASROutputMode.WORD_RESEGMENTED
                 else _chunk_segments_to_subtitles(chunk_segments)
@@ -1300,6 +1439,22 @@ class FasterWhisperProvider(ASRProvider):
                         for diagnostics in retry_diagnostics
                     ),
                     retry_reason_counts=dict(retry_reason_counts),
+                    timestamp_normalization_status=timestamp_status,
+                    timestamp_word_boundary_shift_count=(
+                        timestamp_stats.word_boundary_shift_count
+                    ),
+                    timestamp_segment_boundary_shift_count=(
+                        timestamp_stats.segment_boundary_shift_count
+                    ),
+                    timestamp_boundary_shift_abs_total_samples=(
+                        timestamp_stats.boundary_shift_abs_total_samples
+                    ),
+                    timestamp_unsafe_adjustment_count=(
+                        timestamp_stats.unsafe_adjustment_count
+                    ),
+                    timestamp_fallback_to_original_count=(
+                        timestamp_stats.fallback_to_original_count
+                    ),
                 ),
             )
             return TranscriptionResult(

@@ -216,6 +216,77 @@ def test_word_resegmentation_preserves_text_and_splits_long_silence() -> None:
     ]
 
 
+def test_word_resegmentation_freezes_grouping_before_timestamp_normalization() -> None:
+    original = _ChunkSegment(
+        text="hello world",
+        start=0.0,
+        end=2.19,
+        words=(
+            _WordItem(text="hello ", start=0.0, end=0.5),
+            _WordItem(text="world", start=1.69, end=2.19),
+        ),
+        chunk_index=0,
+        avg_logprob=-0.1,
+    )
+    normalized = _ChunkSegment(
+        text=original.text,
+        start=0.0,
+        end=2.21,
+        words=(
+            original.words[0],
+            _WordItem(text="world", start=1.71, end=2.21),
+        ),
+        chunk_index=original.chunk_index,
+        avg_logprob=original.avg_logprob,
+    )
+
+    baseline = _word_resegmented_subtitles(
+        [original],
+        language="en",
+        duration_seconds=3.0,
+    )
+    adjusted = _word_resegmented_subtitles(
+        [normalized],
+        language="en",
+        duration_seconds=3.0,
+        grouping_items=[original],
+    )
+
+    assert [(item.id, item.text) for item in adjusted] == [
+        (item.id, item.text) for item in baseline
+    ]
+    assert [(item.start_ms, item.end_ms) for item in adjusted] == [(0, 2_210)]
+
+
+def test_readability_silence_cap_respects_timestamp_shift_limit() -> None:
+    parent = _ChunkSegment(
+        text="a",
+        start=0.0,
+        end=0.05,
+        words=(_WordItem(text="a", start=0.0, end=0.05),),
+        chunk_index=0,
+        avg_logprob=-0.1,
+    )
+
+    within_limit = _word_resegmented_subtitles(
+        [parent],
+        language="en",
+        duration_seconds=1.0,
+        readability_silences=[AudioInterval(start_sample=100, end_sample=200)],
+        readability_sample_rate=1_000,
+    )
+    beyond_limit = _word_resegmented_subtitles(
+        [parent],
+        language="en",
+        duration_seconds=1.0,
+        readability_silences=[AudioInterval(start_sample=80, end_sample=200)],
+        readability_sample_rate=1_000,
+    )
+
+    assert within_limit[0].end_ms == 100
+    assert beyond_limit[0].end_ms == 400
+
+
 def test_chunk_segment_mode_keeps_model_boundaries() -> None:
     parent = _ChunkSegment(
         text="モデルが返した一段落",
@@ -392,6 +463,7 @@ def _install_selective_retry_fakes(
     empty_retry: bool = False,
     near_silence: bool = False,
     confirmed_silence: bool = False,
+    timestamp_intrusion: bool = False,
 ) -> None:
     class FakeAudio:
         def __len__(self) -> int:
@@ -426,11 +498,12 @@ def _install_selective_retry_fakes(
                 )
             is_retry = index == 1
             text = "清晰片段" if is_retry else "疑似片段"
-            start = 4.0 if is_retry else 5.0
+            start = 4.0 if is_retry else (3.9 if timestamp_intrusion else 5.0)
+            end = 8.1 if timestamp_intrusion and not is_retry else start + 2.0
             segment = SimpleNamespace(
                 text=text,
                 start=start,
-                end=start + 2.0,
+                end=end,
                 avg_logprob=(
                     -0.1
                     if is_retry
@@ -444,7 +517,7 @@ def _install_selective_retry_fakes(
                 compression_ratio=1.2,
                 temperature=0.0,
                 words=[
-                    SimpleNamespace(word=text, start=start, end=start + 2.0),
+                    SimpleNamespace(word=text, start=start, end=end),
                 ],
             )
             return iter([segment]), SimpleNamespace(
@@ -597,6 +670,50 @@ def test_provider_rejects_character_valid_cjk_hotwords_over_model_token_budget(
     assert hotwords[0] not in error
     assert hotwords[-1] not in error
     assert "transcribe_kwargs" not in calls
+
+
+@pytest.mark.parametrize(
+    "output_mode",
+    [ASROutputMode.WORD_RESEGMENTED, ASROutputMode.CHUNK_SEGMENTS],
+)
+def test_provider_normalizes_silence_boundaries_for_both_output_modes(
+    output_mode: ASROutputMode,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: dict[str, object] = {}
+    _install_selective_retry_fakes(
+        monkeypatch,
+        calls,
+        timestamp_intrusion=True,
+    )
+
+    result = FasterWhisperProvider().transcribe(
+        tmp_path / "video.mp4",
+        language="zh",
+        settings=ASRSettings(
+            dynamic_chunking=False,
+            selective_retry=False,
+            timestamp_normalization=True,
+            output_mode=output_mode,
+        ),
+    )
+
+    assert calls["vad_count"] == 1
+    assert len(calls["transcribe_kwargs"]) == 1  # type: ignore[arg-type]
+    assert [(item.id, item.text) for item in result.segments] == [
+        ("seg-000001", "疑似片段")
+    ]
+    assert [(item.start_ms, item.end_ms) for item in result.segments] == [
+        (4_000, 8_000)
+    ]
+    assert result.diagnostics is not None
+    summary = result.diagnostics.summary
+    assert summary.timestamp_normalization_status == "applied"
+    assert summary.timestamp_word_boundary_shift_count == 2
+    assert summary.timestamp_segment_boundary_shift_count == 2
+    assert summary.timestamp_boundary_shift_abs_total_samples == 6_400
+    assert summary.timestamp_fallback_to_original_count == 0
 
 
 @pytest.mark.parametrize(
@@ -1143,7 +1260,10 @@ def test_provider_falls_back_to_fixed_windows_when_boundary_vad_fails(
     result = FasterWhisperProvider().transcribe(
         tmp_path / "video.mp4",
         language="zh",
-        settings=ASRSettings(output_mode=ASROutputMode.CHUNK_SEGMENTS),
+        settings=ASRSettings(
+            output_mode=ASROutputMode.CHUNK_SEGMENTS,
+            timestamp_normalization=True,
+        ),
     )
 
     assert result.diagnostics is not None
@@ -1158,11 +1278,16 @@ def test_provider_falls_back_to_fixed_windows_when_boundary_vad_fails(
         False,
     ]
     assert result.diagnostics.summary.fallback_window_count == 1
+    assert (
+        result.diagnostics.summary.timestamp_normalization_status
+        == "unavailable"
+    )
 
 
 def test_output_mode_defaults_to_word_resegmentation() -> None:
     assert ASRSettings().output_mode == ASROutputMode.WORD_RESEGMENTED
     assert ASRSettings().dynamic_chunking is True
+    assert ASRSettings().timestamp_normalization is False
     assert ASRSettings().selective_retry is True
 
 

@@ -324,6 +324,17 @@ class ASRDiagnosticsSummary(BaseModel):
     retry_initial_selected_count: int = Field(default=0, ge=0)
     retry_failed_count: int = Field(default=0, ge=0)
     retry_reason_counts: dict[ASRRetryReason, int] = Field(default_factory=dict)
+    timestamp_normalization_status: Literal[
+        "disabled",
+        "unavailable",
+        "applied",
+        "fallback",
+    ] = "disabled"
+    timestamp_word_boundary_shift_count: int = Field(default=0, ge=0)
+    timestamp_segment_boundary_shift_count: int = Field(default=0, ge=0)
+    timestamp_boundary_shift_abs_total_samples: int = Field(default=0, ge=0)
+    timestamp_unsafe_adjustment_count: int = Field(default=0, ge=0)
+    timestamp_fallback_to_original_count: int = Field(default=0, ge=0)
 
     @field_validator("retry_reason_counts")
     @classmethod
@@ -536,6 +547,58 @@ def _covered_duration_ms(intervals: Iterable[tuple[int, int]]) -> int:
     return sum(end_ms - start_ms for start_ms, end_ms in merged)
 
 
+def _subtitle_overlap_metrics(
+    segments: Sequence[SubtitleSegment],
+) -> tuple[int, int]:
+    overlap_count = 0
+    overlap_ms = 0
+    for left, right in zip(segments, segments[1:], strict=False):
+        overlap = max(0, left.end_ms - right.start_ms)
+        if overlap:
+            overlap_count += 1
+            overlap_ms += overlap
+    return overlap_count, overlap_ms
+
+
+def _boundary_nonspeech_overlap_samples(
+    segments: Sequence[SubtitleSegment],
+    audio: ASRAudioAnalysis,
+) -> int:
+    if audio.vad_status != "available":
+        return 0
+    total = 0
+    silences = audio.non_speech_intervals
+    for segment in segments:
+        start_sample = max(
+            0,
+            min(audio.total_samples - 1, round(segment.start_ms * audio.sample_rate / 1_000)),
+        )
+        end_sample = max(
+            start_sample + 1,
+            min(audio.total_samples, round(segment.end_ms * audio.sample_rate / 1_000)),
+        )
+        intrusions: list[tuple[int, int]] = []
+        for silence in silences:
+            if silence.start_sample <= start_sample < silence.end_sample:
+                intrusions.append(
+                    (start_sample, min(end_sample, silence.end_sample))
+                )
+            if silence.start_sample < end_sample <= silence.end_sample:
+                intrusions.append(
+                    (max(start_sample, silence.start_sample), end_sample)
+                )
+        merged: list[list[int]] = []
+        for start, end in sorted(intrusions):
+            if end <= start:
+                continue
+            if merged and start <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], end)
+            else:
+                merged.append([start, end])
+        total += sum(end - start for start, end in merged)
+    return total
+
+
 def collect_transcription_metrics(
     segments: Sequence[SubtitleSegment],
     diagnostics: ASRRunDiagnostics | None,
@@ -543,10 +606,13 @@ def collect_transcription_metrics(
     """Return aggregate A/B metrics without retaining subtitle text or media paths."""
 
     covered_ms = _covered_duration_ms((item.start_ms, item.end_ms) for item in segments)
+    overlap_count, overlap_ms = _subtitle_overlap_metrics(segments)
     metrics: dict[str, int | float | None] = {
         "subtitle_count": len(segments),
         "text_character_count": sum(len(re.sub(r"\s+", "", item.text)) for item in segments),
         "timeline_covered_ms": covered_ms,
+        "subtitle_overlap_count": overlap_count,
+        "subtitle_overlap_ms": overlap_ms,
     }
     if diagnostics is not None:
         summary = diagnostics.summary
@@ -564,6 +630,27 @@ def collect_transcription_metrics(
             retry_selected_count=summary.retry_selected_count,
             retry_initial_selected_count=summary.retry_initial_selected_count,
             retry_failed_count=summary.retry_failed_count,
+            subtitle_boundary_nonspeech_overlap_samples=(
+                _boundary_nonspeech_overlap_samples(segments, diagnostics.audio)
+            ),
+            timestamp_normalization_applied=int(
+                summary.timestamp_normalization_status == "applied"
+            ),
+            timestamp_word_boundary_shift_count=(
+                summary.timestamp_word_boundary_shift_count
+            ),
+            timestamp_segment_boundary_shift_count=(
+                summary.timestamp_segment_boundary_shift_count
+            ),
+            timestamp_boundary_shift_abs_total_samples=(
+                summary.timestamp_boundary_shift_abs_total_samples
+            ),
+            timestamp_unsafe_adjustment_count=(
+                summary.timestamp_unsafe_adjustment_count
+            ),
+            timestamp_fallback_to_original_count=(
+                summary.timestamp_fallback_to_original_count
+            ),
         )
         for reason, count in summary.retry_reason_counts.items():
             metrics[f"retry_reason_{reason}_count"] = count

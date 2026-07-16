@@ -37,8 +37,9 @@ function configSummary(step: JobStepView): string {
     const mode = config.output_mode === 'word_resegmented' ? '逐词重排' : '原始分片'
     const boundary = config.dynamic_chunking ? '动态边界' : '固定边界'
     const retry = config.selective_retry ? '二次识别' : '单次识别'
+    const timestamps = config.timestamp_normalization ? '实验校时' : '原始时间轴'
     const hotwords = config.hotwords?.length ? ` · ${config.hotwords.length} 个提示词` : ''
-    return `${config.model} · ${device} · ${mode} · ${boundary} · ${retry}${hotwords}`
+    return `${config.model} · ${device} · ${mode} · ${boundary} · ${retry} · ${timestamps}${hotwords}`
   }
   if (step.id === 'translation') {
     const config = step.config as TranslationStepConfig

@@ -200,6 +200,12 @@ def test_path_pipeline_writes_artifacts_and_one_bilingual_subtitle(
         "retry_initial_selected_count": 0,
         "retry_failed_count": 0,
         "retry_reason_counts": {},
+        "timestamp_normalization_status": "disabled",
+        "timestamp_word_boundary_shift_count": 0,
+        "timestamp_segment_boundary_shift_count": 0,
+        "timestamp_boundary_shift_abs_total_samples": 0,
+        "timestamp_unsafe_adjustment_count": 0,
+        "timestamp_fallback_to_original_count": 0,
     }
     persisted = store.read_artifact(Path(transcription.path))
     assert persisted["diagnostics"]["audio"]["total_samples"] == 19_200
@@ -421,6 +427,7 @@ def test_job_created_before_new_asr_features_keeps_historical_behavior(
     ).to_payload()
     payload["asr"].pop("dynamic_chunking")
     payload["asr"].pop("selective_retry")
+    payload["asr"].pop("timestamp_normalization")
     payload["asr"].pop("hotwords")
 
     record = JobRecord.from_payload(payload)
@@ -428,12 +435,15 @@ def test_job_created_before_new_asr_features_keeps_historical_behavior(
     assert isinstance(record.asr, ASRSettings)
     assert record.asr.dynamic_chunking is False
     assert record.asr.selective_retry is False
+    assert record.asr.timestamp_normalization is False
     assert record.asr.hotwords == []
     assert record.to_view().steps[1].config["dynamic_chunking"] is False
     assert record.to_view().steps[1].config["selective_retry"] is False
+    assert record.to_view().steps[1].config["timestamp_normalization"] is False
     assert record.to_view().steps[1].config["hotwords"] == []
     assert ASRSettings().dynamic_chunking is True
     assert ASRSettings().selective_retry is True
+    assert ASRSettings().timestamp_normalization is False
 
 
 def test_asr_hotwords_normalize_trim_empty_and_stable_duplicates() -> None:

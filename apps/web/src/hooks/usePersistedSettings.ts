@@ -66,6 +66,10 @@ function loadSettings(): SettingsValue {
         value.asrSelectiveRetry,
         DEFAULT_SETTINGS.asrSelectiveRetry,
       ),
+      asrTimestampNormalization: booleanValue(
+        value.asrTimestampNormalization,
+        DEFAULT_SETTINGS.asrTimestampNormalization,
+      ),
       asrBeamSize: numberValue(value.asrBeamSize, DEFAULT_SETTINGS.asrBeamSize, 1, 20),
       asrHotwordsText: stringValue(
         value.asrHotwordsText,
@@ -116,6 +120,7 @@ function persistedValue(settings: SettingsValue) {
       asrVadFilter: settings.asrVadFilter,
       asrDynamicChunking: settings.asrDynamicChunking,
       asrSelectiveRetry: settings.asrSelectiveRetry,
+      asrTimestampNormalization: settings.asrTimestampNormalization,
       asrBeamSize: settings.asrBeamSize,
       asrHotwordsText: settings.asrHotwordsText,
       provider: settings.provider,
