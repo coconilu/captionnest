@@ -13,3 +13,10 @@
 - 所有外部进程调用必须使用参数数组，禁止拼接 shell 命令。
 - 提交前运行 Python 测试、前端 lint/build，并验证真实浏览器核心流程。
 - PR 合并后，切回并快进更新本地 `main`，确认与 `origin/main` 一致；随后删除已合并的本地与远端功能分支，以及该分支使用的专用 worktree。
+
+## 多 Agent PR 门禁
+
+- 产品源码采用单写入者模式：始终只有 `captionnest-developer` 可以实现和修复；主控负责范围、证据与 Git 生命周期。
+- 每个 PR 必须由独立的 `captionnest-reviewer` 按 [`docs/code-review.md`](docs/code-review.md) 审查当前 `main...HEAD`；Reviewer 不得修改受版本控制的产品源码。
+- Reviewer 返回 `CHANGES_REQUIRED` 时，所有问题必须交还同一 Developer 修复，并由 Reviewer 对新的 HEAD 重新检查。
+- 只有当前 HEAD 获得 `PASS`、所需本地验证和 GitHub CI 全绿后才可自动合并；HEAD 变化会使旧 `PASS` 立即失效。
