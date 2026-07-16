@@ -27,3 +27,7 @@ src-tauri/binaries/captionnest-sidecar-*.exe
 src-tauri/target/
 *.log
 .DS_Store
+/.opc/run.json
+/.opc/events.jsonl
+/.opc/events.jsonl.*
+/.opc/.opc-hook.lock
