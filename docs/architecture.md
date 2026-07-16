@@ -72,7 +72,7 @@ flowchart LR
 | 翻译配置或翻译失败 | 媒体与识别产物 | 翻译、导出 |
 | 导出配置或导出失败 | 媒体、识别与翻译产物 | 仅导出 |
 
-任务创建后先成为草稿，正常“开始生成字幕”会从媒体步骤连续执行到导出；步骤级运行接口则可从指定位置继续。开始请求只把 Job 原子加入持久 FIFO，调度器最多创建配置数量的运行 Task；媒体/导出、CPU ASR、CUDA/auto ASR 和各翻译 Provider 分别受独立 Semaphore 约束，CUDA/auto 默认同时 1 个。应用退出时，尚未 claim 的 `queued` Job 保留顺序；已经运行的 Attempt 标为 `interrupted` 并保留成功上游产物。重启后普通 queued Job 自动恢复，需要 DeepSeek API Key 的 Job 因密钥从不落盘而进入 `waiting_for_input`，等待用户重新输入。删除任务会清理 `job.json` 和内部中间产物，不会把已经写到用户目录的 SRT 当作缓存删除。
+任务创建后先成为草稿，正常“开始生成字幕”会从媒体步骤连续执行到导出；步骤级运行接口则可从指定位置继续。开始请求只把 Job 原子加入持久 FIFO：步骤失效与 queued 状态一次落盘，写前失败会恢复原状态且不登记 completion，写入后才报告错误则通过精确回读确认是否已提交。调度器最多创建配置数量的运行 Task；媒体/导出、CPU ASR、CUDA/auto ASR 和各翻译 Provider 分别受独立 Semaphore 约束，CUDA/auto 默认同时 1 个。应用退出时，尚未 claim 的 `queued` Job 保留顺序；已经运行的 Attempt 标为 `interrupted` 并保留成功上游产物。重启后普通 queued Job 自动恢复，需要 DeepSeek API Key 的 Job 因密钥从不落盘而进入 `waiting_for_input`，等待用户重新输入。删除任务会清理 `job.json` 和内部中间产物，不会把已经写到用户目录的 SRT 当作缓存删除。
 
 队列状态与业务步骤状态分开保存：`queue_status` 表示 draft/queued/running/waiting/completed/failed/cancelled/interrupted，`status` 和每个 Step/Attempt 继续描述任务与流水线结果。旧任务没有 Batch 或队列字段时按 `batch_id=null` 和原 `status` 推导加载，不要求迁移文件。
 
@@ -91,7 +91,7 @@ flowchart LR
 | `POST /api/uploads/bulk` | 浏览器多文件上传，逐文件返回成功或错误 |
 | `DELETE /api/batches/{id}` | 默认仅解除分组；`delete_jobs=true` 时删除可删除 Job 的内部记录/中间产物，导出的 SRT 永不随 Batch 删除 |
 
-Summary 分页使用固定快照水位与不可变 `(created_at, job_id)` 排序；不透明 cursor 同时封装首屏 `server_time`、筛选条件指纹和当前位置。后续页即使省略筛选参数也沿用首屏条件，显式传入不同条件会被拒绝；分页期间更新 Job 不会跨过未读边界，并会在基于首屏水位的 `updated_after` 增量查询中再次返回，前端按 ID 合并即可。列表不会传输日志或全部 Attempt。
+Summary 分页使用固定快照水位与不可变 `(created_at, job_id)` 排序；不透明 cursor 同时封装首屏 `server_time`、筛选条件指纹和当前位置。后续页即使省略筛选参数也沿用首屏条件，显式传入不同条件会被拒绝。增量页固定为 `updated_after < updated_at <= server_time`：翻页期间发生的晚到更新不会混入当前轮，而只在下一轮水位之后返回一次。列表不会传输日志或全部 Attempt。
 
 每个未删除 Job 都持有其规范化 `<输出目录>/<源文件名>.srt` 的输出占用，不只检查同一 Batch。预检、创建、配置更新和运行入队都会重验占用；输出目录必须是目录，已存在目标必须是可覆盖普通文件。`overwrite_existing=true` 只允许当前 Job 覆盖未被其他 Job 占用的普通文件，不能绕过跨 Batch 冲突。删除 Job 后才释放占用；可以通过单项 `export` 修改输出目录。Batch 请求中的 DeepSeek Key 只传给本次内存调度项，不进入 Batch 模板、Job JSON、响应或日志。
 

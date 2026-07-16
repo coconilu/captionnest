@@ -116,22 +116,25 @@ class JobScheduler:
         with self._lock:
             if record.id in self._pending_ids or record.id in self._running:
                 raise ValueError("任务正在运行")
-            self._completion.pop(record.id, None)
-            self._ensure_completion(record.id, loop)
             position = len(self._pending) + 1
-            record.mark_queued(
-                start_step,
+            entry = ScheduleEntry(
+                job_id=record.id,
+                start_step=start_step,
                 continue_pipeline=continue_pipeline,
-                queue_position=position,
+                api_key=api_key,
             )
-            self._pending.append(
-                ScheduleEntry(
-                    job_id=record.id,
-                    start_step=start_step,
+            completion = loop.create_future()
+            try:
+                record.prepare_queue(
+                    start_step,
                     continue_pipeline=continue_pipeline,
-                    api_key=api_key,
+                    queue_position=position,
                 )
-            )
+            except Exception:
+                completion.cancel()
+                raise
+            self._completion[record.id] = completion
+            self._pending.append(entry)
             self._pending_ids.add(record.id)
         assert self._wake is not None
         self._wake.set()

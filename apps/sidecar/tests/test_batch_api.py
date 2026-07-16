@@ -575,6 +575,74 @@ def test_summary_cursor_keeps_snapshot_order_filters_and_original_watermark(
         }
 
 
+def test_incremental_cursor_excludes_updates_after_first_page_watermark(
+    tmp_path: Path,
+) -> None:
+    app = create_app(data_dir=tmp_path / "data", pipeline=ImmediatePipeline())  # type: ignore[arg-type]
+
+    def update_target(client: TestClient, job_id: str, target: str) -> None:
+        job = client.get(f"/api/jobs/{job_id}").json()
+        translation = next(
+            step for step in job["steps"] if step["id"] == "translation"
+        )
+        config = dict(translation["config"])
+        config["target_language"] = target
+        response = client.patch(
+            f"/api/jobs/{job_id}/steps/translation/config",
+            json={"config": config},
+        )
+        assert response.status_code == 200
+
+    with TestClient(app) as client:
+        created_ids = []
+        for name in ("oldest.mp4", "middle.mp4", "newest.mp4"):
+            response = client.post(
+                "/api/jobs",
+                json={"video_path": str(_video(tmp_path / name))},
+            )
+            assert response.status_code == 200
+            created_ids.append(response.json()["id"])
+
+        baseline = client.get("/api/jobs", params={"limit": 1}).json()[
+            "server_time"
+        ]
+        update_target(client, created_ids[2], "en")
+        update_target(client, created_ids[1], "ko")
+
+        first = client.get(
+            "/api/jobs",
+            params={"limit": 1, "updated_after": baseline},
+        )
+        assert first.status_code == 200
+        first_page = first.json()
+        assert first_page["total"] == 2
+        assert [item["id"] for item in first_page["items"]] == [created_ids[2]]
+        watermark = first_page["server_time"]
+
+        update_target(client, created_ids[0], "en")
+
+        second = client.get(
+            "/api/jobs",
+            params={"limit": 1, "cursor": first_page["next_cursor"]},
+        )
+        assert second.status_code == 200
+        second_page = second.json()
+        assert second_page["total"] == 2
+        assert second_page["server_time"] == watermark
+        assert second_page["has_more"] is False
+        assert [item["id"] for item in second_page["items"]] == [created_ids[1]]
+
+        next_round = client.get(
+            "/api/jobs",
+            params={"limit": 20, "updated_after": watermark},
+        )
+        assert next_round.status_code == 200
+        assert next_round.json()["total"] == 1
+        assert [item["id"] for item in next_round.json()["items"]] == [
+            created_ids[0]
+        ]
+
+
 def test_output_claims_span_batches_and_reject_non_file_targets(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
     output = tmp_path / "output"
@@ -713,6 +781,93 @@ def test_create_failures_compensate_job_and_batch_persistence(
     with TestClient(reloaded) as client:
         assert client.get("/api/jobs").json() == []
         assert client.get("/api/batches").json() == []
+
+
+def test_auto_start_queue_write_failure_rolls_back_and_remains_retryable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir = tmp_path / "data"
+    app = create_app(data_dir=data_dir, pipeline=ImmediatePipeline())  # type: ignore[arg-type]
+    injected = False
+
+    def fail_before_queue_write(job_id: str, payload: dict[str, object]) -> None:
+        nonlocal injected
+        if payload.get("status") == "queued" and not injected:
+            injected = True
+            raise OSError("injected queue write failure")
+        original_save_job(job_id, payload)
+
+    with TestClient(app) as client:
+        store = app.state.job_store
+        original_save_job = store.save_job
+        monkeypatch.setattr(store, "save_job", fail_before_queue_write)
+        result = _create_batch(
+            client,
+            [_video(tmp_path / "queue-write-failure.mp4")],
+            auto_start=True,
+        )
+        assert injected is True
+        assert result["created_count"] == 1
+        assert result["results"][0]["ok"] is True
+        assert "自动启动失败" in result["results"][0]["error"]
+        job_id = result["results"][0]["job"]["id"]
+        record = app.state.job_manager._record(job_id)
+        assert record.status.value == "draft"
+        assert record.queue_status.value == "draft"
+        assert app.state.job_manager.scheduler.is_active(job_id) is False
+        assert job_id not in app.state.job_manager.scheduler.completions
+        assert store.load_job(job_id) == record.to_payload()
+
+    retry_pipeline = BlockingPipeline()
+    reloaded = create_app(data_dir=data_dir, pipeline=retry_pipeline)  # type: ignore[arg-type]
+    with TestClient(reloaded) as client:
+        job_id = client.get("/api/jobs").json()[0]["id"]
+        assert client.get(f"/api/jobs/{job_id}").json()["status"] == "draft"
+        rerun = client.post(f"/api/jobs/{job_id}/run", json={})
+        assert rerun.status_code == 200
+        assert retry_pipeline.started.wait(timeout=1)
+        assert reloaded.state.job_manager.scheduler.is_active(job_id) is True
+        assert client.post(f"/api/jobs/{job_id}/cancel").status_code == 200
+
+
+def test_auto_start_queue_after_write_error_commits_real_active_queue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipeline = BlockingPipeline()
+    app = create_app(data_dir=tmp_path / "data", pipeline=pipeline)  # type: ignore[arg-type]
+    injected = False
+
+    def fail_after_queue_write(job_id: str, payload: dict[str, object]) -> None:
+        nonlocal injected
+        original_save_job(job_id, payload)
+        if payload.get("status") == "queued" and not injected:
+            injected = True
+            raise OSError("injected error after committed queue write")
+
+    with TestClient(app) as client:
+        store = app.state.job_store
+        original_save_job = store.save_job
+        monkeypatch.setattr(store, "save_job", fail_after_queue_write)
+        result = _create_batch(
+            client,
+            [_video(tmp_path / "queue-after-write.mp4")],
+            auto_start=True,
+        )
+        assert injected is True
+        assert result["created_count"] == 1
+        assert result["failed_count"] == 0
+        assert result["results"][0]["ok"] is True
+        assert result["results"][0]["error"] is None
+        job_id = result["results"][0]["job"]["id"]
+        assert pipeline.started.wait(timeout=1)
+        record = app.state.job_manager._record(job_id)
+        assert record.status.value == "running"
+        assert app.state.job_manager.scheduler.is_active(job_id) is True
+        assert job_id in app.state.job_manager.scheduler.completions
+        assert store.load_job(job_id) == record.to_payload()
+        assert client.post(f"/api/jobs/{job_id}/cancel").status_code == 200
 
 
 def test_delete_failure_keeps_job_visible_and_restart_consistent(

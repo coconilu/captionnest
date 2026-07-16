@@ -593,25 +593,89 @@ class JobRecord:
 
     def invalidate_from(self, step: JobStep, *, message: str | None = None) -> None:
         with self._lock:
-            if self.status in {JobStatus.QUEUED, JobStatus.RUNNING}:
-                raise ValueError("任务运行中，不能修改配置或重置步骤")
-            start_index = STEP_ORDER.index(step)
-            for item in STEP_ORDER[start_index:]:
-                state = self.steps[item]
-                state.status = StepStatus.STALE if state.artifact else StepStatus.PENDING
-                state.progress = 0
-                state.error = None
-            self.status = JobStatus.DRAFT
-            self.queue_status = QueueStatus.DRAFT
-            self.queue_position = None
-            self.stage = STEP_STAGE[step]
-            self.progress = STEP_PROGRESS[step][0]
-            self.error = None
-            self.current_step = None
-            if message:
-                self._append_log(message)
-            self.updated_at = utc_now()
-            self._persist()
+            previous = self.to_payload()
+            self._invalidate_from_locked(step, message=message)
+            try:
+                self._persist()
+            except Exception:
+                self._restore_payload_locked(previous)
+                raise
+
+    def _invalidate_from_locked(
+        self,
+        step: JobStep,
+        *,
+        message: str | None = None,
+    ) -> None:
+        if self.status in {JobStatus.QUEUED, JobStatus.RUNNING}:
+            raise ValueError("任务运行中，不能修改配置或重置步骤")
+        start_index = STEP_ORDER.index(step)
+        for item in STEP_ORDER[start_index:]:
+            state = self.steps[item]
+            state.status = StepStatus.STALE if state.artifact else StepStatus.PENDING
+            state.progress = 0
+            state.error = None
+        self.status = JobStatus.DRAFT
+        self.queue_status = QueueStatus.DRAFT
+        self.queue_position = None
+        self.stage = STEP_STAGE[step]
+        self.progress = STEP_PROGRESS[step][0]
+        self.error = None
+        self.current_step = None
+        if message:
+            self._append_log(message)
+        self.updated_at = utc_now()
+
+    def prepare_queue(
+        self,
+        step: JobStep,
+        *,
+        continue_pipeline: bool,
+        queue_position: int,
+    ) -> None:
+        """Persist invalidation and queued state as one recoverable transition."""
+
+        with self._lock:
+            previous = self.to_payload()
+            self._invalidate_from_locked(step)
+            self._mark_queued_locked(
+                step,
+                continue_pipeline=continue_pipeline,
+                queue_position=queue_position,
+            )
+            try:
+                self._persist()
+            except Exception:
+                self._restore_payload_locked(previous)
+                raise
+
+    def _restore_payload_locked(self, payload: Mapping[str, Any]) -> None:
+        restored = type(self).from_payload(payload)
+        for name in (
+            "media",
+            "asr",
+            "translation",
+            "export",
+            "batch_id",
+            "status",
+            "queue_status",
+            "queue_position",
+            "priority",
+            "stage",
+            "progress",
+            "detected_language",
+            "created_at",
+            "updated_at",
+            "interrupted_at",
+            "error",
+            "logs",
+            "steps",
+            "current_step",
+            "queued_start_step",
+            "queued_continue_pipeline",
+        ):
+            setattr(self, name, getattr(restored, name))
+        self._attempt_started_monotonic.clear()
 
     def mark_queued(
         self,
@@ -621,17 +685,35 @@ class JobRecord:
         queue_position: int,
     ) -> None:
         with self._lock:
-            self.status = JobStatus.QUEUED
-            self.queue_status = QueueStatus.QUEUED
-            self.queue_position = queue_position
-            self.queued_start_step = step
-            self.queued_continue_pipeline = continue_pipeline
-            self.stage = STEP_STAGE[step]
-            self.progress = STEP_PROGRESS[step][0]
-            self.error = None
-            self._append_log(f"将从“{_step_label(step)}”开始执行")
-            self.updated_at = utc_now()
-            self._persist()
+            previous = self.to_payload()
+            self._mark_queued_locked(
+                step,
+                continue_pipeline=continue_pipeline,
+                queue_position=queue_position,
+            )
+            try:
+                self._persist()
+            except Exception:
+                self._restore_payload_locked(previous)
+                raise
+
+    def _mark_queued_locked(
+        self,
+        step: JobStep,
+        *,
+        continue_pipeline: bool,
+        queue_position: int,
+    ) -> None:
+        self.status = JobStatus.QUEUED
+        self.queue_status = QueueStatus.QUEUED
+        self.queue_position = queue_position
+        self.queued_start_step = step
+        self.queued_continue_pipeline = continue_pipeline
+        self.stage = STEP_STAGE[step]
+        self.progress = STEP_PROGRESS[step][0]
+        self.error = None
+        self._append_log(f"将从“{_step_label(step)}”开始执行")
+        self.updated_at = utc_now()
 
     def set_queue_position(self, position: int) -> None:
         with self._lock:
@@ -1664,7 +1746,6 @@ class JobManager:
                 exclude_job_id=record.id,
             )
 
-        record.invalidate_from(start_step)
         self.scheduler.enqueue(
             record,
             start_step,
@@ -1786,7 +1867,10 @@ class JobManager:
                 )
                 and (
                     effective_updated_after is None
-                    or summary.updated_at > effective_updated_after
+                    or (
+                        summary.updated_at > effective_updated_after
+                        and summary.updated_at <= server_time
+                    )
                 )
             ]
             filtered.sort(

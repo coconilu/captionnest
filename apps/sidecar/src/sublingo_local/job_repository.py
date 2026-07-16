@@ -45,8 +45,23 @@ class JobRepository:
             record.attach_persistence(None)
             return
         record.attach_persistence(
-            lambda payload, job_id=record.id: self.store.save_job(job_id, payload)
+            lambda payload, job_id=record.id: self._save_attached(job_id, payload)
         )
+
+    def _save_attached(self, job_id: str, payload: Mapping[str, Any]) -> None:
+        """Acknowledge a reported write error when disk has the exact payload."""
+
+        assert self.store is not None
+        try:
+            self.store.save_job(job_id, payload)
+        except Exception as exc:
+            try:
+                durable = self.store.load_job(job_id)
+            except Exception:
+                raise exc from None
+            if durable == dict(payload):
+                return
+            raise
 
     def _load(self) -> None:
         if self.store is None:
