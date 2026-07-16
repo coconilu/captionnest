@@ -10,6 +10,10 @@ from sublingo_local.asr.faster_whisper import (
     _chunk_windows,
     _ChunkSegment,
     _deduplicate_boundary_segments,
+    _optional_finite_float,
+    _optional_non_negative_float,
+    _optional_probability,
+    _valid_word_offsets,
     _word_resegmented_subtitles,
     _WordItem,
 )
@@ -134,7 +138,13 @@ def test_provider_votes_across_video_then_transcribes_each_core(
                 start=start,
                 end=start + 1.0,
                 avg_logprob=-0.1,
-                words=[SimpleNamespace(word=text, start=start, end=start + 1.0)],
+                no_speech_prob=0.05,
+                compression_ratio=1.1,
+                temperature=0.0,
+                words=[
+                    SimpleNamespace(word=text, start=start, end=start + 1.0),
+                    SimpleNamespace(word="invalid", start=2.0, end=1.0),
+                ],
             )
             return iter([segment]), SimpleNamespace(
                 language=kwargs["language"],
@@ -168,8 +178,37 @@ def test_provider_votes_across_video_then_transcribes_each_core(
     assert result.duration_seconds == 65.0
     assert [item.text for item in result.segments] == ["前半", "後半"]
     assert [item.start_ms for item in result.segments] == [1_000, 61_000]
+    assert result.diagnostics is not None
+    assert result.diagnostics.audio.vad_status == "unavailable"
+    assert result.diagnostics.summary.window_count == 2
+    assert result.diagnostics.summary.candidate_segment_count == 2
+    assert result.diagnostics.summary.output_segment_count == 2
+    assert [item.candidate_count for item in result.diagnostics.windows] == [1, 1]
+    assert [item.no_speech_prob for item in result.diagnostics.segments] == [0.05, 0.05]
+    assert all(item.word_count == 2 for item in result.diagnostics.segments)
+    assert all(item.valid_word_timestamp_count == 1 for item in result.diagnostics.segments)
+    assert all(item.word_timestamp_coverage == 0.5 for item in result.diagnostics.segments)
     assert progress[-1] == 1.0
 
 
 def test_output_mode_defaults_to_word_resegmentation() -> None:
     assert ASRSettings().output_mode == ASROutputMode.WORD_RESEGMENTED
+
+
+def test_non_finite_diagnostics_are_normalized_to_unknown() -> None:
+    assert _optional_finite_float(float("nan")) is None
+    assert _optional_finite_float(float("inf")) is None
+    assert _optional_finite_float("not-a-number") is None
+    assert _optional_finite_float(-0.5) == -0.5
+    assert _optional_probability(1.1) is None
+    assert _optional_probability(0.25) == 0.25
+    assert _optional_non_negative_float(-0.1) is None
+    assert _optional_non_negative_float(1.2) == 1.2
+
+
+def test_word_timestamp_validity_rejects_reverse_and_out_of_window_ranges() -> None:
+    assert _valid_word_offsets(0.0, 1.0, window_duration=1.0)
+    assert not _valid_word_offsets(1.0, 0.5, window_duration=2.0)
+    assert not _valid_word_offsets(-0.1, 0.5, window_duration=2.0)
+    assert not _valid_word_offsets(0.0, 1.0005, window_duration=1.0)
+    assert not _valid_word_offsets(0.5, 2.1, window_duration=2.0)
