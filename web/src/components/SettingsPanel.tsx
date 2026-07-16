@@ -1,11 +1,12 @@
 import { Eye, EyeOff, Play, ShieldCheck, SlidersHorizontal } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 
-import type { AsrModel, TargetLanguage, TranslationProvider } from '../types/api'
+import type { AsrModel, AsrOutputMode, TargetLanguage, TranslationProvider } from '../types/api'
 
 export interface SettingsValue {
   targetLanguage: TargetLanguage
   asrModel: AsrModel
+  asrOutputMode: AsrOutputMode
   useCuda: boolean
   provider: TranslationProvider
   lmstudioEndpoint: string
@@ -44,7 +45,27 @@ const MODEL_LABELS: Record<AsrModel, string> = {
   medium: 'medium',
   'large-v3': 'large-v3',
   'large-v3-turbo': 'large-v3-turbo',
+  'qwen3-asr-1.7b': 'Qwen3-ASR-1.7B',
 }
+
+const OUTPUT_MODES: Array<{
+  value: AsrOutputMode
+  label: string
+  description: string
+  recommended?: boolean
+}> = [
+  {
+    value: 'word_resegmented',
+    label: '逐词重排',
+    description: '压缩词间静音，适合直接观看',
+    recommended: true,
+  },
+  {
+    value: 'chunk_segments',
+    label: '分片原始段',
+    description: '保留模型段落，适合诊断对照',
+  },
+]
 
 export function SettingsPanel({
   value,
@@ -63,6 +84,7 @@ export function SettingsPanel({
     onChange({ ...value, [key]: next })
   const targetLanguage = TARGET_LANGUAGES.find((item) => item.value === value.targetLanguage)?.label ?? value.targetLanguage
   const provider = PROVIDERS.find((item) => item.value === value.provider)?.label ?? value.provider
+  const outputMode = OUTPUT_MODES.find((item) => item.value === value.asrOutputMode)?.label ?? value.asrOutputMode
 
   return (
     <aside className="settings-sidebar" aria-label="字幕任务设置">
@@ -87,6 +109,7 @@ export function SettingsPanel({
         <div className="summary-chips" aria-label="当前任务设置">
           <span>目标 · {targetLanguage}</span>
           <span>模型 · {MODEL_LABELS[value.asrModel]}</span>
+          <span>切分 · {outputMode}</span>
           <span className="is-provider"><i aria-hidden="true" />{provider}</span>
         </div>
       </section>
@@ -116,6 +139,32 @@ export function SettingsPanel({
                 <option value="large-v3-turbo">large-v3-turbo · 速度优先</option>
               </select>
             </label>
+            <fieldset className="output-mode-fieldset" disabled={disabled}>
+              <legend>字幕切分</legend>
+              <div className="output-mode-options">
+                {OUTPUT_MODES.map((mode) => (
+                  <label
+                    key={mode.value}
+                    className={value.asrOutputMode === mode.value ? 'is-selected' : ''}
+                  >
+                    <input
+                      type="radio"
+                      name="asr-output-mode"
+                      value={mode.value}
+                      checked={value.asrOutputMode === mode.value}
+                      onChange={() => patch('asrOutputMode', mode.value)}
+                    />
+                    <span>
+                      <strong>
+                        {mode.label}
+                        {mode.recommended ? <em>推荐</em> : null}
+                      </strong>
+                      <small>{mode.description}</small>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
             <label className={`switch-row ${!cudaAvailable ? 'is-unavailable' : ''}`}>
               <span>
                 <strong>启用 CUDA 加速</strong>
@@ -259,7 +308,7 @@ export function SettingsPanel({
           <Play size={19} fill="currentColor" aria-hidden="true" />
           {disabled ? '正在生成字幕…' : '开始生成字幕'}
         </button>
-        <p>{canStart ? '输出：与源视频同目录的单个双语 SRT' : startHint}</p>
+        <p>{canStart ? `输出：单个双语 SRT · ${outputMode}` : startHint}</p>
       </div>
     </aside>
   )

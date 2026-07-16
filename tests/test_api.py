@@ -32,6 +32,15 @@ def test_health_capabilities_upload_and_job_do_not_echo_api_key(tmp_path: Path) 
         assert client.get("/api/health").json()["status"] == "ok"
         capabilities = client.get("/api/capabilities").json()
         assert capabilities["asr"]["provider"] == "faster-whisper"
+        assert {item["id"] for item in capabilities["asr"]["providers"]} == {
+            "faster_whisper"
+        }
+        assert capabilities["asr"]["models"] == [
+            "small",
+            "medium",
+            "large-v3-turbo",
+            "large-v3",
+        ]
         assert {item["id"] for item in capabilities["translation"]["providers"]} == {
             "codex_spark",
             "lmstudio",
@@ -71,6 +80,7 @@ def test_health_capabilities_upload_and_job_do_not_echo_api_key(tmp_path: Path) 
         assert job.json()["progress"] == 100
         assert job.json()["target_language"] == "ko"
         assert job.json()["detected_language"] == "en"
+        assert job.json()["asr_provider"] == "faster_whisper"
         assert job.json()["subtitle_path"].endswith("lesson.srt")
         assert "source_subtitle_path" not in job.json()
         assert "translated_subtitle_path" not in job.json()
@@ -128,6 +138,10 @@ def test_model_catalog_and_download_endpoint(
         assert catalog.status_code == 200
         assert catalog.json()["model_root"] == str((tmp_path / "data" / "models").resolve())
         assert {item["status"] for item in catalog.json()["items"]} == {"missing"}
+        qwen = next(
+            item for item in catalog.json()["items"] if item["id"] == "qwen3-asr-1.7b"
+        )
+        assert qwen["provider"] == "qwen3_asr"
 
         calls: list[str] = []
 

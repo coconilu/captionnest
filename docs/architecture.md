@@ -13,7 +13,7 @@ flowchart LR
         API["FastAPI"]
         JOB["Job Manager"]
         AV["PyAV"]
-        ASR["Faster-Whisper"]
+        ASR["ASR Provider\nFaster-Whisper 分片识别"]
         ROUTER{"Translator Provider"}
         VALIDATE["稳定 ID 校验"]
         SRT["双语 SRT Writer"]
@@ -70,7 +70,7 @@ Tauri 只在带令牌的健康检查返回 200 后创建窗口。这样既避免
 | 外部进程 | 全部使用参数数组与 `shell=False` 等价方式；禁止拼接 shell 命令 |
 | 时间轴 | 由程序持有；模型只能翻译稳定 ID 文本；写出前严格校验 ID 集合 |
 | 文件 | 默认输出源视频同目录；上传副本则输出到应用数据目录中的副本旁 |
-| 模型 | 保存到 Tauri 应用数据目录，下载采用临时目录、校验与原子替换 |
+| 模型 | 保存到 Tauri 应用数据目录；采用固定提交、临时目录、校验与原子替换 |
 
 ## 打包布局
 
@@ -85,16 +85,31 @@ CaptionNest 安装目录/
 └─ licenses/
 ```
 
-PyInstaller 使用 onedir，不使用 onefile 的每次启动临时解压。安装包不携带 Whisper 模型、Codex、CUDA/cuDNN 或 LM Studio；它们分别按需下载、用户安装或作为可选环境使用。
+PyInstaller 使用 onedir，不使用 onefile 的每次启动临时解压。安装包不携带 ASR 模型、Codex、CUDA/cuDNN 或 LM Studio；它们分别按需下载、用户安装或作为可选环境使用。产品界面与公开能力列表只启用 Faster-Whisper。
+
+Faster-Whisper 先从全片分布式抽样窗口投票确定主语言，再以 60 秒核心窗口和前后 2 秒上下文转写。跨窗口字幕按核心区中点归属并去重。最终可输出两种时间轴：
+
+| 输出模式 | 行为 |
+|---|---|
+| 逐词重排 | 使用模型逐词时间戳按停顿、时长、字符数和句末标点重新切分；默认 |
+| 分片原始段 | 保留模型在每个分片内返回的原始段落边界；用于诊断 |
+
+Qwen 仅保留为源码级实验兼容能力，不向普通用户展示。其模型目录是一个组合包：`asr/` 保存 Qwen3-ASR-1.7B，`aligner/` 保存
+Qwen3-ForcedAligner-0.6B。Provider 通过 PyTorch/Transformers 在 CaptionNest 进程内直接调用，
+ForcedAligner 的字符/词时间戳由程序聚合成可读字幕段，不经过 LM Studio。为了限制长音频中的对齐漂移，
+Provider 使用最长约 60 秒的低能量分窗，首个可靠窗口完成语言检测后锁定语言；时间戳质量门会拒绝零时长堆积和跨越异常长度的单词。
 
 ## Provider 契约
 
-所有翻译 Provider 接收同一 `TranslationBatch` 并返回 `TranslatedBatch`。SRT 写回前必须满足：
+所有翻译 Provider 接收同一 `TranslationBatch` 并返回 `TranslatedBatch`。程序先按稳定 ID 规范化模型输出；
+无关的额外 ID 会被忽略，顺序会按源字幕恢复。若仍有缺失、重复或空译文，则自动把当前批次递归拆小重试。
+SRT 写回前必须满足：
 
 | 检查 | 失败结果 |
 |---|---|
-| ID 集合完全一致 | 任务失败，不生成文件 |
-| 不得新增、遗漏或重复字幕 | 任务失败，不生成文件 |
-| 译文非空 | 任务失败，不生成文件 |
+| 多余 ID 或顺序变化 | 按稳定 ID 自动修复并记录警告 |
+| 遗漏、重复或空译文 | 当前批次拆小重试；单条仍失败才终止任务 |
+| 最终 ID 集合完全一致 | 校验失败则不生成文件 |
+| 最终译文非空 | 单条重试后仍为空则不生成文件 |
 | 源语言与目标语言不同 | 同语任务提前失败 |
 | 时间轴只来自 ASR | 模型输出中的时间信息被忽略 |

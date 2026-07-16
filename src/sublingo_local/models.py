@@ -18,6 +18,16 @@ class TranslationProviderName(StrEnum):
     DEEPSEEK = "deepseek"
 
 
+class ASRProviderName(StrEnum):
+    FASTER_WHISPER = "faster_whisper"
+    QWEN3_ASR = "qwen3_asr"
+
+
+class ASROutputMode(StrEnum):
+    CHUNK_SEGMENTS = "chunk_segments"
+    WORD_RESEGMENTED = "word_resegmented"
+
+
 class TargetLanguage(StrEnum):
     ZH_CN = "zh-CN"
     EN = "en"
@@ -55,11 +65,13 @@ class LogLevel(StrEnum):
 
 
 class ASRSettings(BaseModel):
+    provider: ASRProviderName = ASRProviderName.FASTER_WHISPER
     model: str = "small"
     device: Literal["auto", "cpu", "cuda"] = "auto"
     compute_type: str = "auto"
     vad_filter: bool = True
     beam_size: int = Field(default=5, ge=1, le=20)
+    output_mode: ASROutputMode = ASROutputMode.WORD_RESEGMENTED
 
     @field_validator("model", "compute_type")
     @classmethod
@@ -68,6 +80,20 @@ class ASRSettings(BaseModel):
         if not value:
             raise ValueError("不能为空")
         return value
+
+    @model_validator(mode="after")
+    def provider_matches_model(self) -> ASRSettings:
+        qwen_model = "qwen3-asr-1.7b"
+        if self.provider == ASRProviderName.QWEN3_ASR and self.model != qwen_model:
+            raise ValueError(f"Qwen3-ASR Provider 只支持模型 {qwen_model}")
+        if self.provider == ASRProviderName.FASTER_WHISPER and self.model == qwen_model:
+            raise ValueError("Qwen3-ASR 模型必须使用 qwen3_asr Provider")
+        if (
+            self.provider == ASRProviderName.QWEN3_ASR
+            and self.output_mode != ASROutputMode.WORD_RESEGMENTED
+        ):
+            raise ValueError("Qwen3-ASR 兼容模式只支持逐词重排输出")
+        return self
 
 
 class TranslationSettings(BaseModel):
@@ -151,6 +177,7 @@ class JobView(BaseModel):
     source_kind: SourceKind
     detected_language: str | None = None
     target_language: TargetLanguage
+    asr_provider: ASRProviderName
     translation_provider: TranslationProviderName
     created_at: datetime
     updated_at: datetime

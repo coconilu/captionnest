@@ -1,5 +1,7 @@
 export type TargetLanguage = 'zh-CN' | 'en' | 'ko'
-export type AsrModel = 'small' | 'medium' | 'large-v3-turbo' | 'large-v3'
+export type AsrProvider = 'faster_whisper' | 'qwen3_asr'
+export type AsrModel = 'small' | 'medium' | 'large-v3-turbo' | 'large-v3' | 'qwen3-asr-1.7b'
+export type AsrOutputMode = 'chunk_segments' | 'word_resegmented'
 export type TranslationProvider = 'codex_spark' | 'lmstudio' | 'deepseek'
 export type JobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
 export type JobStage =
@@ -34,6 +36,7 @@ export interface JobView {
   source_kind: 'path' | 'upload'
   detected_language: string | null
   target_language: TargetLanguage
+  asr_provider: AsrProvider
   translation_provider: TranslationProvider
   created_at: string
   updated_at: string
@@ -53,6 +56,13 @@ export interface BackendCapabilities {
     installed?: boolean
     cuda_available?: boolean
     models?: string[]
+    providers?: Array<{
+      id: AsrProvider
+      label: string
+      installed: boolean
+      cuda_available: boolean
+      models: AsrModel[]
+    }>
     source_language?: 'auto'
     target_languages?: TargetLanguage[]
   }
@@ -79,11 +89,13 @@ export interface JobRequest {
   upload_id?: string
   target_language: TargetLanguage
   asr: {
+    provider: AsrProvider
     model: AsrModel
     device: 'cuda' | 'cpu'
     compute_type: 'float16' | 'int8'
     vad_filter: boolean
     beam_size: number
+    output_mode: AsrOutputMode
   }
   translation: {
     provider: TranslationProvider
@@ -140,6 +152,7 @@ export interface EnvironmentView {
 export interface ModelItem {
   id: string
   label: string
+  provider: AsrProvider
   status: ModelStatus
   path: string | null
   message: string | null

@@ -13,11 +13,12 @@ import { useEnvironmentStatus } from './hooks/useEnvironmentStatus'
 import { useJobPolling } from './hooks/useJobPolling'
 import { useModelCatalog } from './hooks/useModelCatalog'
 import { fileNameFromPath } from './lib/format'
-import type { JobRequest, JobView } from './types/api'
+import type { AsrProvider, JobRequest, JobView } from './types/api'
 
 const initialSettings: SettingsValue = {
   targetLanguage: 'zh-CN',
   asrModel: 'small',
+  asrOutputMode: 'word_resegmented',
   useCuda: true,
   provider: 'codex_spark',
   lmstudioEndpoint: 'http://127.0.0.1:1234/v1',
@@ -60,9 +61,15 @@ export function App() {
   const [actionError, setActionError] = useState<string | null>(null)
   const { job, pollError } = useJobPolling(initialJob)
   const taskActive = Boolean(job && ACTIVE_STATUSES.has(job.status)) || startBusy
-  const cudaAvailable = environment?.acceleration.cuda_available
-    ?? Boolean(capabilities.asr?.cuda_available)
   const selectedModel = models.find((item) => item.id === settings.asrModel)
+  const selectedAsrProvider: AsrProvider = selectedModel?.provider
+    ?? 'faster_whisper'
+  const selectedAsrCapability = capabilities.asr?.providers?.find(
+    (provider) => provider.id === selectedAsrProvider,
+  )
+  const cudaAvailable = selectedAsrCapability?.cuda_available
+    ?? environment?.acceleration.cuda_available
+    ?? Boolean(capabilities.asr?.cuda_available)
   const environmentModelMatches = environment?.model.name === settings.asrModel
   const selectedModelStatus = selectedModel?.status
     ?? (environmentModelMatches ? environment?.model.status : undefined)
@@ -92,11 +99,14 @@ export function App() {
     if (!source) return '请选择视频'
     if (environmentChecking || modelsChecking) return '正在检测运行环境'
     if (environmentError) return '运行环境检测失败，请刷新检测'
-    if (environment?.asr.status !== 'ready') {
+    if (selectedAsrCapability && !selectedAsrCapability.installed) {
+      return `${selectedAsrCapability.label} 运行时尚未安装`
+    }
+    if (!selectedAsrCapability && environment?.asr.status !== 'ready') {
       return environment?.asr.message ?? '语音识别组件不可用'
     }
-    if (environment.tools.media.status !== 'ready') {
-      return environment.tools.media.message ?? '媒体解码组件不可用'
+    if (environment?.tools.media.status !== 'ready') {
+      return environment?.tools.media.message ?? '媒体解码组件不可用'
     }
     if (!selectedModelStatus) return modelsError ?? '无法获取识别模型状态，请刷新检测'
     if (selectedModelStatus === 'missing') return '请先下载识别模型'
@@ -116,6 +126,7 @@ export function App() {
     modelsChecking,
     modelsError,
     selectedModelStatus,
+    selectedAsrCapability,
     settings.deepseekApiKey,
     settings.lmstudioModel,
     settings.provider,
@@ -144,11 +155,13 @@ export function App() {
       video_path: source.path,
       target_language: settings.targetLanguage,
       asr: {
+        provider: selectedAsrProvider,
         model: settings.asrModel,
         device: settings.useCuda && cudaAvailable ? 'cuda' : 'cpu',
         compute_type: settings.useCuda && cudaAvailable ? 'float16' : 'int8',
         vad_filter: true,
         beam_size: 5,
+        output_mode: settings.asrOutputMode,
       },
       translation,
     }
@@ -163,7 +176,7 @@ export function App() {
     } finally {
       setStartBusy(false)
     }
-  }, [cudaAvailable, settings, source, validationError])
+  }, [cudaAvailable, selectedAsrProvider, settings, source, validationError])
 
   const canStart = connected && Boolean(source) && !sourceBusy && !validationError
   const startHint = sourceBusy
