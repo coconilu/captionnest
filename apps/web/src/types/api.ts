@@ -172,6 +172,186 @@ export interface JobView {
   total_model_usage: ModelUsageSummary | null
 }
 
+export interface JobSummaryView {
+  id: string
+  batch_id: string | null
+  source_name: string
+  source_kind: 'path' | 'upload'
+  status: JobStatus
+  queue_status: QueueStatus
+  current_step: JobStepId | null
+  stage: JobStage
+  progress: number
+  queue_position: number | null
+  priority: number
+  created_at: string
+  updated_at: string
+  interrupted_at: string | null
+  error: string | null
+  subtitle_path: string | null
+  wall_duration_ms: number | null
+  cumulative_attempt_duration_ms: number | null
+  total_model_usage: ModelUsageSummary | null
+}
+
+export interface JobSummaryPage {
+  items: JobSummaryView[]
+  next_cursor: string | null
+  has_more: boolean
+  total: number
+  server_time: string
+}
+
+export interface BatchStatusSummary {
+  total: number
+  draft: number
+  queued: number
+  running: number
+  waiting_for_input: number
+  completed: number
+  failed: number
+  cancelled: number
+  interrupted: number
+  progress: number
+}
+
+export interface BatchConfigSnapshot {
+  target_language: TargetLanguage
+  asr: {
+    provider: AsrProvider
+    model: AsrModel
+    device: 'auto' | 'cuda' | 'cpu'
+    compute_type: string
+    vad_filter: boolean
+    dynamic_chunking: boolean
+    selective_retry: boolean
+    timestamp_normalization: boolean
+    beam_size: number
+    output_mode: AsrOutputMode
+    hotwords: string[]
+  }
+  translation: TranslationStepConfig
+  export: ExportStepConfig
+}
+
+export interface BatchRecord {
+  id: string
+  name: string | null
+  created_at: string
+  updated_at: string
+  job_ids: string[]
+  config_template: BatchConfigSnapshot
+  status_summary: BatchStatusSummary
+}
+
+export interface BatchSourceRequest {
+  video_path?: string
+  upload_id?: string
+  export?: ExportStepConfig
+}
+
+export interface BatchPreflightIssue {
+  code:
+    | 'invalid_source'
+    | 'duplicate_source'
+    | 'output_conflict'
+    | 'output_exists'
+    | 'invalid_output'
+  message: string
+}
+
+export interface BatchSourcePreflightView {
+  index: number
+  video_path: string | null
+  upload_id: string | null
+  source_name: string | null
+  normalized_path: string | null
+  size: number | null
+  output_path: string | null
+  valid: boolean
+  issues: BatchPreflightIssue[]
+}
+
+export interface BatchPreflightRequest {
+  sources: BatchSourceRequest[]
+  config: BatchConfigSnapshot
+}
+
+export interface BatchPreflightResult {
+  items: BatchSourcePreflightView[]
+  valid_count: number
+  invalid_count: number
+  has_output_conflicts: boolean
+}
+
+export interface BatchCreateRequest extends BatchPreflightRequest {
+  name?: string
+  auto_start: boolean
+  api_key?: string
+}
+
+export interface BatchJobCreateResult {
+  index: number
+  source_name: string | null
+  ok: boolean
+  job: JobSummaryView | null
+  error: string | null
+}
+
+export interface BatchCreateResult {
+  batch: BatchRecord | null
+  preflight: BatchPreflightResult
+  results: BatchJobCreateResult[]
+  created_count: number
+  failed_count: number
+}
+
+export type JobBulkAction = 'run' | 'cancel' | 'retry_failed' | 'delete' | 'update_config'
+
+export interface JobBulkActionRequest {
+  action: JobBulkAction
+  job_ids: string[]
+  api_key?: string
+  continue_pipeline?: boolean
+  step?: JobStepId
+  config?: Record<string, unknown>
+}
+
+export interface JobBulkActionResult {
+  job_id: string
+  ok: boolean
+  job: JobSummaryView | null
+  error: string | null
+}
+
+export interface JobBulkActionResponse {
+  action: JobBulkAction
+  results: JobBulkActionResult[]
+  succeeded: number
+  failed: number
+}
+
+export interface UploadView {
+  upload_id: string
+  name: string
+  path: string
+  size: number
+}
+
+export interface BulkUploadItemResult {
+  index: number
+  name: string
+  ok: boolean
+  upload: UploadView | null
+  error: string | null
+}
+
+export interface BulkUploadResponse {
+  results: BulkUploadItemResult[]
+  succeeded: number
+  failed: number
+}
+
 export interface BackendHealth {
   status?: string
   [key: string]: unknown

@@ -18,6 +18,7 @@ interface TaskConsoleProps {
   actionError: string | null
   onActionError: (message: string | null) => void
   onDeleteJob: () => void
+  disabled?: boolean
 }
 
 function LogIcon({ level }: { level?: string }) {
@@ -33,6 +34,7 @@ export function TaskConsole({
   actionError,
   onActionError,
   onDeleteJob,
+  disabled = false,
 }: TaskConsoleProps) {
   const logs = job?.logs?.map(formatLog) ?? []
   const progress = Math.max(0, Math.min(100, job?.progress ?? 0))
@@ -66,6 +68,7 @@ export function TaskConsole({
             <button
               type="button"
               className="delete-job-button"
+              disabled={disabled}
               onClick={() => {
                 if (window.confirm('删除这个任务及其中间产物？已导出的 SRT 不会删除。')) {
                   onDeleteJob()

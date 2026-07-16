@@ -16,6 +16,7 @@ interface SettingsPanelProps {
   disabled: boolean
   canStart: boolean
   startHint: string
+  showStartAction?: boolean
   children?: ReactNode
   onChange: (next: SettingsValue) => void
   onStart: () => void
@@ -65,6 +66,7 @@ export function SettingsPanel({
   disabled,
   canStart,
   startHint,
+  showStartAction = true,
   children,
   onChange,
   onStart,
@@ -423,18 +425,20 @@ export function SettingsPanel({
         </div>
       ) : null}
 
-      <div className="start-area">
-        <button
-          type="button"
-          className="start-button"
-          onClick={onStart}
-          disabled={!canStart || disabled}
-        >
-          <Play size={19} fill="currentColor" aria-hidden="true" />
-          {disabled ? '正在生成字幕…' : '开始生成字幕'}
-        </button>
-        <p>{canStart ? `输出：单个双语 SRT · ${outputMode}` : startHint}</p>
-      </div>
+      {showStartAction ? (
+        <div className="start-area">
+          <button
+            type="button"
+            className="start-button"
+            onClick={onStart}
+            disabled={!canStart || disabled}
+          >
+            <Play size={19} fill="currentColor" aria-hidden="true" />
+            {disabled ? '正在生成字幕…' : '开始生成字幕'}
+          </button>
+          <p>{canStart ? `输出：单个双语 SRT · ${outputMode}` : startHint}</p>
+        </div>
+      ) : null}
     </aside>
   )
 }
