@@ -31,6 +31,8 @@ from .retry import (
     covered_samples,
     evaluate_retry_reasons,
     interval_coverage_ratio,
+    intrinsic_reason_severity,
+    meaningfully_improves_speech_coverage,
     plan_retry_requests,
     score_candidate_bundle,
     should_select_retry,
@@ -674,7 +676,7 @@ def _score_segments(
                 valid_word_timestamp_count=diagnostics.valid_word_timestamp_count,
                 text_repetition_score=diagnostics.text_repetition_score,
                 vad_speech_coverage=diagnostics.vad_speech_coverage,
-                reason_severity=assessment.severity,
+                reason_severity=intrinsic_reason_severity(assessment),
                 text_character_count=len(_text_key(segment.text)),
             )
         )
@@ -818,6 +820,14 @@ def _apply_selective_retries(
                 core_speech_samples=core_speech_samples,
                 sample_rate=_SAMPLE_RATE,
             )
+            coverage_improved = (
+                retry_score is not None
+                and meaningfully_improves_speech_coverage(
+                    initial_score,
+                    retry_score,
+                    sample_rate=_SAMPLE_RATE,
+                )
+            )
 
             candidate_diagnostics.extend(parsed_diagnostics)
             diagnostics_by_id.update(retry_diagnostics_by_id)
@@ -828,7 +838,9 @@ def _apply_selective_retries(
                     item for item in selected if item.candidate_id not in target_ids
                 ]
                 selected.extend(
-                    _preserve_equivalent_initial_timeline(
+                    retry_segments
+                    if coverage_improved
+                    else _preserve_equivalent_initial_timeline(
                         initial,
                         retry_segments,
                     )

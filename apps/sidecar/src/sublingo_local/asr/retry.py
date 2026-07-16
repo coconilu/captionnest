@@ -302,6 +302,15 @@ def evaluate_retry_reasons(
     )
 
 
+def intrinsic_reason_severity(assessment: RetryAssessment) -> int:
+    """Exclude relational gap evidence from per-bundle decoder quality."""
+
+    return max(
+        0,
+        assessment.severity - (2 if "speech_gap" in assessment.reasons else 0),
+    )
+
+
 @dataclass(frozen=True)
 class _PlanSeed:
     candidate_ids: tuple[str, ...]
@@ -656,4 +665,41 @@ def should_select_retry(
         and not retry.timeline_intervals
     ):
         return False
-    return retry.quality_score >= initial.quality_score + policy.selection_margin
+    quality_improved = (
+        retry.quality_score >= initial.quality_score + policy.selection_margin
+    )
+    coverage_improved = meaningfully_improves_speech_coverage(
+        initial,
+        retry,
+        sample_rate=sample_rate,
+        policy=policy,
+    )
+    quality_not_worse = retry.quality_score >= initial.quality_score or math.isclose(
+        retry.quality_score,
+        initial.quality_score,
+        abs_tol=1e-9,
+    )
+    return quality_improved or (
+        coverage_improved and quality_not_worse
+    )
+
+
+def meaningfully_improves_speech_coverage(
+    initial: CandidateBundleScore,
+    retry: CandidateBundleScore,
+    *,
+    sample_rate: int,
+    policy: ASRRetryPolicy = DEFAULT_RETRY_POLICY,
+) -> bool:
+    if sample_rate <= 0:
+        raise ValueError("采样率必须大于 0")
+    if (
+        initial.speech_covered_samples is None
+        or retry.speech_covered_samples is None
+    ):
+        return False
+    tolerance_samples = round(policy.coverage_tolerance_seconds * sample_rate)
+    return (
+        retry.speech_covered_samples
+        > initial.speech_covered_samples + tolerance_samples
+    )

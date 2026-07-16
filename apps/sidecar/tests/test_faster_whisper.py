@@ -663,6 +663,133 @@ def test_provider_clips_crossing_retries_and_preserves_sandwiched_neighbor(
     )
 
 
+@pytest.mark.parametrize(
+    "output_mode",
+    [ASROutputMode.WORD_RESEGMENTED, ASROutputMode.CHUNK_SEGMENTS],
+)
+@pytest.mark.parametrize(
+    ("fill_gap", "expected_status", "expected_texts"),
+    [
+        (False, "selected_initial", ["first", "next"]),
+        (True, "selected_retry", ["filled", "next"]),
+    ],
+)
+def test_provider_only_selects_speech_gap_retry_when_coverage_improves(
+    output_mode: ASROutputMode,
+    fill_gap: bool,
+    expected_status: str,
+    expected_texts: list[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: dict[str, object] = {"transcription_count": 0}
+
+    class FakeAudio:
+        def __len__(self) -> int:
+            return 30 * 16_000
+
+        def __getitem__(self, key):  # type: ignore[no-untyped-def]
+            calls.setdefault("slices", []).append((key.start, key.stop))  # type: ignore[union-attr]
+            return self
+
+    class FakeModel:
+        def __init__(self, model, **kwargs):  # type: ignore[no-untyped-def]
+            calls["model"] = model
+
+        def transcribe(self, audio, **kwargs):  # type: ignore[no-untyped-def]
+            index = int(calls["transcription_count"])
+            calls["transcription_count"] = index + 1
+            if index == 0:
+                segments = [
+                    SimpleNamespace(
+                        text="first",
+                        start=4.0,
+                        end=5.0,
+                        avg_logprob=-0.2,
+                        no_speech_prob=0.1,
+                        compression_ratio=1.2,
+                        temperature=0.0,
+                        words=[
+                            SimpleNamespace(word="first", start=4.0, end=5.0),
+                        ],
+                    ),
+                    SimpleNamespace(
+                        text="next",
+                        start=8.0,
+                        end=9.0,
+                        avg_logprob=-0.2,
+                        no_speech_prob=0.1,
+                        compression_ratio=1.2,
+                        temperature=0.0,
+                        words=[
+                            SimpleNamespace(word="next", start=8.0, end=9.0),
+                        ],
+                    ),
+                ]
+            else:
+                retry_end = 7.0 if fill_gap else 4.0
+                retry_text = "filled" if fill_gap else "first"
+                segments = [
+                    SimpleNamespace(
+                        text=retry_text,
+                        start=3.0,
+                        end=retry_end,
+                        avg_logprob=-0.2,
+                        no_speech_prob=0.1,
+                        compression_ratio=1.2,
+                        temperature=0.0,
+                        words=[
+                            SimpleNamespace(
+                                word=retry_text,
+                                start=3.0,
+                                end=retry_end,
+                            ),
+                        ],
+                    )
+                ]
+            return iter(segments), SimpleNamespace(
+                language=kwargs["language"],
+                language_probability=0.9,
+            )
+
+    faster_whisper_module = ModuleType("faster_whisper")
+    faster_whisper_module.WhisperModel = FakeModel  # type: ignore[attr-defined]
+    audio_module = ModuleType("faster_whisper.audio")
+    audio_module.decode_audio = lambda path, sampling_rate: FakeAudio()  # type: ignore[attr-defined]
+    vad_module = ModuleType("faster_whisper.vad")
+    vad_module.VadOptions = lambda **kwargs: SimpleNamespace(**kwargs)  # type: ignore[attr-defined]
+    vad_module.get_speech_timestamps = (  # type: ignore[attr-defined]
+        lambda audio, **kwargs: [
+            {"start": 4 * 16_000, "end": 9 * 16_000},
+        ]
+    )
+    monkeypatch.setitem(sys.modules, "faster_whisper", faster_whisper_module)
+    monkeypatch.setitem(sys.modules, "faster_whisper.audio", audio_module)
+    monkeypatch.setitem(sys.modules, "faster_whisper.vad", vad_module)
+
+    result = FasterWhisperProvider().transcribe(
+        tmp_path / "video.mp4",
+        language="en",
+        settings=ASRSettings(
+            dynamic_chunking=False,
+            selective_retry=True,
+            output_mode=output_mode,
+        ),
+    )
+
+    assert calls["slices"] == [
+        (0, 30 * 16_000),
+        (1 * 16_000, 11 * 16_000),
+    ]
+    assert result.diagnostics is not None
+    retry = result.diagnostics.retries[0]
+    assert retry.status == expected_status, retry.model_dump_json()
+    assert [segment.text for segment in result.segments] == expected_texts
+    assert retry.reasons == ("speech_gap",)
+    assert retry.initial_score == pytest.approx(retry.retry_score)
+    assert result.segments[0].end_ms == (8_000 if fill_gap else 5_000)
+
+
 def test_provider_disabled_retry_preserves_single_pass_without_vad(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

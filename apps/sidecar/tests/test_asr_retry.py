@@ -8,6 +8,8 @@ from sublingo_local.asr.retry import (
     CandidateQualityFacts,
     RetryCandidateFacts,
     evaluate_retry_reasons,
+    intrinsic_reason_severity,
+    meaningfully_improves_speech_coverage,
     plan_retry_requests,
     score_candidate_bundle,
     should_select_retry,
@@ -411,6 +413,94 @@ def test_retry_score_is_invariant_to_equivalent_segment_splitting() -> None:
         initial,
         retry,
         core_speech_samples=None,
+        sample_rate=SAMPLE_RATE,
+    )
+
+
+def test_unchanged_speech_gap_does_not_fake_quality_improvement() -> None:
+    gap_assessment = evaluate_retry_reasons(
+        _facts(
+            gap_after_samples=2 * SAMPLE_RATE,
+            gap_after_speech_coverage=1.0,
+        ),
+        sample_rate=SAMPLE_RATE,
+    )
+    assert gap_assessment.reasons == ("speech_gap",)
+    assert gap_assessment.severity == 2
+    assert intrinsic_reason_severity(gap_assessment) == 0
+
+    initial = score_candidate_bundle(
+        [
+            _quality(
+                reason_severity=intrinsic_reason_severity(gap_assessment),
+            )
+        ],
+        speech_intervals=(
+            AudioInterval(start_sample=0, end_sample=2 * SAMPLE_RATE),
+        ),
+    )
+    unchanged = score_candidate_bundle(
+        [_quality(reason_severity=0)],
+        speech_intervals=(
+            AudioInterval(start_sample=0, end_sample=2 * SAMPLE_RATE),
+        ),
+    )
+
+    assert initial is not None
+    assert unchanged is not None
+    assert initial.quality_score == pytest.approx(unchanged.quality_score)
+    assert not meaningfully_improves_speech_coverage(
+        initial,
+        unchanged,
+        sample_rate=SAMPLE_RATE,
+    )
+    assert not should_select_retry(
+        initial,
+        unchanged,
+        core_speech_samples=2 * SAMPLE_RATE,
+        sample_rate=SAMPLE_RATE,
+    )
+
+
+def test_filled_speech_gap_is_a_strict_coverage_improvement() -> None:
+    speech = (AudioInterval(start_sample=0, end_sample=2 * SAMPLE_RATE),)
+    initial = score_candidate_bundle(
+        [
+            _quality(
+                interval=AudioInterval(
+                    start_sample=0,
+                    end_sample=SAMPLE_RATE,
+                ),
+                reason_severity=0,
+            )
+        ],
+        speech_intervals=speech,
+    )
+    filled = score_candidate_bundle(
+        [
+            _quality(
+                interval=AudioInterval(
+                    start_sample=0,
+                    end_sample=2 * SAMPLE_RATE,
+                ),
+                reason_severity=0,
+            )
+        ],
+        speech_intervals=speech,
+    )
+
+    assert initial is not None
+    assert filled is not None
+    assert filled.quality_score == pytest.approx(initial.quality_score)
+    assert meaningfully_improves_speech_coverage(
+        initial,
+        filled,
+        sample_rate=SAMPLE_RATE,
+    )
+    assert should_select_retry(
+        initial,
+        filled,
+        core_speech_samples=2 * SAMPLE_RATE,
         sample_rate=SAMPLE_RATE,
     )
 
