@@ -514,6 +514,68 @@ def test_usage_callback_failure_does_not_break_translation() -> None:
     assert output[0].translated_text == "好"
 
 
+@pytest.mark.parametrize(
+    ("fallback_before_cancel", "expected_requests"),
+    [(False, 1), (True, 2)],
+)
+def test_openai_compatible_counts_cancelled_in_flight_requests(
+    fallback_before_cancel: bool,
+    expected_requests: int,
+) -> None:
+    async def scenario() -> tuple[int, list[ModelUsageSummary]]:
+        entered = asyncio.Event()
+
+        class CancellingTransport(httpx.AsyncBaseTransport):
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def handle_async_request(
+                self,
+                request: httpx.Request,
+            ) -> httpx.Response:
+                self.calls += 1
+                if fallback_before_cancel and self.calls == 1:
+                    return httpx.Response(
+                        400,
+                        json={"error": "unsupported response_format"},
+                        request=request,
+                    )
+                entered.set()
+                await asyncio.Event().wait()
+                raise AssertionError("cancelled request must not resume")
+
+        transport = CancellingTransport()
+        usages: list[ModelUsageSummary] = []
+        provider = OpenAICompatibleProvider(
+            endpoint="https://example.test/v1",
+            model="model",
+            transport=transport,
+        )
+        task = asyncio.create_task(
+            provider.translate(
+                [TranslationItem(id="1", text="good")],
+                source_language="en",
+                target_language=TargetLanguage.ZH_CN,
+                on_usage=usages.append,
+            )
+        )
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return transport.calls, usages
+
+    calls, usages = asyncio.run(scenario())
+    summary = merge_model_usage(usages)
+
+    assert calls == expected_requests
+    assert summary is not None
+    assert summary.request_count == expected_requests
+    assert summary.source == "unavailable"
+    assert summary.complete is False
+    assert summary.total_tokens is None
+
+
 def test_openai_compatible_does_not_retry_auth_failure() -> None:
     count = 0
 

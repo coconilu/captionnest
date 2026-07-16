@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping, Sequence
 from urllib.parse import urlsplit
 
@@ -109,6 +110,9 @@ class OpenAICompatibleProvider(TranslationProvider):
     ) -> httpx.Response:
         try:
             response = await client.post(self.url, headers=headers, json=payload)
+        except asyncio.CancelledError:
+            emit_model_usage(on_usage, self._unavailable_usage())
+            raise
         except httpx.HTTPError:
             emit_model_usage(on_usage, self._unavailable_usage())
             raise
