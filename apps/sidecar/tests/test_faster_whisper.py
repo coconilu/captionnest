@@ -524,10 +524,12 @@ def _install_selective_retry_fakes(
     near_silence: bool = False,
     confirmed_silence: bool = False,
     timestamp_intrusion: bool = False,
+    timestamp_interval: tuple[float, float] | None = None,
+    audio_samples: int = 30 * 16_000,
 ) -> None:
     class FakeAudio:
         def __len__(self) -> int:
-            return 30 * 16_000
+            return audio_samples
 
         def __getitem__(self, key):  # type: ignore[no-untyped-def]
             calls.setdefault("slices", []).append((key.start, key.stop))  # type: ignore[union-attr]
@@ -558,8 +560,11 @@ def _install_selective_retry_fakes(
                 )
             is_retry = index == 1
             text = "清晰片段" if is_retry else "疑似片段"
-            start = 4.0 if is_retry else (3.9 if timestamp_intrusion else 5.0)
-            end = 8.1 if timestamp_intrusion and not is_retry else start + 2.0
+            if timestamp_interval is not None:
+                start, end = timestamp_interval
+            else:
+                start = 4.0 if is_retry else (3.9 if timestamp_intrusion else 5.0)
+                end = 8.1 if timestamp_intrusion and not is_retry else start + 2.0
             segment = SimpleNamespace(
                 text=text,
                 start=start,
@@ -591,6 +596,8 @@ def _install_selective_retry_fakes(
 
     def get_speech_timestamps(audio, **kwargs):  # type: ignore[no-untyped-def]
         calls["vad_count"] = int(calls.get("vad_count", 0)) + 1
+        if timestamp_interval is not None:
+            return [{"start": 0, "end": min(audio_samples, 16_000)}]
         if confirmed_silence:
             return []
         if near_silence:
@@ -774,6 +781,71 @@ def test_provider_normalizes_silence_boundaries_for_both_output_modes(
     assert summary.timestamp_segment_boundary_shift_count == 2
     assert summary.timestamp_boundary_shift_abs_total_samples == 6_400
     assert summary.timestamp_fallback_to_original_count == 0
+
+
+@pytest.mark.parametrize(
+    "output_mode",
+    [ASROutputMode.WORD_RESEGMENTED, ASROutputMode.CHUNK_SEGMENTS],
+)
+@pytest.mark.parametrize(
+    (
+        "audio_samples",
+        "timestamp_interval",
+        "expected_status",
+        "expected_fallback_count",
+    ),
+    [
+        (30 * 16_000, (0.1, 0.15), "applied", 0),
+        (800, (0.01, 0.04), "fallback", 1),
+    ],
+)
+def test_provider_repairs_short_timestamps_or_reports_fallback_for_both_modes(
+    output_mode: ASROutputMode,
+    audio_samples: int,
+    timestamp_interval: tuple[float, float],
+    expected_status: str,
+    expected_fallback_count: int,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: dict[str, object] = {}
+    _install_selective_retry_fakes(
+        monkeypatch,
+        calls,
+        timestamp_interval=timestamp_interval,
+        audio_samples=audio_samples,
+    )
+
+    result = FasterWhisperProvider().transcribe(
+        tmp_path / "video.mp4",
+        language="zh",
+        settings=ASRSettings(
+            dynamic_chunking=False,
+            selective_retry=False,
+            timestamp_normalization=True,
+            output_mode=output_mode,
+        ),
+    )
+
+    assert calls["vad_count"] == 1
+    assert len(result.segments) == 1
+    assert result.segments[0].id == "seg-000001"
+    if expected_status == "applied":
+        assert result.segments[0].end_ms - result.segments[0].start_ms >= 100
+
+    assert result.diagnostics is not None
+    summary = result.diagnostics.summary
+    assert summary.timestamp_normalization_status == expected_status
+    assert (
+        summary.timestamp_fallback_to_original_count == expected_fallback_count
+    )
+    if expected_status == "applied":
+        assert summary.timestamp_word_boundary_shift_count == 2
+        assert summary.timestamp_segment_boundary_shift_count == 2
+    else:
+        assert summary.timestamp_unsafe_adjustment_count >= 1
+        assert summary.timestamp_word_boundary_shift_count == 0
+        assert summary.timestamp_segment_boundary_shift_count == 0
 
 
 @pytest.mark.parametrize(

@@ -237,12 +237,105 @@ def _adjust_adjacent_intervals(
     return adjusted, unsafe_count
 
 
+def _extend_short_intervals(
+    intervals: Sequence[AudioInterval],
+    *,
+    originals: Sequence[AudioInterval],
+    total_samples: int,
+    max_shift: int,
+    min_duration: int,
+    maximum_starts: Sequence[int | None] | None = None,
+    minimum_ends: Sequence[int | None] | None = None,
+) -> tuple[list[AudioInterval], int]:
+    """Extend short intervals without reordering neighbors or moving anchors."""
+    adjusted = list(intervals)
+    unsafe_count = 0
+    maximum_starts = maximum_starts or [None] * len(adjusted)
+    minimum_ends = minimum_ends or [None] * len(adjusted)
+    start_uppers = [
+        min(
+            total_samples - 1,
+            original.start_sample + max_shift,
+            maximum_start if maximum_start is not None else total_samples - 1,
+        )
+        for original, maximum_start in zip(
+            originals,
+            maximum_starts,
+            strict=True,
+        )
+    ]
+    end_uppers = [
+        min(total_samples, original.end_sample + max_shift)
+        for original in originals
+    ]
+    for index in range(len(adjusted) - 2, -1, -1):
+        start_uppers[index] = min(start_uppers[index], start_uppers[index + 1])
+        end_uppers[index] = min(end_uppers[index], end_uppers[index + 1])
+
+    for index, (current, original) in enumerate(
+        zip(adjusted, originals, strict=True)
+    ):
+        maximum_start = maximum_starts[index]
+        minimum_end = minimum_ends[index]
+        previous = adjusted[index - 1] if index else None
+        if (
+            current.end_sample - current.start_sample >= min_duration
+            and (maximum_start is None or current.start_sample <= maximum_start)
+            and (minimum_end is None or current.end_sample >= minimum_end)
+            and (
+                previous is None
+                or (
+                    current.start_sample >= previous.start_sample
+                    and current.end_sample >= previous.end_sample
+                )
+            )
+        ):
+            continue
+
+        start_lower = max(
+            0,
+            original.start_sample - max_shift,
+            previous.start_sample if previous is not None else 0,
+        )
+        start_upper = start_uppers[index]
+        end_lower = max(
+            1,
+            original.end_sample - max_shift,
+            previous.end_sample if previous is not None else 1,
+            minimum_end if minimum_end is not None else 1,
+        )
+        end_upper = end_uppers[index]
+
+        feasible_start_upper = min(start_upper, end_upper - min_duration)
+        if start_lower > feasible_start_upper:
+            unsafe_count += 1
+            continue
+
+        missing = max(
+            0,
+            min_duration - (current.end_sample - current.start_sample),
+        )
+        preferred_start = current.start_sample - missing // 2
+        preferred_end = current.end_sample + (missing - missing // 2)
+        start = max(start_lower, min(preferred_start, feasible_start_upper))
+        feasible_end_lower = max(end_lower, start + min_duration)
+        if feasible_end_lower > end_upper:
+            unsafe_count += 1
+            continue
+        end = max(feasible_end_lower, min(preferred_end, end_upper))
+        adjusted[index] = AudioInterval(start_sample=start, end_sample=end)
+
+    return adjusted, unsafe_count
+
+
 def _track_is_safe(
     items: Sequence[TimestampTrackItem],
     *,
     originals: Sequence[TimestampTrackItem],
     total_samples: int,
     max_shift: int,
+    min_word_duration: int,
+    min_segment_duration: int,
 ) -> bool:
     if len(items) != len(originals):
         return False
@@ -254,6 +347,8 @@ def _track_is_safe(
     for item, original in zip(items, originals, strict=True):
         interval = item.interval
         if not 0 <= interval.start_sample < interval.end_sample <= total_samples:
+            return False
+        if interval.end_sample - interval.start_sample < min_segment_duration:
             return False
         if (
             abs(interval.start_sample - original.interval.start_sample) > max_shift
@@ -273,6 +368,8 @@ def _track_is_safe(
                 < word.end_sample
                 <= interval.end_sample
             ):
+                return False
+            if word.end_sample - word.start_sample < min_word_duration:
                 return False
             if (
                 abs(word.start_sample - original_word.start_sample) > max_shift
@@ -331,7 +428,7 @@ def normalize_timestamp_track(
 ) -> TimestampNormalizationResult:
     """Normalize timestamp boundaries without changing track structure or order."""
     originals = tuple(items)
-    if not originals or not non_speech_intervals:
+    if not originals:
         return TimestampNormalizationResult(
             items=originals,
             stats=TimestampNormalizationStats(),
@@ -365,6 +462,23 @@ def normalize_timestamp_track(
         )
     )
     if not silences:
+        if not _track_is_safe(
+            originals,
+            originals=originals,
+            total_samples=total_samples,
+            max_shift=max_shift,
+            min_word_duration=min_word_duration,
+            min_segment_duration=min_segment_duration,
+        ):
+            return TimestampNormalizationResult(
+                items=originals,
+                stats=_stats(
+                    originals,
+                    originals,
+                    unsafe_adjustment_count=1,
+                    fallback_to_original_count=1,
+                ),
+            )
         return TimestampNormalizationResult(
             items=originals,
             stats=TimestampNormalizationStats(),
@@ -392,6 +506,14 @@ def normalize_timestamp_track(
         small_gap=small_gap,
     )
     unsafe_count += unsafe
+    adjusted_words, unsafe = _extend_short_intervals(
+        adjusted_words,
+        originals=original_words,
+        total_samples=total_samples,
+        max_shift=max_shift,
+        min_duration=min_word_duration,
+    )
+    unsafe_count += unsafe
 
     words_by_item: list[tuple[AudioInterval, ...]] = []
     cursor = 0
@@ -403,9 +525,25 @@ def normalize_timestamp_track(
     adjusted_segments: list[AudioInterval] = []
     maximum_starts: list[int | None] = []
     minimum_ends: list[int | None] = []
-    for interval, words in zip(original_segments, words_by_item, strict=True):
-        maximum_start = words[0].start_sample if words else None
-        minimum_end = words[-1].end_sample if words else None
+    for original_item, words in zip(originals, words_by_item, strict=True):
+        interval = original_item.interval
+        original_words_are_contained = all(
+            interval.start_sample
+            <= word.start_sample
+            < word.end_sample
+            <= interval.end_sample
+            for word in original_item.words
+        )
+        maximum_start = (
+            words[0].start_sample
+            if words and original_words_are_contained
+            else None
+        )
+        minimum_end = (
+            words[-1].end_sample
+            if words and original_words_are_contained
+            else None
+        )
         adjusted, unsafe = _clip_interval_to_silence(
             interval,
             silences=silences,
@@ -429,6 +567,16 @@ def normalize_timestamp_track(
         minimum_ends=minimum_ends,
     )
     unsafe_count += unsafe
+    adjusted_segments, unsafe = _extend_short_intervals(
+        adjusted_segments,
+        originals=original_segments,
+        total_samples=total_samples,
+        max_shift=max_shift,
+        min_duration=min_segment_duration,
+        maximum_starts=maximum_starts,
+        minimum_ends=minimum_ends,
+    )
+    unsafe_count += unsafe
 
     normalized = tuple(
         TimestampTrackItem(interval=interval, words=words)
@@ -443,6 +591,8 @@ def normalize_timestamp_track(
         originals=originals,
         total_samples=total_samples,
         max_shift=max_shift,
+        min_word_duration=min_word_duration,
+        min_segment_duration=min_segment_duration,
     ):
         return TimestampNormalizationResult(
             items=originals,

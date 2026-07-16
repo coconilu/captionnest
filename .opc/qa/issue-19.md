@@ -91,7 +91,7 @@
 
 | 检查 | 结果 |
 |---|---:|
-| Sidecar `uv run --project apps/sidecar --extra asr --extra dev pytest -q` | 197 passed，1 个 Starlette 弃用警告 |
+| Sidecar `uv run --project apps/sidecar --extra asr --extra dev pytest -q` | 205 passed，1 个 Starlette 弃用警告 |
 | Sidecar `uv run --project apps/sidecar --extra dev ruff check apps/sidecar` | passed |
 | Tooling `uv run --project apps/sidecar --extra dev pytest tooling/tests -q` | 25 passed |
 | Tooling Ruff | passed |
@@ -123,5 +123,6 @@
 | 轮次 | 精确 HEAD | Verdict | 处理结果 |
 |---|---|---|---|
 | 第 1 次 | `83c9da755260002aa15a43a80192ae2da673286e` | `CHANGES_REQUIRED` | 修复两个不同文本 cue 被规范化到相同区间后，`sorted(cues)` 以文本作为平局键而重排 `(id, text)` 的 P1 |
+| 第 2 次 | `f31e2cc9d93b451f3d456f6e90ed32c18ab3e82d` | `CHANGES_REQUIRED` | 修复模型原始词/父分片短于 100 ms 时未补足且误报 `applied` 的 P1 |
 
-修复改为严格保留校时前分组产生的 cue 插入序号，不再按规范化后的 `(start, end, text)` 重新排序；新增 Reviewer 原始数据的双输出模式回归。修复提交将重新送交同一只读 Reviewer，直至精确 HEAD 获得 `PASS`。
+第 1 轮修复改为严格保留校时前分组产生的 cue 插入序号，不再按规范化后的 `(start, end, text)` 重新排序。第 2 轮修复对原始短区间执行确定性补足，同时约束 300 ms 最大移动、媒体范围、单调顺序和父子包含；无法容纳 100 ms 的轨道整轨回退且诊断明确为 `fallback`。两轮均新增 Reviewer 原始数据的双输出模式回归；修复提交将重新送交同一只读 Reviewer，直至精确 HEAD 获得 `PASS`。

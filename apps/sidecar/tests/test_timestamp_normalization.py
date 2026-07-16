@@ -183,6 +183,90 @@ def test_maximum_shift_and_minimum_duration_are_hard_bounds() -> None:
     assert result.stats.unsafe_adjustment_count >= 1
 
 
+def test_original_short_word_and_parent_are_extended_deterministically() -> None:
+    item = TimestampTrackItem(
+        interval=_interval(100, 150),
+        words=(_interval(100, 150),),
+    )
+
+    result = _normalize([item], [_interval(4_000, 4_500)])
+
+    expected = TimestampTrackItem(
+        interval=_interval(75, 175),
+        words=(_interval(75, 175),),
+    )
+    assert result.items == (expected,)
+    assert result == _normalize([item], [_interval(4_000, 4_500)])
+    assert result.stats.word_boundary_shift_count == 2
+    assert result.stats.segment_boundary_shift_count == 2
+    assert result.stats.boundary_shift_abs_total_samples == 100
+    assert result.stats.fallback_to_original_count == 0
+
+
+def test_parent_expands_to_contain_repaired_edge_word() -> None:
+    item = TimestampTrackItem(
+        interval=_interval(100, 200),
+        words=(_interval(180, 190),),
+    )
+
+    result = _normalize([item], [_interval(4_000, 4_500)])
+
+    assert result.items == (
+        TimestampTrackItem(
+            interval=_interval(100, 235),
+            words=(_interval(135, 235),),
+        ),
+    )
+    assert result.stats.fallback_to_original_count == 0
+
+
+def test_overlapping_short_items_propagate_monotonic_repairs_forward() -> None:
+    items = [
+        TimestampTrackItem(
+            interval=_interval(100, 150),
+            words=(_interval(100, 150),),
+        ),
+        TimestampTrackItem(
+            interval=_interval(110, 160),
+            words=(_interval(110, 160),),
+        ),
+    ]
+
+    result = _normalize(items, [_interval(4_000, 4_500)])
+
+    assert result.items == (
+        TimestampTrackItem(
+            interval=_interval(75, 175),
+            words=(_interval(75, 175),),
+        ),
+        TimestampTrackItem(
+            interval=_interval(85, 185),
+            words=(_interval(85, 185),),
+        ),
+    )
+    assert result.stats.fallback_to_original_count == 0
+
+
+def test_short_track_that_cannot_fit_minimum_duration_falls_back() -> None:
+    item = TimestampTrackItem(
+        interval=_interval(10, 60),
+        words=(_interval(10, 60),),
+    )
+
+    result = normalize_timestamp_track(
+        [item],
+        non_speech_intervals=[],
+        sample_rate=SAMPLE_RATE,
+        total_samples=80,
+    )
+
+    assert result.items == (item,)
+    assert result.stats.unsafe_adjustment_count == 1
+    assert result.stats.fallback_to_original_count == 1
+    assert result.stats.word_boundary_shift_count == 0
+    assert result.stats.segment_boundary_shift_count == 0
+
+
 def test_unsafe_final_structure_falls_back_to_exact_original_track() -> None:
     item = TimestampTrackItem(
         interval=_interval(100, 1_000),
