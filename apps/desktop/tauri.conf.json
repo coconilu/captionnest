@@ -28,10 +28,10 @@
     "externalBin": ["binaries/captionnest-sidecar"],
     "resources": {
       "binaries/_internal/": "_internal",
-      "../LICENSE": "LICENSE",
-      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
-      "../licenses/": "licenses",
-      "../packaging/dist/FFMPEG_BUILD_INFO.txt": "FFMPEG_BUILD_INFO.txt"
+      "../../LICENSE": "LICENSE",
+      "../../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
+      "../../licenses/": "licenses",
+      "../../tooling/packaging/dist/FFMPEG_BUILD_INFO.txt": "FFMPEG_BUILD_INFO.txt"
     },
     "icon": [
       "icons/32x32.png",

@@ -17,12 +17,12 @@
 
 | 资产 | 用途 |
 |---|---|
-| `src-tauri/icons/app-icon.svg` | 唯一规范源文件，允许无损修改和重新导出 |
-| `src-tauri/icons/32x32.png` | Windows 小图标 |
-| `src-tauri/icons/128x128.png` | Windows / Tauri 图标 |
-| `src-tauri/icons/128x128@2x.png` | 高 DPI 图标 |
-| `src-tauri/icons/icon.ico` | EXE、NSIS 安装器和卸载入口 |
-| `web/public/favicon.svg` | Web UI favicon 与页头品牌标记；内容应与规范源文件保持一致 |
+| `apps/desktop/icons/app-icon.svg` | 唯一规范源文件，允许无损修改和重新导出 |
+| `apps/desktop/icons/32x32.png` | Windows 小图标 |
+| `apps/desktop/icons/128x128.png` | Windows / Tauri 图标 |
+| `apps/desktop/icons/128x128@2x.png` | 高 DPI 图标 |
+| `apps/desktop/icons/icon.ico` | EXE、NSIS 安装器和卸载入口 |
+| `apps/web/public/favicon.svg` | Web UI favicon 与页头品牌标记；内容应与规范源文件保持一致 |
 
 ## 配色
 

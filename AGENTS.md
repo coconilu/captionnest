@@ -1,8 +1,9 @@
 # CaptionNest development guidance
 
 - 用户界面和文档默认使用简体中文。
-- Python 代码放在 `src/sublingo_local/`，测试放在 `tests/`。
-- React/Vite 前端放在 `web/`，组件应保持小而专一，避免把全部界面写进一个组件。
+- Python 代码放在 `apps/sidecar/src/sublingo_local/`，业务测试放在 `apps/sidecar/tests/`，仓库级测试放在 `tooling/tests/`。
+- React/Vite 前端放在 `apps/web/`，组件应保持小而专一，避免把全部界面写进一个组件。
+- Tauri 桌面壳放在 `apps/desktop/`，PyInstaller 和媒体运行时构建输入放在 `tooling/packaging/`。
 - Faster-Whisper 必须延迟导入，确保未安装 GPU 依赖时仍能启动 Web UI 和运行单元测试。
 - 翻译器必须实现统一 Provider 接口；不得在日志或持久化文件中记录 API Key。
 - Codex Spark 通过本机 `codex exec` 和现有 ChatGPT 登录调用，不得伪装成 OpenAI API。

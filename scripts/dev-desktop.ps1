@@ -13,9 +13,9 @@ foreach ($Command in @('uv', 'npm', 'cargo', 'rustup')) {
     }
 }
 
-$Tauri = Join-Path $Root 'web\node_modules\.bin\tauri.cmd'
+$Tauri = Join-Path $Root 'apps\web\node_modules\.bin\tauri.cmd'
 if (-not (Test-Path -LiteralPath $Tauri -PathType Leaf)) {
-    & npm --prefix web install
+    & npm --prefix apps/web install
     if ($LASTEXITCODE -ne 0) { throw 'Failed to install frontend dependencies.' }
 }
 
@@ -24,5 +24,5 @@ if ($LASTEXITCODE -ne 0) { throw "Failed to install Rust target: $TargetTriple" 
 
 & (Join-Path $PSScriptRoot 'build-sidecar.ps1') -TargetTriple $TargetTriple
 
-& $Tauri dev --config 'src-tauri\tauri.conf.json' --target $TargetTriple
+& $Tauri dev --config 'apps\desktop\tauri.conf.json' --target $TargetTriple
 if ($LASTEXITCODE -ne 0) { throw 'Tauri desktop development process exited with an error.' }

@@ -62,7 +62,7 @@ function Get-JsonVersion([string]$Path, [string]$Pattern, [string]$Label) {
     return $Matches[0].Groups['version'].Value
 }
 
-$PackageLockPath = Join-Path $Root 'web\package-lock.json'
+$PackageLockPath = Join-Path $Root 'apps\web\package-lock.json'
 $PackageLockVersion = Get-JsonVersion `
     $PackageLockPath `
     '(?ms)\A\{\s*"name"\s*:\s*"captionnest-web"\s*,\s*"version"\s*:\s*"(?<version>[^"]+)"' `
@@ -72,14 +72,14 @@ $PackageLockRootVersion = Get-JsonVersion `
     '(?ms)"packages"\s*:\s*\{\s*""\s*:\s*\{\s*"name"\s*:\s*"captionnest-web"\s*,\s*"version"\s*:\s*"(?<version>[^"]+)"' `
     'WebLockRoot'
 $Versions = [ordered]@{
-    Python = Get-TomlVersion (Join-Path $Root 'pyproject.toml') 'project'
-    PythonLock = Get-TomlPackageVersion (Join-Path $Root 'uv.lock') 'captionnest'
-    Web = (Get-Content -LiteralPath (Join-Path $Root 'web\package.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version
+    Python = Get-TomlVersion (Join-Path $Root 'apps\sidecar\pyproject.toml') 'project'
+    PythonLock = Get-TomlPackageVersion (Join-Path $Root 'apps\sidecar\uv.lock') 'captionnest'
+    Web = (Get-Content -LiteralPath (Join-Path $Root 'apps\web\package.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version
     WebLock = $PackageLockVersion
     WebLockRoot = $PackageLockRootVersion
-    Tauri = (Get-Content -LiteralPath (Join-Path $Root 'src-tauri\tauri.conf.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version
-    Cargo = Get-TomlVersion (Join-Path $Root 'src-tauri\Cargo.toml') 'package'
-    CargoLock = Get-TomlPackageVersion (Join-Path $Root 'src-tauri\Cargo.lock') 'captionnest-desktop'
+    Tauri = (Get-Content -LiteralPath (Join-Path $Root 'apps\desktop\tauri.conf.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version
+    Cargo = Get-TomlVersion (Join-Path $Root 'apps\desktop\Cargo.toml') 'package'
+    CargoLock = Get-TomlPackageVersion (Join-Path $Root 'apps\desktop\Cargo.lock') 'captionnest-desktop'
 }
 
 $UniqueVersions = @($Versions.Values | Sort-Object -Unique)

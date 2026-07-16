@@ -16,8 +16,11 @@ from PyInstaller.utils.win32.versioninfo import (
 )
 
 
-ROOT = Path(SPECPATH).resolve().parent
-with (ROOT / "pyproject.toml").open("rb") as version_stream:
+ROOT = Path(SPECPATH).resolve().parents[1]
+SIDECAR_ROOT = ROOT / "apps" / "sidecar"
+PACKAGING_ROOT = ROOT / "tooling" / "packaging"
+DESKTOP_ROOT = ROOT / "apps" / "desktop"
+with (SIDECAR_ROOT / "pyproject.toml").open("rb") as version_stream:
     VERSION = tomllib.load(version_stream)["project"]["version"]
 VERSION_PARTS = tuple(int(part) for part in re.findall(r"\d+", VERSION)[:4])
 VERSION_TUPLE = (VERSION_PARTS + (0, 0, 0, 0))[:4]
@@ -50,10 +53,10 @@ VERSION_INFO = VSVersionInfo(
 DATAS = [
     (str(ROOT / "LICENSE"), "."),
     (str(ROOT / "THIRD_PARTY_NOTICES.md"), "."),
-    (str(ROOT / "packaging" / "dist" / "FFMPEG_BUILD_INFO.txt"), "."),
+    (str(PACKAGING_ROOT / "dist" / "FFMPEG_BUILD_INFO.txt"), "."),
 ]
 media_provenance = (
-    ROOT / "packaging" / "dist" / "media-wheel" / "MEDIA_WHEEL_PROVENANCE.json"
+    PACKAGING_ROOT / "dist" / "media-wheel" / "MEDIA_WHEEL_PROVENANCE.json"
 )
 if media_provenance.is_file():
     DATAS.append((str(media_provenance), "."))
@@ -81,8 +84,8 @@ for distribution_name in ("av", "ctranslate2", "faster-whisper", "huggingface-hu
         pass
 
 analysis = Analysis(
-    [str(ROOT / "packaging" / "sidecar_entry.py")],
-    pathex=[str(ROOT / "src")],
+    [str(PACKAGING_ROOT / "sidecar_entry.py")],
+    pathex=[str(SIDECAR_ROOT / "src")],
     binaries=BINARIES,
     datas=DATAS,
     hiddenimports=HIDDEN_IMPORTS,
@@ -94,7 +97,7 @@ analysis = Analysis(
     optimize=1,
 )
 python_archive = PYZ(analysis.pure)
-icon_path = ROOT / "src-tauri" / "icons" / "icon.ico"
+icon_path = DESKTOP_ROOT / "icons" / "icon.ico"
 executable = EXE(
     python_archive,
     analysis.scripts,
