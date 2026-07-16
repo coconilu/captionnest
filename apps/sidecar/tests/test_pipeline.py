@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,9 @@ from sublingo_local.asr.diagnostics import (
 from sublingo_local.job_store import JobStore
 from sublingo_local.jobs import JobManager, JobRecord, ProcessingPipeline
 from sublingo_local.models import (
+    ASR_HOTWORD_MAX_ENTRIES,
+    ASR_HOTWORD_MAX_ENTRY_CHARACTERS,
+    ASR_HOTWORD_MAX_TOTAL_CHARACTERS,
     ASROutputMode,
     ASRSettings,
     JobCreateRequest,
@@ -409,16 +413,106 @@ def test_job_created_before_new_asr_features_keeps_historical_behavior(
     ).to_payload()
     payload["asr"].pop("dynamic_chunking")
     payload["asr"].pop("selective_retry")
+    payload["asr"].pop("hotwords")
 
     record = JobRecord.from_payload(payload)
 
     assert isinstance(record.asr, ASRSettings)
     assert record.asr.dynamic_chunking is False
     assert record.asr.selective_retry is False
+    assert record.asr.hotwords == []
     assert record.to_view().steps[1].config["dynamic_chunking"] is False
     assert record.to_view().steps[1].config["selective_retry"] is False
+    assert record.to_view().steps[1].config["hotwords"] == []
     assert ASRSettings().dynamic_chunking is True
     assert ASRSettings().selective_retry is True
+
+
+def test_asr_hotwords_normalize_trim_empty_and_stable_duplicates() -> None:
+    settings = ASRSettings(
+        hotwords=[
+            "  CaptionNest  ",
+            "",
+            "初音未来",
+            "CaptionNest",
+            "   ",
+            "葬送のフリーレン",
+        ]
+    )
+
+    assert settings.hotwords == ["CaptionNest", "初音未来", "葬送のフリーレン"]
+    assert ASRSettings().hotwords == []
+
+
+@pytest.mark.parametrize(
+    ("hotwords", "message"),
+    [
+        ("CaptionNest", "提示词必须是字符串数组"),
+        ([123], "第 1 个提示词必须是文本"),
+        (["Caption\tNest"], "不能包含换行或控制字符"),
+        (
+            ["x" * (ASR_HOTWORD_MAX_ENTRY_CHARACTERS + 1)],
+            f"单个提示词不能超过 {ASR_HOTWORD_MAX_ENTRY_CHARACTERS} 个字符",
+        ),
+        (
+            [f"term-{index}" for index in range(ASR_HOTWORD_MAX_ENTRIES + 1)],
+            f"提示词不能超过 {ASR_HOTWORD_MAX_ENTRIES} 条",
+        ),
+        (
+            [
+                ("x" * (ASR_HOTWORD_MAX_ENTRY_CHARACTERS - 2)) + f"{index:02d}"
+                for index in range(
+                    ASR_HOTWORD_MAX_TOTAL_CHARACTERS
+                    // ASR_HOTWORD_MAX_ENTRY_CHARACTERS
+                    + 1
+                )
+            ],
+            f"提示词总字符数不能超过 {ASR_HOTWORD_MAX_TOTAL_CHARACTERS} 个",
+        ),
+    ],
+)
+def test_asr_hotwords_reject_invalid_or_oversized_values(
+    hotwords: object,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        ASRSettings(hotwords=hotwords)  # type: ignore[arg-type]
+
+
+def test_transcription_logs_and_diagnostics_only_expose_hotword_count(
+    tmp_path: Path,
+) -> None:
+    private_hotword = "DO-NOT-LEAK-HOTWORD"
+    video = tmp_path / "hotword.mp4"
+    video.write_bytes(b"fake video")
+    asr = CountingASR()
+    store, pipeline = _pipeline(tmp_path, asr=asr)
+    record = JobRecord(
+        id="hotword-job",
+        media=MediaStepSettings(
+            source_kind=SourceKind.PATH,
+            path=str(video),
+            name=video.name,
+        ),
+        asr=ASRSettings(hotwords=[private_hotword, "初音未来"]),
+    )
+
+    asyncio.run(pipeline.run_from(record, JobStep.MEDIA, continue_pipeline=False))
+    asyncio.run(
+        pipeline.run_from(record, JobStep.TRANSCRIPTION, continue_pipeline=False)
+    )
+
+    log_payload = json.dumps(
+        [item.model_dump(mode="json") for item in record.logs],
+        ensure_ascii=False,
+    )
+    artifact = record.steps[JobStep.TRANSCRIPTION].artifact
+    assert artifact is not None
+    persisted_diagnostics = store.read_artifact(Path(artifact.path))
+    assert private_hotword not in log_payload
+    assert private_hotword not in json.dumps(persisted_diagnostics, ensure_ascii=False)
+    assert any("已使用 2 个提示词" in item.message for item in record.logs)
+    assert artifact.summary["hotword_count"] == 2
 
 
 def test_job_request_exposes_only_target_language() -> None:

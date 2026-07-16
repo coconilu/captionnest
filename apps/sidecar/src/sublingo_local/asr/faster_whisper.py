@@ -60,6 +60,12 @@ _CJK_LANGUAGES = {"zh", "yue", "ja", "ko", "chinese", "japanese", "korean"}
 _TEXT_KEY_PATTERN = re.compile(r"[\s、。,.!?！？「」『』（）()…〜~・]+")
 
 
+def _serialize_hotwords(hotwords: Sequence[str]) -> str | None:
+    """Adapt the validated task list to Faster-Whisper's string parameter."""
+    serialized = ", ".join(hotwords)
+    return serialized or None
+
+
 @dataclass(frozen=True)
 class _ChunkWindow:
     index: int
@@ -696,6 +702,7 @@ def _apply_selective_retries(
     windows: Sequence[_ChunkWindow],
     detected_language: str,
     settings: ASRSettings,
+    serialized_hotwords: str | None,
     audio_analysis: ASRAudioAnalysis,
     duration_seconds: float,
     window_candidate_counts: list[int],
@@ -741,6 +748,11 @@ def _apply_selective_retries(
                 vad_filter=settings.vad_filter,
                 word_timestamps=True,
                 condition_on_previous_text=False,
+                **(
+                    {"hotwords": serialized_hotwords}
+                    if serialized_hotwords is not None
+                    else {}
+                ),
             )
             raw_segments = list(iterator)
             retry_segments: list[_ChunkSegment] = []
@@ -1089,6 +1101,7 @@ class FasterWhisperProvider(ASRProvider):
             if on_progress:
                 on_progress(0.08)
 
+            serialized_hotwords = _serialize_hotwords(settings.hotwords)
             candidates: list[_ChunkSegment] = []
             candidate_diagnostics: list[ASRSegmentDiagnostics] = []
             window_candidate_counts = [0 for _ in windows]
@@ -1103,6 +1116,11 @@ class FasterWhisperProvider(ASRProvider):
                     vad_filter=settings.vad_filter,
                     word_timestamps=True,
                     condition_on_previous_text=False,
+                    **(
+                        {"hotwords": serialized_hotwords}
+                        if serialized_hotwords is not None
+                        else {}
+                    ),
                 )
                 chunk_segments = list(iterator)
                 info_language = str(getattr(info, "language", "") or "").strip()
@@ -1177,6 +1195,7 @@ class FasterWhisperProvider(ASRProvider):
                     windows=windows,
                     detected_language=detected_language,
                     settings=settings,
+                    serialized_hotwords=serialized_hotwords,
                     audio_analysis=audio_analysis,
                     duration_seconds=duration,
                     window_candidate_counts=window_candidate_counts,

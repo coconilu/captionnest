@@ -22,6 +22,7 @@ import { useJobPolling } from './hooks/useJobPolling'
 import { useModelCatalog } from './hooks/useModelCatalog'
 import { usePersistedSettings } from './hooks/usePersistedSettings'
 import { fileNameFromPath } from './lib/format'
+import { validateHotwordText } from './lib/hotwords'
 import type {
   AsrProvider,
   JobRequest,
@@ -83,6 +84,10 @@ export function App() {
   const selectedModelStatus = selectedModel?.status
     ?? (environmentModelMatches ? environment?.model.status : undefined)
   const codexStatus = environment?.codex.status
+  const hotwordValidation = useMemo(
+    () => validateHotwordText(settings.asrHotwordsText),
+    [settings.asrHotwordsText],
+  )
 
   useEffect(() => {
     if (!connected) return
@@ -136,6 +141,7 @@ export function App() {
 
   const validationError = useMemo(() => {
     if (!source) return '请选择视频'
+    if (hotwordValidation.error) return hotwordValidation.error
     if (environmentChecking || modelsChecking) return '正在检测运行环境'
     if (environmentError) return '运行环境检测失败，请刷新检测'
     if (selectedAsrCapability && !selectedAsrCapability.installed) {
@@ -162,6 +168,7 @@ export function App() {
     environment,
     environmentChecking,
     environmentError,
+    hotwordValidation.error,
     modelsChecking,
     modelsError,
     selectedModelStatus,
@@ -205,6 +212,7 @@ export function App() {
         selective_retry: settings.asrSelectiveRetry,
         beam_size: settings.asrBeamSize,
         output_mode: settings.asrOutputMode,
+        hotwords: hotwordValidation.hotwords,
       },
       translation,
       export: {
@@ -235,7 +243,14 @@ export function App() {
     } finally {
       setStartBusy(false)
     }
-  }, [cudaAvailable, selectedAsrProvider, settings, source, validationError])
+  }, [
+    cudaAvailable,
+    hotwordValidation.hotwords,
+    selectedAsrProvider,
+    settings,
+    source,
+    validationError,
+  ])
 
   const handleUpdateJobStep = useCallback(async (
     step: JobStepId,

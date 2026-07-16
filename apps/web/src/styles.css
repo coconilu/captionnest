@@ -52,7 +52,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -70,6 +71,7 @@ summary {
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,
+textarea:focus-visible,
 summary:focus-visible,
 a:focus-visible {
   outline: 3px solid rgba(11, 132, 146, 0.22);
@@ -78,7 +80,8 @@ a:focus-visible {
 
 button:disabled,
 input:disabled,
-select:disabled {
+select:disabled,
+textarea:disabled {
   cursor: not-allowed;
 }
 
@@ -766,6 +769,7 @@ select:disabled {
 
 .field > input,
 .field select,
+.field textarea,
 .password-field > input {
   width: 100%;
   height: 40px;
@@ -781,6 +785,7 @@ select:disabled {
 
 .field > input:focus,
 .field select:focus,
+.field textarea:focus,
 .password-field > input:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(11, 132, 146, 0.08);
@@ -791,6 +796,22 @@ select:disabled {
   font-size: 9px;
   font-weight: 450;
   line-height: 1.5;
+}
+
+.field textarea {
+  min-height: 112px;
+  padding: 10px 11px;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.field.is-invalid textarea {
+  border-color: var(--error);
+  background: var(--error-soft);
+}
+
+.field small.field-error-text {
+  color: var(--error);
 }
 
 .output-mode-fieldset {
@@ -2298,6 +2319,7 @@ select:disabled {
 
 .pipeline-editor-form > .provider-fieldset,
 .pipeline-editor-form > .switch-row,
+.pipeline-editor-form > .hotwords-field,
 .pipeline-editor-form > .pipeline-step-error,
 .pipeline-editor-form > .pipeline-secret-note,
 .pipeline-editor-form > .pipeline-editor-actions {

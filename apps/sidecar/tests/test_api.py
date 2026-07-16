@@ -7,7 +7,14 @@ from fastapi.testclient import TestClient
 from sublingo_local.app import create_app
 from sublingo_local.jobs import STEP_ORDER
 from sublingo_local.model_manager import ModelView
-from sublingo_local.models import JobStep, StepArtifactView, StepStatus
+from sublingo_local.models import (
+    ASR_HOTWORD_MAX_ENTRIES,
+    ASR_HOTWORD_MAX_ENTRY_CHARACTERS,
+    ASR_HOTWORD_MAX_TOTAL_CHARACTERS,
+    JobStep,
+    StepArtifactView,
+    StepStatus,
+)
 
 
 class FakePipeline:
@@ -170,6 +177,68 @@ def test_job_rejects_removed_or_unknown_asr_models(tmp_path: Path) -> None:
                 },
             )
             assert response.status_code == 200
+
+
+def test_job_hotwords_schema_normalization_and_safe_validation(tmp_path: Path) -> None:
+    video = tmp_path / "lesson.mp4"
+    video.write_bytes(b"fake video")
+    app = create_app(data_dir=tmp_path / "data", pipeline=FakePipeline())  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        schema = client.get("/openapi.json").json()["components"]["schemas"][
+            "ASRSettings"
+        ]["properties"]["hotwords"]
+        assert schema["type"] == "array"
+        assert schema["maxItems"] == ASR_HOTWORD_MAX_ENTRIES
+        assert schema["max_item_characters"] == ASR_HOTWORD_MAX_ENTRY_CHARACTERS
+        assert schema["max_total_characters"] == ASR_HOTWORD_MAX_TOTAL_CHARACTERS
+
+        created = client.post(
+            "/api/jobs",
+            json={
+                "video_path": str(video),
+                "asr": {
+                    "hotwords": [
+                        "  CaptionNest  ",
+                        "",
+                        "初音未来",
+                        "CaptionNest",
+                    ]
+                },
+            },
+        )
+        assert created.status_code == 200
+        transcription = next(
+            step
+            for step in created.json()["steps"]
+            if step["id"] == "transcription"
+        )
+        assert transcription["config"]["hotwords"] == ["CaptionNest", "初音未来"]
+
+        rejected_hotword = "private-" + (
+            "x" * ASR_HOTWORD_MAX_ENTRY_CHARACTERS
+        )
+        rejected = client.post(
+            "/api/jobs",
+            json={
+                "video_path": str(video),
+                "asr": {"hotwords": [rejected_hotword]},
+            },
+        )
+        assert rejected.status_code == 422
+        assert rejected_hotword not in rejected.text
+        assert "单个提示词不能超过" in rejected.json()["detail"][0]["msg"]
+        assert "input" not in rejected.json()["detail"][0]
+
+        invalid_config = dict(transcription["config"])
+        invalid_config["hotwords"] = [rejected_hotword]
+        rejected_update = client.patch(
+            f"/api/jobs/{created.json()['id']}/steps/transcription/config",
+            json={"config": invalid_config},
+        )
+        assert rejected_update.status_code == 400
+        assert rejected_hotword not in rejected_update.text
+        assert "单个提示词不能超过" in rejected_update.json()["detail"]
 
 
 def test_validation_error_never_echoes_api_key(tmp_path: Path) -> None:

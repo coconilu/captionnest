@@ -14,6 +14,7 @@ export interface SettingsValue {
   asrDynamicChunking: boolean
   asrSelectiveRetry: boolean
   asrBeamSize: number
+  asrHotwordsText: string
   provider: TranslationProvider
   translationTimeoutSeconds: number
   lmstudioEndpoint: string
@@ -33,6 +34,7 @@ export const DEFAULT_SETTINGS: SettingsValue = {
   asrDynamicChunking: true,
   asrSelectiveRetry: true,
   asrBeamSize: 5,
+  asrHotwordsText: '',
   provider: 'codex_spark',
   translationTimeoutSeconds: 300,
   lmstudioEndpoint: 'http://127.0.0.1:1234/v1',

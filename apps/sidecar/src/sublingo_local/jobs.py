@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel, SecretStr, ValidationError
 
 from .asr import ASRProvider, FasterWhisperProvider
 from .asr.base import TranscriptionResult
@@ -95,6 +95,18 @@ def _redact(value: str, secrets: tuple[str, ...] = ()) -> str:
         if secret:
             result = result.replace(secret, "***")
     return result
+
+
+def _safe_validation_message(exc: ValidationError) -> str:
+    messages = [
+        str(error.get("msg", "配置无效")).removeprefix("Value error, ")
+        for error in exc.errors(
+            include_url=False,
+            include_context=False,
+            include_input=False,
+        )
+    ]
+    return "；".join(dict.fromkeys(messages)) or "配置无效"
 
 
 def _fingerprint(payload: Mapping[str, Any]) -> str:
@@ -717,9 +729,14 @@ class ProcessingPipeline:
             if record.asr.selective_retry
             else "，仅单次识别"
         )
+        hotword_label = (
+            f"，已使用 {len(record.asr.hotwords)} 个提示词"
+            if record.asr.hotwords
+            else ""
+        )
         message = (
             f"正在使用 Faster-Whisper {record.asr.model} 进行{chunking_label}识别"
-            f"（{output_mode_label}{retry_label}）"
+            f"（{output_mode_label}{retry_label}{hotword_label}）"
         )
         record.begin_step(JobStep.TRANSCRIPTION, message)
         asr = self._create_asr()
@@ -747,6 +764,7 @@ class ProcessingPipeline:
             "language": transcription.language,
             "segment_count": len(transcription.segments),
             "duration_seconds": transcription.duration_seconds,
+            "hotword_count": len(record.asr.hotwords),
         }
         if transcription.diagnostics is not None:
             summary["diagnostics"] = {
@@ -981,7 +999,12 @@ class JobManager:
             path = ensure_supported_video(Path(requested.path)).resolve()
             record.media = requested.model_copy(update={"path": str(path), "name": path.name})
         elif step == JobStep.TRANSCRIPTION:
-            record.asr = ASRSettings.model_validate(config)
+            try:
+                record.asr = ASRSettings.model_validate(config)
+            except ValidationError as exc:
+                # A manual config update bypasses FastAPI's request-model handler.
+                # Never echo rejected prompt text from Pydantic's default repr.
+                raise ValueError(_safe_validation_message(exc)) from exc
         elif step == JobStep.TRANSLATION:
             if "api_key" in config:
                 raise ValueError("API Key 只能随单次运行请求提交，不能写入任务配置")
