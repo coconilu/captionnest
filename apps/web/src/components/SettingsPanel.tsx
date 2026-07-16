@@ -2,19 +2,7 @@ import { Eye, EyeOff, Play, ShieldCheck, SlidersHorizontal } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 
 import type { AsrModel, AsrOutputMode, TargetLanguage, TranslationProvider } from '../types/api'
-
-export interface SettingsValue {
-  targetLanguage: TargetLanguage
-  asrModel: AsrModel
-  asrOutputMode: AsrOutputMode
-  useCuda: boolean
-  provider: TranslationProvider
-  lmstudioEndpoint: string
-  lmstudioModel: string
-  deepseekEndpoint: string
-  deepseekModel: string
-  deepseekApiKey: string
-}
+import type { SettingsValue } from '../types/settings'
 
 interface SettingsPanelProps {
   value: SettingsValue
@@ -22,7 +10,6 @@ interface SettingsPanelProps {
   disabled: boolean
   canStart: boolean
   startHint: string
-  progress: ReactNode
   children?: ReactNode
   onChange: (next: SettingsValue) => void
   onStart: () => void
@@ -73,7 +60,6 @@ export function SettingsPanel({
   disabled,
   canStart,
   startHint,
-  progress,
   children,
   onChange,
   onStart,
@@ -87,13 +73,13 @@ export function SettingsPanel({
   const outputMode = OUTPUT_MODES.find((item) => item.value === value.asrOutputMode)?.label ?? value.asrOutputMode
 
   return (
-    <aside className="settings-sidebar" aria-label="字幕任务设置">
+    <aside className="settings-sidebar" aria-label="新任务默认设置">
       <section className="task-summary" aria-labelledby="task-summary-title">
-        <span className="panel-step-label">02 · 任务摘要</span>
+        <span className="panel-step-label">默认配置</span>
         <div className="task-summary-heading">
           <div>
-            <h2 id="task-summary-title">自动检测源语言</h2>
-            <p>所有设置都可以在开始前调整</p>
+            <h2 id="task-summary-title">新任务默认配置</h2>
+            <p>创建任务时复制，任务内修改不会反向覆盖</p>
           </div>
           <button
             type="button"
@@ -113,8 +99,6 @@ export function SettingsPanel({
           <span className="is-provider"><i aria-hidden="true" />{provider}</span>
         </div>
       </section>
-
-      {progress}
 
       {settingsOpen ? (
         <div id="task-settings-panel" className="settings-drawer">
@@ -177,6 +161,33 @@ export function SettingsPanel({
                 onChange={(event) => patch('useCuda', event.target.checked)}
               />
               <i aria-hidden="true" />
+            </label>
+            <label className="switch-row">
+              <span>
+                <strong>语音活动检测</strong>
+                <small>跳过长静音区域，提高识别效率</small>
+              </span>
+              <input
+                type="checkbox"
+                checked={value.asrVadFilter}
+                disabled={disabled}
+                onChange={(event) => patch('asrVadFilter', event.target.checked)}
+              />
+              <i aria-hidden="true" />
+            </label>
+            <label className="field compact-number-field">
+              <span>Beam Size</span>
+              <input
+                type="number"
+                min={1}
+                max={20}
+                value={value.asrBeamSize}
+                disabled={disabled}
+                onChange={(event) => patch(
+                  'asrBeamSize',
+                  Math.max(1, Math.min(20, Number(event.target.value) || 1)),
+                )}
+              />
             </label>
           </section>
 
@@ -287,10 +298,53 @@ export function SettingsPanel({
                       {showKey ? <EyeOff size={17} /> : <Eye size={17} />}
                     </button>
                   </span>
-                  <small>密钥只随本次任务发送，后端不会在任务详情中回显。</small>
+                  <small>密钥只随本次运行发送，不会记住，也不会进入任务详情。</small>
                 </label>
               </>
             ) : null}
+            <label className="field compact-number-field">
+              <span>请求超时（秒）</span>
+              <input
+                type="number"
+                min={10}
+                max={3600}
+                value={value.translationTimeoutSeconds}
+                disabled={disabled}
+                onChange={(event) => patch(
+                  'translationTimeoutSeconds',
+                  Math.max(10, Math.min(3600, Number(event.target.value) || 10)),
+                )}
+              />
+            </label>
+          </section>
+
+          <section className="settings-section">
+            <div className="section-heading">
+              <h2>导出设置</h2>
+            </div>
+            <label className="field">
+              <span>默认输出目录</span>
+              <input
+                value={value.exportOutputDirectory}
+                disabled={disabled}
+                onChange={(event) => patch('exportOutputDirectory', event.target.value)}
+                placeholder="留空则输出到源视频目录"
+                spellCheck={false}
+              />
+            </label>
+            <label className="switch-row">
+              <span>
+                <strong>覆盖同名字幕</strong>
+                <small>保持 &lt;视频名&gt;.srt 的单文件输出规则</small>
+              </span>
+              <input
+                type="checkbox"
+                checked={value.exportOverwriteExisting}
+                disabled={disabled}
+                onChange={(event) => patch('exportOverwriteExisting', event.target.checked)}
+              />
+              <i aria-hidden="true" />
+            </label>
           </section>
 
           {children}

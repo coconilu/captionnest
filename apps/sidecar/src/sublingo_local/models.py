@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 
@@ -40,6 +40,7 @@ class SourceKind(StrEnum):
 
 
 class JobStatus(StrEnum):
+    DRAFT = "draft"
     QUEUED = "queued"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -48,6 +49,7 @@ class JobStatus(StrEnum):
 
 
 class JobStage(StrEnum):
+    DRAFT = "draft"
     QUEUED = "queued"
     EXTRACTING = "extracting"
     TRANSCRIBING = "transcribing"
@@ -55,6 +57,22 @@ class JobStage(StrEnum):
     WRITING = "writing"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class JobStep(StrEnum):
+    MEDIA = "media"
+    TRANSCRIPTION = "transcription"
+    TRANSLATION = "translation"
+    EXPORT = "export"
+
+
+class StepStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    STALE = "stale"
     CANCELLED = "cancelled"
 
 
@@ -114,11 +132,65 @@ class TranslationSettings(BaseModel):
     def provider_requirements(self) -> TranslationSettings:
         if self.provider == TranslationProviderName.LM_STUDIO and not self.model:
             raise ValueError("LM Studio 需要填写本地模型 ID")
-        if self.provider == TranslationProviderName.DEEPSEEK and (
-            not self.api_key or not self.api_key.get_secret_value().strip()
-        ):
-            raise ValueError("DeepSeek 需要 API Key")
         return self
+
+
+class MediaStepSettings(BaseModel):
+    source_kind: SourceKind
+    path: str
+    name: str
+
+    @field_validator("path", "name")
+    @classmethod
+    def non_empty(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("不能为空")
+        return value
+
+
+class TranslationStepSettings(BaseModel):
+    target_language: TargetLanguage = TargetLanguage.ZH_CN
+    provider: TranslationProviderName = TranslationProviderName.CODEX_SPARK
+    model: str | None = None
+    endpoint: str | None = None
+    timeout_seconds: float = Field(default=300, ge=10, le=3600)
+
+    @field_validator("model", "endpoint", mode="before")
+    @classmethod
+    def strip_optional(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
+    @model_validator(mode="after")
+    def provider_requirements(self) -> TranslationStepSettings:
+        if self.provider == TranslationProviderName.LM_STUDIO and not self.model:
+            raise ValueError("LM Studio 需要填写本地模型 ID")
+        return self
+
+    def runtime_settings(self, api_key: SecretStr | None = None) -> TranslationSettings:
+        return TranslationSettings(
+            provider=self.provider,
+            model=self.model,
+            endpoint=self.endpoint,
+            timeout_seconds=self.timeout_seconds,
+            api_key=api_key,
+        )
+
+
+class ExportSettings(BaseModel):
+    output_directory: str | None = None
+    overwrite_existing: bool = True
+    format: Literal["srt"] = "srt"
+    bilingual_order: Literal["source_then_translation"] = "source_then_translation"
+
+    @field_validator("output_directory", mode="before")
+    @classmethod
+    def strip_optional_directory(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
 
 
 class JobCreateRequest(BaseModel):
@@ -127,6 +199,8 @@ class JobCreateRequest(BaseModel):
     target_language: TargetLanguage = TargetLanguage.ZH_CN
     asr: ASRSettings = Field(default_factory=ASRSettings)
     translation: TranslationSettings = Field(default_factory=TranslationSettings)
+    export: ExportSettings = Field(default_factory=ExportSettings)
+    auto_start: bool = False
 
     @model_validator(mode="after")
     def exactly_one_source(self) -> JobCreateRequest:
@@ -168,6 +242,39 @@ class LogEntry(BaseModel):
     message: str
 
 
+class StepArtifactView(BaseModel):
+    id: str
+    step: JobStep
+    path: str
+    fingerprint: str
+    config_fingerprint: str
+    input_fingerprints: dict[str, str] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utc_now)
+    summary: dict[str, Any] = Field(default_factory=dict)
+
+
+class StepAttemptView(BaseModel):
+    number: int = Field(ge=1)
+    status: StepStatus
+    config: dict[str, Any]
+    started_at: datetime = Field(default_factory=utc_now)
+    finished_at: datetime | None = None
+    artifact_id: str | None = None
+    error: str | None = None
+
+
+class JobStepView(BaseModel):
+    id: JobStep
+    status: StepStatus
+    progress: int = Field(default=0, ge=0, le=100)
+    config_revision: int = Field(default=1, ge=1)
+    config: dict[str, Any] = Field(default_factory=dict)
+    attempts: list[StepAttemptView] = Field(default_factory=list)
+    artifact: StepArtifactView | None = None
+    error: str | None = None
+    can_run: bool = False
+
+
 class JobView(BaseModel):
     id: str
     status: JobStatus
@@ -184,6 +291,21 @@ class JobView(BaseModel):
     subtitle_path: str | None = None
     error: str | None = None
     logs: list[LogEntry] = Field(default_factory=list)
+    steps: list[JobStepView] = Field(default_factory=list)
+
+
+class JobRunRequest(BaseModel):
+    api_key: SecretStr | None = Field(default=None, repr=False)
+    continue_pipeline: bool = True
+
+
+class JobStepConfigUpdate(BaseModel):
+    config: dict[str, Any]
+
+
+class JobDeleteResult(BaseModel):
+    deleted: bool
+    job_id: str
 
 
 class UploadView(BaseModel):

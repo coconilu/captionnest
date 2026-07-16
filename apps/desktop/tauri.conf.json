@@ -6,7 +6,7 @@
   "mainBinaryName": "captionnest",
   "build": {
     "beforeDevCommand": "npm run dev",
-    "devUrl": "http://127.0.0.1:5173",
+    "devUrl": "http://127.0.0.1:5175",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../web/dist"
   },

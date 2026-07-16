@@ -18,11 +18,16 @@ from fastapi.staticfiles import StaticFiles
 
 from . import __version__
 from .environment import EnvironmentService, EnvironmentView
+from .job_store import JobStore
 from .jobs import JobManager, ProcessingPipeline
 from .media import SUPPORTED_VIDEO_EXTENSIONS
 from .model_manager import ModelListView, ModelManager, ModelView
 from .models import (
     JobCreateRequest,
+    JobDeleteResult,
+    JobRunRequest,
+    JobStep,
+    JobStepConfigUpdate,
     JobView,
     OpenFolderRequest,
     OpenFolderResult,
@@ -48,18 +53,22 @@ def create_app(
 ) -> FastAPI:
     resolved_data_dir = (data_dir or default_data_dir()).resolve()
     upload_store = UploadStore(resolved_data_dir / "uploads")
+    job_store = JobStore(resolved_data_dir / "jobs")
     model_manager = ModelManager(resolved_data_dir / "models")
     environment_service = EnvironmentService(model_manager)
     actual_pipeline = pipeline or ProcessingPipeline(
-        resolved_data_dir / "tmp", model_manager=model_manager
+        job_store.root,
+        model_manager=model_manager,
+        job_store=job_store,
     )
-    manager = JobManager(upload_store, actual_pipeline)
+    manager = JobManager(upload_store, actual_pipeline, job_store=job_store)
     session_token = os.getenv("CAPTIONNEST_SESSION_TOKEN", "").strip()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.data_dir = resolved_data_dir
         app.state.upload_store = upload_store
+        app.state.job_store = job_store
         app.state.job_manager = manager
         app.state.model_manager = model_manager
         app.state.environment_service = environment_service
@@ -220,6 +229,47 @@ def create_app(
         except KeyError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
+    async def run_job_handler(job_id: str, request: JobRunRequest) -> JobView:
+        try:
+            return manager.run(job_id, request)
+        except KeyError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    async def update_job_step_handler(
+        job_id: str,
+        step: JobStep,
+        request: JobStepConfigUpdate,
+    ) -> JobView:
+        try:
+            return manager.update_step_config(job_id, step, request.config)
+        except KeyError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    async def run_job_step_handler(
+        job_id: str,
+        step: JobStep,
+        request: JobRunRequest,
+    ) -> JobView:
+        try:
+            return manager.run_step(job_id, step, request)
+        except KeyError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    async def delete_job_handler(job_id: str) -> JobDeleteResult:
+        try:
+            manager.delete(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        return JobDeleteResult(deleted=True, job_id=job_id)
+
     async def pick_video_handler() -> PickVideoResult:
         try:
             return await pick_video()
@@ -276,6 +326,34 @@ def create_app(
         "/jobs/{job_id}", get_job_handler, methods=["GET"], response_model=JobView, tags=["jobs"]
     )
     api.add_api_route(
+        "/jobs/{job_id}/run",
+        run_job_handler,
+        methods=["POST"],
+        response_model=JobView,
+        tags=["jobs"],
+    )
+    api.add_api_route(
+        "/jobs/{job_id}/steps/{step}/config",
+        update_job_step_handler,
+        methods=["PATCH"],
+        response_model=JobView,
+        tags=["jobs"],
+    )
+    api.add_api_route(
+        "/jobs/{job_id}/steps/{step}/run",
+        run_job_step_handler,
+        methods=["POST"],
+        response_model=JobView,
+        tags=["jobs"],
+    )
+    api.add_api_route(
+        "/jobs/{job_id}",
+        delete_job_handler,
+        methods=["DELETE"],
+        response_model=JobDeleteResult,
+        tags=["jobs"],
+    )
+    api.add_api_route(
         "/system/pick-video",
         pick_video_handler,
         methods=["POST"],
@@ -318,14 +396,32 @@ def create_app(
             "/jobs/{job_id}", get_job_handler, methods=["GET"], include_in_schema=False
         )
         app.add_api_route(
+            "/jobs/{job_id}/run", run_job_handler, methods=["POST"], include_in_schema=False
+        )
+        app.add_api_route(
+            "/jobs/{job_id}/steps/{step}/config",
+            update_job_step_handler,
+            methods=["PATCH"],
+            include_in_schema=False,
+        )
+        app.add_api_route(
+            "/jobs/{job_id}/steps/{step}/run",
+            run_job_step_handler,
+            methods=["POST"],
+            include_in_schema=False,
+        )
+        app.add_api_route(
+            "/jobs/{job_id}", delete_job_handler, methods=["DELETE"], include_in_schema=False
+        )
+        app.add_api_route(
             "/pick-video", pick_video_handler, methods=["POST"], include_in_schema=False
         )
         app.add_api_route(
             "/open-folder", open_folder_handler, methods=["POST"], include_in_schema=False
         )
 
-    project_root = Path(__file__).resolve().parents[2]
-    dist = (static_dir or project_root / "web" / "dist").resolve()
+    repository_root = Path(__file__).resolve().parents[4]
+    dist = (static_dir or repository_root / "apps" / "web" / "dist").resolve()
     index = dist / "index.html"
     if index.is_file():
         assets = dist / "assets"

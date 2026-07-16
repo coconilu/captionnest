@@ -12,6 +12,7 @@ flowchart LR
     subgraph Python["Python onedir sidecar"]
         API["FastAPI"]
         JOB["Job Manager"]
+        STORE["Job Store\n配置 / 尝试 / 产物索引"]
         AV["PyAV"]
         ASR["ASR Provider\nFaster-Whisper 分片识别"]
         ROUTER{"Translator Provider"}
@@ -20,7 +21,9 @@ flowchart LR
     end
     WEB --> BRIDGE -->|"127.0.0.1:随机端口\nX-CaptionNest-Session"| API
     LIFE -->|"启动 / 退出时终止"| API
-    API --> JOB --> AV --> ASR --> ROUTER --> VALIDATE --> SRT
+    API --> JOB
+    JOB <--> STORE
+    JOB --> AV --> ASR --> ROUTER --> VALIDATE --> SRT
     ROUTER --> CODEX["codex exec"]
     ROUTER --> LM["LM Studio"]
     ROUTER --> DS["DeepSeek-compatible"]
@@ -31,13 +34,37 @@ flowchart LR
 | 模块 | 责任 | 不负责 |
 |---|---|---|
 | Tauri 壳 | 随机端口/令牌、sidecar 生命周期、应用数据目录、原生插件 | 识别和翻译业务 |
-| React UI | 输入、目标语言、Provider、环境与任务状态 | 直接持有时间轴或密钥 |
+| React UI | 新任务默认配置、任务步骤编辑、环境与任务状态 | 直接持有时间轴或持久化密钥 |
 | FastAPI | 本机 API、会话校验、任务和系统集成 | 对公网监听 |
 | PyAV | 从视频容器读取可解码媒体 | 调用系统 `ffmpeg.exe` |
 | ASR Provider | 自动语言检测、分段文本和时间戳 | 翻译 |
 | Translator Provider | 稳定 ID 到目标语言文本 | 修改时间轴 |
-| Pipeline | 阶段调度、进度、失败清理、唯一产物路径 | 持久化 API Key |
+| Pipeline | 步骤调度、失效传播、执行记录和可复用产物 | 持久化 API Key |
+| Job Store | 原子保存任务配置、步骤状态、尝试记录和产物索引 | 保存运行时密钥 |
 | SRT Writer | 原文在上、译文在下的单文件输出 | 再次切分时间轴 |
+
+## 任务流水线与失效规则
+
+```mermaid
+flowchart LR
+    DEFAULTS["浏览器默认配置\n不含 API Key"] -->|"创建时复制"| TASK["任务独立配置"]
+    TASK --> M["媒体准备"] --> A["语音识别"] --> T["字幕翻译"] --> E["字幕导出"]
+    M --> MA["media.json"]
+    A --> AA["transcription.json"]
+    T --> TA["translation.json"]
+    E --> SRT["<视频名>.srt"]
+```
+
+任务元数据保存在 `<data-dir>/jobs/<job-id>/job.json`，中间产物保存在同任务的 `artifacts/` 目录。每一步记录独立配置、配置版本、状态、执行尝试、产物指纹与上游指纹；更新配置后按依赖关系标记下游产物为过期。
+
+| 变更或失败位置 | 保留 | 重新执行 |
+|---|---|---|
+| 媒体配置 | 无下游产物可复用 | 媒体、识别、翻译、导出 |
+| 识别配置或识别失败 | 有效媒体产物 | 识别、翻译、导出 |
+| 翻译配置或翻译失败 | 媒体与识别产物 | 翻译、导出 |
+| 导出配置或导出失败 | 媒体、识别与翻译产物 | 仅导出 |
+
+任务创建后先成为草稿，正常“开始生成字幕”会从媒体步骤连续执行到导出；步骤级运行接口则可从指定位置继续。应用异常退出时，正在运行的步骤会在下次加载时标为失败，用户可从该步骤重试。删除任务会清理 `job.json` 和内部中间产物，不会把已经写到用户目录的 SRT 当作缓存删除。
 
 ## 桌面进程生命周期
 
@@ -66,7 +93,8 @@ Tauri 只在带令牌的健康检查返回 200 后创建窗口。这样既避免
 |---|---|
 | 网络 | sidecar 固定监听 `127.0.0.1`；桌面模式所有 `/api/**` 必须带随机令牌 |
 | WebView | 初始化脚本只重写本应用或本机后端的 `/api/` 请求，不向外部域名附加令牌 |
-| 密钥 | API Key 仅存在于任务内存，不出现在 JobView、日志和磁盘 |
+| 用户默认项 | 版本化写入浏览器本地存储；只保存模型、语言、Provider、Endpoint、超时和导出偏好 |
+| 密钥 | API Key 仅存在于当前页面与单次执行内存，不出现在本地存储、JobView、日志和磁盘 |
 | 外部进程 | 全部使用参数数组与 `shell=False` 等价方式；禁止拼接 shell 命令 |
 | 时间轴 | 由程序持有；模型只能翻译稳定 ID 文本；写出前严格校验 ID 集合 |
 | 文件 | 默认输出源视频同目录；上传副本则输出到应用数据目录中的副本旁 |

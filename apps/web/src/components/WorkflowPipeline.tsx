@@ -1,0 +1,223 @@
+import { Boxes, GitBranch } from 'lucide-react'
+import { useState } from 'react'
+
+import { formatBytes } from '../lib/format'
+import type {
+  AsrStepConfig,
+  ExportStepConfig,
+  JobStepConfig,
+  JobStepId,
+  JobStepView,
+  JobView,
+  MediaStepConfig,
+  TranslationStepConfig,
+} from '../types/api'
+import { AsrStepEditor } from './AsrStepEditor'
+import { ExportStepEditor } from './ExportStepEditor'
+import { PipelineStepCard } from './PipelineStepCard'
+import { TranslationStepEditor } from './TranslationStepEditor'
+
+const STEP_LABELS: Record<JobStepId, string> = {
+  media: '媒体准备',
+  transcription: '语音识别',
+  translation: '字幕翻译',
+  export: '字幕导出',
+}
+
+const PREVIEW_STEPS: JobStepId[] = ['media', 'transcription', 'translation', 'export']
+
+function configSummary(step: JobStepView): string {
+  if (step.id === 'media') {
+    const config = step.config as MediaStepConfig
+    return config.name
+  }
+  if (step.id === 'transcription') {
+    const config = step.config as AsrStepConfig
+    const device = config.device === 'cuda' ? 'CUDA' : 'CPU'
+    const mode = config.output_mode === 'word_resegmented' ? '逐词重排' : '原始分片'
+    return `${config.model} · ${device} · ${mode}`
+  }
+  if (step.id === 'translation') {
+    const config = step.config as TranslationStepConfig
+    const target = { 'zh-CN': '简体中文', en: '英语', ko: '韩语' }[config.target_language]
+    const provider = {
+      codex_spark: 'Codex Spark',
+      lmstudio: 'LM Studio',
+      deepseek: 'DeepSeek',
+    }[config.provider]
+    return `${target} · ${provider}${config.model ? ` · ${config.model}` : ''}`
+  }
+  const config = step.config as ExportStepConfig
+  return config.output_directory
+    ? `输出至 ${config.output_directory}`
+    : '输出至源视频目录 · 双语 SRT'
+}
+
+function artifactSummary(step: JobStepView): string | null {
+  const summary = step.artifact?.summary
+  if (!summary) return null
+  if (step.id === 'media') {
+    return `${String(summary.name ?? '媒体文件')} · ${formatBytes(Number(summary.size ?? 0))}`
+  }
+  if (step.id === 'transcription') {
+    return `${String(summary.segment_count ?? 0)} 条字幕 · 语言 ${String(summary.language ?? '未知')}`
+  }
+  if (step.id === 'translation') {
+    return `${String(summary.item_count ?? 0)} 条译文 · ${String(summary.target_language ?? '')}`
+  }
+  return `${String(summary.name ?? '字幕文件')} · ${formatBytes(Number(summary.size ?? 0))}`
+}
+
+interface WorkflowPipelineProps {
+  job: JobView | null
+  disabled: boolean
+  cudaAvailable: boolean
+  apiKey: string
+  onApiKeyChange: (value: string) => void
+  onUpdateStep: (step: JobStepId, config: JobStepConfig) => Promise<void>
+  onRunStep: (step: JobStepId) => Promise<void>
+  onReplaceMedia: () => Promise<void>
+}
+
+export function WorkflowPipeline({
+  job,
+  disabled,
+  cudaAvailable,
+  apiKey,
+  onApiKeyChange,
+  onUpdateStep,
+  onRunStep,
+  onReplaceMedia,
+}: WorkflowPipelineProps) {
+  const [editingStep, setEditingStep] = useState<JobStepId | null>(null)
+  const [savingStep, setSavingStep] = useState<JobStepId | null>(null)
+  const [runningStep, setRunningStep] = useState<JobStepId | null>(null)
+
+  const save = async (step: JobStepId, config: JobStepConfig) => {
+    setSavingStep(step)
+    try {
+      await onUpdateStep(step, config)
+      setEditingStep(null)
+    } catch {
+      // App owns the user-facing error banner; keep the editor open for correction.
+    } finally {
+      setSavingStep(null)
+    }
+  }
+
+  const run = async (step: JobStepId) => {
+    setRunningStep(step)
+    try {
+      await onRunStep(step)
+      setEditingStep(null)
+    } catch {
+      // App owns the user-facing error banner; keep the current step visible.
+    } finally {
+      setRunningStep(null)
+    }
+  }
+
+  if (!job) {
+    return (
+      <section className="pipeline-workbench is-empty" aria-labelledby="pipeline-title">
+        <div className="pipeline-heading">
+          <div>
+            <span className="panel-step-label">任务流水线</span>
+            <h2 id="pipeline-title">每一步都有独立配置和产物</h2>
+          </div>
+          <GitBranch size={21} aria-hidden="true" />
+        </div>
+        <div className="pipeline-preview" aria-label="待创建任务的四个步骤">
+          {PREVIEW_STEPS.map((step, index) => (
+            <div key={step}>
+              <span>{String(index + 1).padStart(2, '0')}</span>
+              <strong>{STEP_LABELS[step]}</strong>
+              <small>等待任务</small>
+            </div>
+          ))}
+        </div>
+        <p className="pipeline-empty-note">
+          <Boxes size={17} />
+          选择视频并开始后，识别、翻译和导出产物会在这里逐步出现。
+        </p>
+      </section>
+    )
+  }
+
+  return (
+    <section className="pipeline-workbench" aria-labelledby="pipeline-title">
+      <div className="pipeline-heading">
+        <div>
+          <span className="panel-step-label">任务流水线 · {job.id.slice(0, 8)}</span>
+          <h2 id="pipeline-title">可配置、可恢复的字幕任务</h2>
+        </div>
+        <span className={`pipeline-job-status is-${job.status}`}>
+          {job.status === 'completed'
+            ? '全部完成'
+            : job.status === 'failed'
+              ? '等待修复'
+              : job.status === 'cancelled'
+                ? '已取消'
+              : job.status === 'draft'
+                ? '等待运行'
+                : '正在处理'}
+        </span>
+      </div>
+
+      <div className="pipeline-step-grid">
+        {job.steps.map((step, index) => {
+          const editing = editingStep === step.id
+          const busy = disabled || savingStep !== null || runningStep !== null
+          return (
+            <PipelineStepCard
+              key={step.id}
+              step={step}
+              index={index + 1}
+              label={STEP_LABELS[step.id]}
+              summary={configSummary(step)}
+              artifactSummary={artifactSummary(step)}
+              editing={editing}
+              disabled={busy}
+              onToggleEdit={() => setEditingStep(editing ? null : step.id)}
+              onRun={() => void run(step.id)}
+              onReplaceMedia={step.id === 'media'
+                ? () => void onReplaceMedia()
+                : undefined}
+            >
+              {step.id === 'transcription' ? (
+                <AsrStepEditor
+                  key={`${job.id}-${step.config_revision}`}
+                  value={step.config as AsrStepConfig}
+                  cudaAvailable={cudaAvailable}
+                  saving={savingStep === step.id}
+                  onCancel={() => setEditingStep(null)}
+                  onSave={(config) => void save(step.id, config)}
+                />
+              ) : null}
+              {step.id === 'translation' ? (
+                <TranslationStepEditor
+                  key={`${job.id}-${step.config_revision}`}
+                  value={step.config as TranslationStepConfig}
+                  apiKey={apiKey}
+                  saving={savingStep === step.id}
+                  onApiKeyChange={onApiKeyChange}
+                  onCancel={() => setEditingStep(null)}
+                  onSave={(config) => void save(step.id, config)}
+                />
+              ) : null}
+              {step.id === 'export' ? (
+                <ExportStepEditor
+                  key={`${job.id}-${step.config_revision}`}
+                  value={step.config as ExportStepConfig}
+                  saving={savingStep === step.id}
+                  onCancel={() => setEditingStep(null)}
+                  onSave={(config) => void save(step.id, config)}
+                />
+              ) : null}
+            </PipelineStepCard>
+          )
+        })}
+      </div>
+    </section>
+  )
+}

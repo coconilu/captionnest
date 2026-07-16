@@ -3,6 +3,9 @@ import type {
   BackendHealth,
   EnvironmentView,
   JobRequest,
+  JobRunRequest,
+  JobStepConfig,
+  JobStepId,
   JobView,
   ModelCatalog,
   ModelItem,
@@ -91,6 +94,57 @@ export function createJob(payload: JobRequest, signal?: AbortSignal) {
 
 export function getJob(id: string, signal?: AbortSignal) {
   return request<JobView>(`/api/jobs/${encodeURIComponent(id)}`, { signal })
+}
+
+export function listJobs(signal?: AbortSignal) {
+  return request<JobView[]>('/api/jobs', { signal })
+}
+
+export function runJob(id: string, payload: JobRunRequest = {}, signal?: AbortSignal) {
+  return request<JobView>(`/api/jobs/${encodeURIComponent(id)}/run`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    signal,
+  })
+}
+
+export function updateJobStepConfig(
+  id: string,
+  step: JobStepId,
+  config: JobStepConfig,
+  signal?: AbortSignal,
+) {
+  return request<JobView>(
+    `/api/jobs/${encodeURIComponent(id)}/steps/${encodeURIComponent(step)}/config`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ config }),
+      signal,
+    },
+  )
+}
+
+export function runJobStep(
+  id: string,
+  step: JobStepId,
+  payload: JobRunRequest = {},
+  signal?: AbortSignal,
+) {
+  return request<JobView>(
+    `/api/jobs/${encodeURIComponent(id)}/steps/${encodeURIComponent(step)}/run`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      signal,
+    },
+  )
+}
+
+export function deleteJob(id: string, signal?: AbortSignal) {
+  return request<{ deleted: boolean; job_id: string }>(`/api/jobs/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    signal,
+  })
 }
 
 export function openFolder(path: string) {
