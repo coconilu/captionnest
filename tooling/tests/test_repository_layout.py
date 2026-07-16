@@ -61,6 +61,33 @@ def test_tauri_paths_join_the_new_app_and_tooling_boundaries() -> None:
     assert actual_sources == expected_sources
 
 
+def test_local_dev_ports_are_fixed_and_aligned() -> None:
+    desktop_config = json.loads(
+        (ROOT / "apps" / "desktop" / "tauri.conf.json").read_text(encoding="utf-8")
+    )
+    package = json.loads(
+        (ROOT / "apps" / "web" / "package.json").read_text(encoding="utf-8")
+    )
+    vite_config = (ROOT / "apps" / "web" / "vite.config.ts").read_text(encoding="utf-8")
+    dev_script = (ROOT / "scripts" / "dev.ps1").read_text(encoding="utf-8")
+    serve_script = (ROOT / "scripts" / "serve.ps1").read_text(encoding="utf-8")
+    stop_script = (ROOT / "scripts" / "stop-local-services.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert desktop_config["build"]["devUrl"] == "http://127.0.0.1:5175"
+    assert "host: '127.0.0.1'" in vite_config
+    assert "port: 5175" in vite_config
+    assert "strictPort: true" in vite_config
+    assert "--port 5175 --strictPort" in dev_script
+    assert "$Ports += 5175" in stop_script
+    assert "stop-local-services.ps1 -Scope Web" in package["scripts"]["predev"]
+    assert "npm --prefix apps/web run build" in serve_script
+    assert "stop-local-services.ps1') -Scope All" in serve_script
+    assert "--host', '127.0.0.1', '--port', '8765'" in serve_script
+    assert "--reload" not in serve_script
+
+
 def test_pyinstaller_spec_uses_repository_level_roots() -> None:
     spec = (ROOT / "tooling" / "packaging" / "captionnest-sidecar.spec").read_text(
         encoding="utf-8"

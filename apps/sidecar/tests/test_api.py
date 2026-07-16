@@ -5,20 +5,44 @@ import pytest
 from fastapi.testclient import TestClient
 
 from sublingo_local.app import create_app
+from sublingo_local.jobs import STEP_ORDER
 from sublingo_local.model_manager import ModelView
-from sublingo_local.models import JobStage, JobStatus
+from sublingo_local.models import JobStep, StepArtifactView, StepStatus
 
 
 class FakePipeline:
-    async def run(self, record):  # type: ignore[no-untyped-def]
-        record.subtitle_path = str(record.source.path.with_suffix(".srt"))
-        record.detected_language = "en"
-        record.update(
-            status=JobStatus.COMPLETED,
-            stage=JobStage.COMPLETED,
-            progress=100,
-            message="fake complete",
+    async def run_from(  # type: ignore[no-untyped-def]
+        self, record, start_step, *, api_key=None, continue_pipeline=True
+    ):
+        selected = (
+            STEP_ORDER[STEP_ORDER.index(start_step) :]
+            if continue_pipeline
+            else (start_step,)
         )
+        for step in selected:
+            record.begin_step(step, f"fake {step.value}")
+            if step == JobStep.TRANSCRIPTION:
+                record.set_detected_language("en")
+            path = (
+                record.source.path.with_suffix(".srt")
+                if step == JobStep.EXPORT
+                else Path(f"{step.value}.json")
+            )
+            record.complete_step(
+                step,
+                StepArtifactView(
+                    id=f"{step.value}-1",
+                    step=step,
+                    path=str(path),
+                    fingerprint=f"fingerprint-{step.value}",
+                    config_fingerprint=f"config-{step.value}",
+                ),
+                f"fake {step.value} complete",
+            )
+        if all(record.steps[step].status == StepStatus.SUCCEEDED for step in STEP_ORDER):
+            record.mark_complete()
+        else:
+            record.mark_paused()
 
 
 @pytest.fixture(autouse=True)
@@ -65,13 +89,18 @@ def test_health_capabilities_upload_and_job_do_not_echo_api_key(tmp_path: Path) 
                 "translation": {
                     "provider": "deepseek",
                     "model": "deepseek-v4-flash",
-                    "api_key": secret,
                 },
             },
         )
         assert response.status_code == 200
         assert secret not in response.text
         job_id = response.json()["id"]
+        assert response.json()["status"] == "draft"
+
+        run = client.post(f"/api/jobs/{job_id}/run", json={"api_key": secret})
+        assert run.status_code == 200
+        assert run.json()["status"] in {"queued", "running", "completed"}
+        assert secret not in run.text
         for _ in range(50):
             job = client.get(f"/api/jobs/{job_id}")
             if job.json()["status"] == "completed":
@@ -85,6 +114,7 @@ def test_health_capabilities_upload_and_job_do_not_echo_api_key(tmp_path: Path) 
         assert "source_subtitle_path" not in job.json()
         assert "translated_subtitle_path" not in job.json()
         assert secret not in job.text
+        assert secret not in app.state.job_store.job_file(job_id).read_text(encoding="utf-8")
 
 
 def test_job_rejects_missing_or_ambiguous_source(tmp_path: Path) -> None:
@@ -127,6 +157,67 @@ def test_validation_error_never_echoes_api_key(tmp_path: Path) -> None:
     assert response.status_code == 422
     assert secret not in response.text
     assert all("input" not in error for error in response.json()["detail"])
+
+
+def test_job_step_config_run_and_delete_endpoints(tmp_path: Path) -> None:
+    video = tmp_path / "lesson.mp4"
+    video.write_bytes(b"fake video")
+    app = create_app(data_dir=tmp_path / "data", pipeline=FakePipeline())  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        created = client.post("/api/jobs", json={"video_path": str(video)})
+        assert created.status_code == 200
+        job_id = created.json()["id"]
+
+        run = client.post(f"/api/jobs/{job_id}/run", json={})
+        assert run.status_code == 200
+        for _ in range(50):
+            job = client.get(f"/api/jobs/{job_id}")
+            if job.json()["status"] == "completed":
+                break
+            time.sleep(0.01)
+        assert job.json()["status"] == "completed"
+
+        translation = next(
+            step for step in job.json()["steps"] if step["id"] == "translation"
+        )
+        config = dict(translation["config"])
+        config["target_language"] = "ko"
+        updated = client.patch(
+            f"/api/jobs/{job_id}/steps/translation/config",
+            json={"config": config},
+        )
+        assert updated.status_code == 200
+        statuses = {step["id"]: step["status"] for step in updated.json()["steps"]}
+        assert statuses == {
+            "media": "succeeded",
+            "transcription": "succeeded",
+            "translation": "stale",
+            "export": "stale",
+        }
+
+        resumed = client.post(
+            f"/api/jobs/{job_id}/steps/translation/run",
+            json={},
+        )
+        assert resumed.status_code == 200
+        for _ in range(50):
+            job = client.get(f"/api/jobs/{job_id}")
+            if job.json()["status"] == "completed":
+                break
+            time.sleep(0.01)
+        assert job.json()["status"] == "completed"
+        transcription = next(
+            step for step in job.json()["steps"] if step["id"] == "transcription"
+        )
+        assert len(transcription["attempts"]) == 1
+
+        job_dir = app.state.job_store.job_file(job_id).parent
+        deleted = client.delete(f"/api/jobs/{job_id}")
+        assert deleted.status_code == 200
+        assert deleted.json() == {"deleted": True, "job_id": job_id}
+        assert not job_dir.exists()
+        assert client.get(f"/api/jobs/{job_id}").status_code == 404
 
 
 def test_model_catalog_and_download_endpoint(

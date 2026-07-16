@@ -20,11 +20,26 @@ We should start now.
 | 翻译 | Codex Spark、LM Studio、DeepSeek/OpenAI-compatible |
 | 媒体解码 | PyAV wheel 内置媒体库，不要求用户安装 `ffmpeg.exe` |
 | 运行模式 | CPU 开箱即用；CUDA 为可选加速 |
+| 任务恢复 | 四步流水线；步骤配置、执行记录和产物随任务保存，可从失败处继续 |
 | Windows 应用 | Tauri 2 + React + PyInstaller onedir Python sidecar |
 
 若自动识别出的源语言与目标语言相同，任务会在翻译前停止，且不写出无意义的同语字幕。
 
 > 应用直接使用原始视频文件，并将字幕写回源视频同目录；不会复制或上传视频。
+
+## 可恢复任务流水线
+
+```mermaid
+flowchart LR
+    M["媒体准备"] --> A["语音识别"] --> T["字幕翻译"] --> E["字幕导出"]
+    A -. "改识别配置" .-> A
+    T -. "改翻译配置" .-> T
+    E -. "改导出目录" .-> E
+```
+
+界面中的设置分为两层：右侧“新任务默认配置”会记住上次选择；创建任务时会复制为该任务自己的配置，之后修改任务不会反向覆盖默认值。DeepSeek API Key 是唯一例外，只保留在当前页面内存中，不写入浏览器存储、任务详情、日志或磁盘。
+
+每个步骤都展示状态、配置版本、执行次数和产物。失败后可修改对应步骤再“从此步骤重试”；系统复用仍有效的上游产物，只让受影响的步骤及下游重新执行。例如，翻译失败不会重跑语音识别，只修改导出目录也不会重新识别或翻译。
 
 ## 普通用户安装
 
@@ -52,6 +67,12 @@ Web/API 开发环境：
 
 ```powershell
 .\scripts\setup.ps1
+.\scripts\serve.ps1
+```
+
+需要 Vite 热更新时：
+
+```powershell
 .\scripts\dev.ps1
 ```
 
@@ -109,7 +130,7 @@ flowchart LR
 | LM Studio | 全部数据 | 无 |
 | DeepSeek-compatible | 视频、音频、时间轴、字幕文件 | 分段原文文本 |
 
-API Key 只保留在当前任务内存中，不写日志或持久化文件。Codex Spark 复用用户本机 `codex exec` 与现有 ChatGPT 登录，不伪装成 OpenAI API。
+API Key 只保留在当前页面内存中，并随单次执行请求传入，不写浏览器存储、任务详情、日志或持久化文件。Codex Spark 复用用户本机 `codex exec` 与现有 ChatGPT 登录，不伪装成 OpenAI API。
 
 ## 文档
 

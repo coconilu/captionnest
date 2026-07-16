@@ -1,32 +1,36 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
-import { createJob, pickVideo } from './api/client'
+import {
+  createJob,
+  deleteJob,
+  listJobs,
+  pickVideo,
+  runJob,
+  runJobStep,
+  updateJobStepConfig,
+} from './api/client'
 import { AppHeader } from './components/AppHeader'
 import { EnvironmentPanel } from './components/EnvironmentPanel'
 import { HeroIntro } from './components/HeroIntro'
-import { SettingsPanel, type SettingsValue } from './components/SettingsPanel'
+import { SettingsPanel } from './components/SettingsPanel'
 import { SourcePicker, type SelectedSource } from './components/SourcePicker'
 import { TaskConsole } from './components/TaskConsole'
-import { WorkflowProgress } from './components/WorkflowProgress'
+import { WorkflowPipeline } from './components/WorkflowPipeline'
 import { useBackendStatus } from './hooks/useBackendStatus'
 import { useEnvironmentStatus } from './hooks/useEnvironmentStatus'
 import { useJobPolling } from './hooks/useJobPolling'
 import { useModelCatalog } from './hooks/useModelCatalog'
+import { usePersistedSettings } from './hooks/usePersistedSettings'
 import { fileNameFromPath } from './lib/format'
-import type { AsrProvider, JobRequest, JobView } from './types/api'
-
-const initialSettings: SettingsValue = {
-  targetLanguage: 'zh-CN',
-  asrModel: 'small',
-  asrOutputMode: 'word_resegmented',
-  useCuda: true,
-  provider: 'codex_spark',
-  lmstudioEndpoint: 'http://127.0.0.1:1234/v1',
-  lmstudioModel: '',
-  deepseekEndpoint: 'https://api.deepseek.com',
-  deepseekModel: 'deepseek-v4-flash',
-  deepseekApiKey: '',
-}
+import type {
+  AsrProvider,
+  JobRequest,
+  JobStepConfig,
+  JobStepId,
+  JobView,
+  MediaStepConfig,
+  TranslationStepConfig,
+} from './types/api'
 
 const ACTIVE_STATUSES = new Set(['queued', 'running'])
 
@@ -53,14 +57,19 @@ export function App() {
     refresh: refreshModels,
     startDownload,
   } = useModelCatalog()
+  const [settings, setSettings] = usePersistedSettings()
   const [source, setSource] = useState<SelectedSource | null>(null)
-  const [settings, setSettings] = useState(initialSettings)
   const [initialJob, setInitialJob] = useState<JobView | null>(null)
+  const [taskApiKey, setTaskApiKey] = useState('')
   const [sourceBusy, setSourceBusy] = useState(false)
   const [startBusy, setStartBusy] = useState(false)
+  const [jobMutationBusy, setJobMutationBusy] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
   const { job, pollError } = useJobPolling(initialJob)
-  const taskActive = Boolean(job && ACTIVE_STATUSES.has(job.status)) || startBusy
+  const taskActive = Boolean(job && ACTIVE_STATUSES.has(job.status))
+    || startBusy
+    || jobMutationBusy
+    || sourceBusy
   const selectedModel = models.find((item) => item.id === settings.asrModel)
   const selectedAsrProvider: AsrProvider = selectedModel?.provider
     ?? 'faster_whisper'
@@ -75,6 +84,35 @@ export function App() {
     ?? (environmentModelMatches ? environment?.model.status : undefined)
   const codexStatus = environment?.codex.status
 
+  useEffect(() => {
+    if (!connected) return
+    let active = true
+    const controller = new AbortController()
+    const restoreLatestJob = async () => {
+      try {
+        const [latest] = await listJobs(controller.signal)
+        if (!active || !latest) return
+        const mediaStep = latest.steps.find((step) => step.id === 'media')
+        const media = mediaStep?.config as MediaStepConfig | undefined
+        if (media?.path) {
+          setSource({
+            kind: 'path',
+            path: media.path,
+            name: media.name,
+          })
+        }
+        setInitialJob(latest)
+      } catch {
+        // Backend status and the normal task error surface handle connectivity failures.
+      }
+    }
+    void restoreLatestJob()
+    return () => {
+      active = false
+      controller.abort()
+    }
+  }, [connected])
+
   const handlePickPath = useCallback(async () => {
     setSourceBusy(true)
     setActionError(null)
@@ -88,6 +126,7 @@ export function App() {
         size: picked.size ?? undefined,
       })
       setInitialJob(null)
+      setTaskApiKey('')
     } catch (error) {
       setActionError(error instanceof Error ? error.message : '无法选择本机文件')
     } finally {
@@ -140,7 +179,10 @@ export function App() {
     }
 
     const translation: JobRequest['translation'] = { provider: settings.provider }
-    if (settings.provider === 'codex_spark') translation.model = 'gpt-5.3-codex-spark'
+    translation.timeout_seconds = settings.translationTimeoutSeconds
+    if (settings.provider === 'codex_spark') {
+      translation.model = 'gpt-5.3-codex-spark'
+    }
     if (settings.provider === 'lmstudio') {
       translation.model = settings.lmstudioModel.trim()
       translation.endpoint = settings.lmstudioEndpoint.trim()
@@ -148,7 +190,6 @@ export function App() {
     if (settings.provider === 'deepseek') {
       translation.model = settings.deepseekModel.trim()
       translation.endpoint = settings.deepseekEndpoint.trim()
-      translation.api_key = settings.deepseekApiKey.trim()
     }
 
     const payload: JobRequest = {
@@ -159,11 +200,18 @@ export function App() {
         model: settings.asrModel,
         device: settings.useCuda && cudaAvailable ? 'cuda' : 'cpu',
         compute_type: settings.useCuda && cudaAvailable ? 'float16' : 'int8',
-        vad_filter: true,
-        beam_size: 5,
+        vad_filter: settings.asrVadFilter,
+        beam_size: settings.asrBeamSize,
         output_mode: settings.asrOutputMode,
       },
       translation,
+      export: {
+        output_directory: settings.exportOutputDirectory.trim() || null,
+        overwrite_existing: settings.exportOverwriteExisting,
+        format: 'srt',
+        bilingual_order: 'source_then_translation',
+      },
+      auto_start: false,
     }
 
     setStartBusy(true)
@@ -171,12 +219,113 @@ export function App() {
     try {
       const created = await createJob(payload)
       setInitialJob(created)
+      const runtimeKey = settings.provider === 'deepseek'
+        ? settings.deepseekApiKey.trim()
+        : ''
+      setTaskApiKey(runtimeKey)
+      const started = await runJob(created.id, {
+        api_key: runtimeKey || undefined,
+        continue_pipeline: true,
+      })
+      setInitialJob(started)
     } catch (error) {
       setActionError(error instanceof Error ? error.message : '任务启动失败')
     } finally {
       setStartBusy(false)
     }
   }, [cudaAvailable, selectedAsrProvider, settings, source, validationError])
+
+  const handleUpdateJobStep = useCallback(async (
+    step: JobStepId,
+    config: JobStepConfig,
+  ) => {
+    if (!job) throw new Error('当前没有可修改的任务')
+    setJobMutationBusy(true)
+    setActionError(null)
+    try {
+      const updated = await updateJobStepConfig(job.id, step, config)
+      setInitialJob(updated)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '无法更新步骤配置'
+      setActionError(message)
+      throw error
+    } finally {
+      setJobMutationBusy(false)
+    }
+  }, [job])
+
+  const handleRunJobStep = useCallback(async (step: JobStepId) => {
+    if (!job) throw new Error('当前没有可运行的任务')
+    const translationStep = job.steps.find((item) => item.id === 'translation')
+    const translationConfig = translationStep?.config as TranslationStepConfig | undefined
+    if (translationConfig?.provider === 'deepseek' && !taskApiKey.trim()) {
+      const error = new Error('请先在翻译步骤中填写本次运行的 DeepSeek API Key')
+      setActionError(error.message)
+      throw error
+    }
+    setJobMutationBusy(true)
+    setActionError(null)
+    try {
+      const started = await runJobStep(job.id, step, {
+        api_key: taskApiKey.trim() || undefined,
+        continue_pipeline: true,
+      })
+      setInitialJob(started)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '无法运行任务步骤'
+      setActionError(message)
+      throw error
+    } finally {
+      setJobMutationBusy(false)
+    }
+  }, [job, taskApiKey])
+
+  const handleReplaceTaskMedia = useCallback(async () => {
+    if (!job) {
+      await handlePickPath()
+      return
+    }
+    setSourceBusy(true)
+    setActionError(null)
+    try {
+      const picked = await pickVideo()
+      if (!picked.path) return
+      const config: MediaStepConfig = {
+        source_kind: 'path',
+        path: picked.path,
+        name: picked.name ?? fileNameFromPath(picked.path),
+      }
+      const updated = await updateJobStepConfig(job.id, 'media', config)
+      setSource({
+        kind: 'path',
+        path: picked.path,
+        name: config.name,
+        size: picked.size ?? undefined,
+      })
+      setInitialJob(updated)
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : '无法更换任务视频')
+      throw error
+    } finally {
+      setSourceBusy(false)
+    }
+  }, [handlePickPath, job])
+
+  const handleDeleteJob = useCallback(async () => {
+    if (!job) return
+    setJobMutationBusy(true)
+    setActionError(null)
+    try {
+      await deleteJob(job.id)
+      setInitialJob(null)
+      setSource(null)
+      setTaskApiKey('')
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : '无法删除任务')
+    } finally {
+      setJobMutationBusy(false)
+    }
+  }, [job])
 
   const canStart = connected && Boolean(source) && !sourceBusy && !validationError
   const startHint = sourceBusy
@@ -216,14 +365,27 @@ export function App() {
             onClear={() => {
               setSource(null)
               setInitialJob(null)
+              setTaskApiKey('')
               setActionError(null)
             }}
+          />
+          <WorkflowPipeline
+            key={job?.id ?? 'empty-pipeline'}
+            job={job}
+            disabled={taskActive}
+            cudaAvailable={cudaAvailable}
+            apiKey={taskApiKey}
+            onApiKeyChange={setTaskApiKey}
+            onUpdateStep={handleUpdateJobStep}
+            onRunStep={handleRunJobStep}
+            onReplaceMedia={handleReplaceTaskMedia}
           />
           <TaskConsole
             job={job}
             pollError={pollError}
             actionError={actionError ?? backendError}
             onActionError={setActionError}
+            onDeleteJob={() => void handleDeleteJob()}
           />
         </div>
         <SettingsPanel
@@ -234,7 +396,6 @@ export function App() {
           startHint={startHint}
           onChange={setSettings}
           onStart={() => void handleStart()}
-          progress={<WorkflowProgress job={job} />}
         >
           <EnvironmentPanel
             environment={environment}

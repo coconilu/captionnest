@@ -3,7 +3,7 @@ export type AsrProvider = 'faster_whisper' | 'qwen3_asr'
 export type AsrModel = 'small' | 'medium' | 'large-v3-turbo' | 'large-v3' | 'qwen3-asr-1.7b'
 export type AsrOutputMode = 'chunk_segments' | 'word_resegmented'
 export type TranslationProvider = 'codex_spark' | 'lmstudio' | 'deepseek'
-export type JobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+export type JobStatus = 'draft' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
 export type JobStage =
   | 'queued'
   | 'extracting'
@@ -13,6 +13,45 @@ export type JobStage =
   | 'completed'
   | 'failed'
   | 'cancelled'
+export type JobStepId = 'media' | 'transcription' | 'translation' | 'export'
+export type StepStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'stale' | 'cancelled'
+
+export interface MediaStepConfig {
+  source_kind: 'path' | 'upload'
+  path: string
+  name: string
+}
+
+export interface AsrStepConfig {
+  provider: AsrProvider
+  model: AsrModel
+  device: 'auto' | 'cuda' | 'cpu'
+  compute_type: string
+  vad_filter: boolean
+  beam_size: number
+  output_mode: AsrOutputMode
+}
+
+export interface TranslationStepConfig {
+  target_language: TargetLanguage
+  provider: TranslationProvider
+  model: string | null
+  endpoint: string | null
+  timeout_seconds: number
+}
+
+export interface ExportStepConfig {
+  output_directory: string | null
+  overwrite_existing: boolean
+  format: 'srt'
+  bilingual_order: 'source_then_translation'
+}
+
+export type JobStepConfig =
+  | MediaStepConfig
+  | AsrStepConfig
+  | TranslationStepConfig
+  | ExportStepConfig
 
 export interface PickVideoResponse {
   selected: boolean
@@ -25,6 +64,39 @@ export interface JobLog {
   timestamp?: string
   level?: 'info' | 'success' | 'warning' | 'error' | string
   message: string
+}
+
+export interface StepArtifact {
+  id: string
+  step: JobStepId
+  path: string
+  fingerprint: string
+  config_fingerprint: string
+  input_fingerprints: Record<string, string>
+  created_at: string
+  summary: Record<string, unknown>
+}
+
+export interface StepAttempt {
+  number: number
+  status: StepStatus
+  config: Record<string, unknown>
+  started_at: string
+  finished_at: string | null
+  artifact_id: string | null
+  error: string | null
+}
+
+export interface JobStepView {
+  id: JobStepId
+  status: StepStatus
+  progress: number
+  config_revision: number
+  config: JobStepConfig
+  attempts: StepAttempt[]
+  artifact: StepArtifact | null
+  error: string | null
+  can_run: boolean
 }
 
 export interface JobView {
@@ -43,6 +115,7 @@ export interface JobView {
   subtitle_path: string | null
   error: string | null
   logs: JobLog[]
+  steps: JobStepView[]
 }
 
 export interface BackendHealth {
@@ -101,8 +174,15 @@ export interface JobRequest {
     provider: TranslationProvider
     model?: string
     endpoint?: string
-    api_key?: string
+    timeout_seconds?: number
   }
+  export?: ExportStepConfig
+  auto_start?: boolean
+}
+
+export interface JobRunRequest {
+  api_key?: string
+  continue_pipeline?: boolean
 }
 
 export type EnvironmentComponentStatus = 'ready' | 'missing' | 'broken' | 'failed'

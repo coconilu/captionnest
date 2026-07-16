@@ -1,4 +1,12 @@
-import { AlertCircle, CheckCircle2, CircleDot, FolderOpen, Info, LoaderCircle } from 'lucide-react'
+import {
+  AlertCircle,
+  CheckCircle2,
+  CircleDot,
+  FolderOpen,
+  Info,
+  LoaderCircle,
+  Trash2,
+} from 'lucide-react'
 
 import { openFolder } from '../api/client'
 import { fileNameFromPath, formatLog, formatTime } from '../lib/format'
@@ -9,6 +17,7 @@ interface TaskConsoleProps {
   pollError: string | null
   actionError: string | null
   onActionError: (message: string | null) => void
+  onDeleteJob: () => void
 }
 
 function LogIcon({ level }: { level?: string }) {
@@ -18,12 +27,18 @@ function LogIcon({ level }: { level?: string }) {
   return <Info className="log-info" size={16} />
 }
 
-export function TaskConsole({ job, pollError, actionError, onActionError }: TaskConsoleProps) {
+export function TaskConsole({
+  job,
+  pollError,
+  actionError,
+  onActionError,
+  onDeleteJob,
+}: TaskConsoleProps) {
   const logs = job?.logs?.map(formatLog) ?? []
   const progress = Math.max(0, Math.min(100, job?.progress ?? 0))
   const subtitlePath = job?.subtitle_path
   const done = job?.status === 'completed'
-  const error = job?.error ?? pollError ?? actionError
+  const error = actionError ?? pollError ?? job?.error
   const idle = !job && !error
 
   const handleOpen = async (path?: string | null) => {
@@ -43,9 +58,25 @@ export function TaskConsole({ job, pollError, actionError, onActionError }: Task
           <h2 id="console-title">处理日志</h2>
           <span>{job ? `任务 ${job.id.slice(0, 8)}` : '开始任务后可在这里查看实时进度'}</span>
         </div>
-        {job && !done && job.status !== 'failed' && job.status !== 'cancelled' ? (
-          <span className="running-label"><LoaderCircle size={15} className="is-spinning" />正在处理</span>
-        ) : null}
+        <div className="console-header-actions">
+          {job && (job.status === 'queued' || job.status === 'running') ? (
+            <span className="running-label"><LoaderCircle size={15} className="is-spinning" />正在处理</span>
+          ) : null}
+          {job && job.status !== 'queued' && job.status !== 'running' ? (
+            <button
+              type="button"
+              className="delete-job-button"
+              onClick={() => {
+                if (window.confirm('删除这个任务及其中间产物？已导出的 SRT 不会删除。')) {
+                  onDeleteJob()
+                }
+              }}
+            >
+              <Trash2 size={15} />
+              删除任务
+            </button>
+          ) : null}
+        </div>
       </div>
 
       {error ? (

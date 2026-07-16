@@ -16,7 +16,32 @@
 
 ```powershell
 .\scripts\setup.ps1
+.\scripts\serve.ps1
+```
+
+日常本地运行只启动一个入口：`http://127.0.0.1:8765/`。`serve.ps1` 会先构建前端，停止当前
+仓库遗留的 Vite/uvicorn 进程，再让 FastAPI 同时提供 API 和构建后的 Web 页面。
+
+需要 React 热更新时才使用开发模式：
+
+```powershell
 .\scripts\dev.ps1
+```
+
+两种模式的固定地址为：
+
+| 模式 | 页面地址 | 进程结构 |
+|---|---|---|
+| 本地部署 | `http://127.0.0.1:8765` | 只启动 FastAPI；同时提供 API 和 `apps/web/dist` |
+| 开发热更新 | `http://127.0.0.1:5175` | Vite 固定 5175，并把 `/api` 代理到固定 8765 的 FastAPI |
+
+`dev.ps1` 每次启动前会停止当前仓库遗留的 Vite/uvicorn 进程，再启动新实例。直接运行
+`npm --prefix apps/web run dev` 时，npm 的 `predev` 也会先清理当前仓库的旧 Vite 进程。
+清理脚本只会结束命令行路径属于当前 CaptionNest 仓库的进程；若固定端口被其他应用占用，
+脚本会报出进程和 PID，不会误杀。需要手动停止本项目开发服务时可运行：
+
+```powershell
+.\scripts\stop-local-services.ps1
 ```
 
 如需维护隐藏的 Qwen3-ASR 实验兼容 Provider：
@@ -58,7 +83,7 @@ npm --prefix apps/web run build
 cargo check --manifest-path apps/desktop\Cargo.toml --target x86_64-pc-windows-msvc
 ```
 
-真实浏览器至少覆盖：页面无 console error、环境刷新、模型状态/下载按钮、三种目标语言、Provider 字段切换、创建任务与完成态路径。桌面改动还需验证：随机端口、错误令牌返回 401、退出后 sidecar 消失、安装/卸载均不需要管理员权限。
+真实浏览器至少覆盖：页面无 console error、环境刷新、模型状态/下载按钮、三种目标语言、Provider 字段切换、四步任务流水线、失败步骤重试与完成态路径。桌面改动还需验证：随机端口、错误令牌返回 401、退出后 sidecar 消失、安装/卸载均不需要管理员权限。
 
 ## 构建过程
 
@@ -80,7 +105,7 @@ npm --prefix apps/web run desktop:build
 
 生成位置为 `apps/desktop/target/x86_64-pc-windows-msvc/release/bundle/nsis/`。不要直接执行 `tauri build`，否则 clean checkout 缺少 sidecar 与媒体许可证证据。
 
-也不要用裸 `cargo build --release` 验证生产界面。直接 Cargo 构建不会建立 Tauri 的生产环境上下文，EXE 可能仍带 `cfg(dev)` 并访问 `devUrl` 的 `127.0.0.1:5173`，从而误显示本机其他开发服务。只做不打安装包的本地隔离验证时，应先按正式步骤准备 sidecar，再使用仓库锁定的 Tauri CLI：
+也不要用裸 `cargo build --release` 验证生产界面。直接 Cargo 构建不会建立 Tauri 的生产环境上下文，EXE 可能仍带 `cfg(dev)` 并访问 `devUrl` 的 `127.0.0.1:5175`，从而误显示本机其他开发服务。只做不打安装包的本地隔离验证时，应先按正式步骤准备 sidecar，再使用仓库锁定的 Tauri CLI：
 
 ```powershell
 .\apps\web\node_modules\.bin\tauri.cmd build --config apps\desktop\tauri.conf.json --target x86_64-pc-windows-msvc --no-bundle
