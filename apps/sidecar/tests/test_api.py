@@ -108,6 +108,7 @@ def test_health_capabilities_upload_and_job_do_not_echo_api_key(tmp_path: Path) 
         )
         assert transcription["config"]["dynamic_chunking"] is True
         assert transcription["config"]["selective_retry"] is True
+        assert transcription["config"]["timestamp_normalization"] is False
         job_id = response.json()["id"]
         assert response.json()["status"] == "draft"
 

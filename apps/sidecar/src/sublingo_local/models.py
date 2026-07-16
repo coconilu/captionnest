@@ -101,6 +101,7 @@ class ASRSettings(BaseModel):
     vad_filter: bool = True
     dynamic_chunking: bool = True
     selective_retry: bool = True
+    timestamp_normalization: bool = False
     beam_size: int = Field(default=5, ge=1, le=20)
     output_mode: ASROutputMode = ASROutputMode.WORD_RESEGMENTED
     hotwords: list[str] = Field(

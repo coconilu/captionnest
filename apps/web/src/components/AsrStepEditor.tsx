@@ -38,6 +38,7 @@ export function AsrStepEditor({
       device: current.device === 'cuda' && cudaAvailable ? 'cuda' : 'cpu',
       dynamic_chunking: current.dynamic_chunking ?? false,
       selective_retry: current.selective_retry ?? false,
+      timestamp_normalization: current.timestamp_normalization ?? false,
       compute_type:
         current.device === 'cuda' && cudaAvailable ? current.compute_type : 'int8',
     }))
@@ -149,6 +150,22 @@ export function AsrStepEditor({
           onChange={(event) => setDraft((current) => ({
             ...current,
             selective_retry: event.target.checked,
+          }))}
+        />
+        <i aria-hidden="true" />
+      </label>
+      <label className="switch-row">
+        <span>
+          <strong>实验性时间轴校正</strong>
+          <small>利用共享 VAD 收紧静音边界并修正异常 gap</small>
+        </span>
+        <input
+          type="checkbox"
+          checked={draft.timestamp_normalization ?? false}
+          disabled={saving || legacy}
+          onChange={(event) => setDraft((current) => ({
+            ...current,
+            timestamp_normalization: event.target.checked,
           }))}
         />
         <i aria-hidden="true" />

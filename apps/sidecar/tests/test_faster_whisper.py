@@ -4,7 +4,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from sublingo_local.asr.diagnostics import AudioInterval
+from sublingo_local.asr.diagnostics import ASRAudioAnalysis, AudioInterval
 from sublingo_local.asr.faster_whisper import (
     FasterWhisperProvider,
     _analyze_vad,
@@ -13,6 +13,7 @@ from sublingo_local.asr.faster_whisper import (
     _ChunkSegment,
     _deduplicate_boundary_segments,
     _dynamic_chunk_windows,
+    _normalize_chunk_segment_timestamps,
     _optional_finite_float,
     _optional_non_negative_float,
     _optional_probability,
@@ -216,6 +217,136 @@ def test_word_resegmentation_preserves_text_and_splits_long_silence() -> None:
     ]
 
 
+def test_word_resegmentation_freezes_grouping_before_timestamp_normalization() -> None:
+    original = _ChunkSegment(
+        text="hello world",
+        start=0.0,
+        end=2.19,
+        words=(
+            _WordItem(text="hello ", start=0.0, end=0.5),
+            _WordItem(text="world", start=1.69, end=2.19),
+        ),
+        chunk_index=0,
+        avg_logprob=-0.1,
+    )
+    normalized = _ChunkSegment(
+        text=original.text,
+        start=0.0,
+        end=2.21,
+        words=(
+            original.words[0],
+            _WordItem(text="world", start=1.71, end=2.21),
+        ),
+        chunk_index=original.chunk_index,
+        avg_logprob=original.avg_logprob,
+    )
+
+    baseline = _word_resegmented_subtitles(
+        [original],
+        language="en",
+        duration_seconds=3.0,
+    )
+    adjusted = _word_resegmented_subtitles(
+        [normalized],
+        language="en",
+        duration_seconds=3.0,
+        grouping_items=[original],
+    )
+
+    assert [(item.id, item.text) for item in adjusted] == [
+        (item.id, item.text) for item in baseline
+    ]
+    assert [(item.start_ms, item.end_ms) for item in adjusted] == [(0, 2_210)]
+
+
+def test_normalized_equal_intervals_preserve_text_and_ids_in_both_modes() -> None:
+    original = [
+        _ChunkSegment(
+            text="z-first",
+            start=0.1,
+            end=1.0,
+            words=(),
+            chunk_index=0,
+            avg_logprob=-0.1,
+        ),
+        _ChunkSegment(
+            text="a-second",
+            start=0.15,
+            end=1.05,
+            words=(),
+            chunk_index=0,
+            avg_logprob=-0.1,
+        ),
+    ]
+    analysis = ASRAudioAnalysis(
+        sample_rate=16_000,
+        total_samples=32_000,
+        vad_source="test_vad",
+        vad_status="available",
+        speech_intervals=(
+            AudioInterval(start_sample=3_200, end_sample=14_400),
+        ),
+    )
+
+    normalized, _, _ = _normalize_chunk_segment_timestamps(
+        original,
+        audio_analysis=analysis,
+    )
+    word_baseline = _word_resegmented_subtitles(
+        original,
+        language="en",
+        duration_seconds=2.0,
+    )
+    word_candidate = _word_resegmented_subtitles(
+        normalized,
+        language="en",
+        duration_seconds=2.0,
+        grouping_items=original,
+    )
+    chunk_baseline = _chunk_segments_to_subtitles(original)
+    chunk_candidate = _chunk_segments_to_subtitles(normalized)
+
+    assert [(item.start, item.end) for item in normalized] == [
+        (0.2, 0.9),
+        (0.2, 0.9),
+    ]
+    assert [(item.id, item.text) for item in word_candidate] == [
+        (item.id, item.text) for item in word_baseline
+    ]
+    assert [(item.id, item.text) for item in chunk_candidate] == [
+        (item.id, item.text) for item in chunk_baseline
+    ]
+
+
+def test_readability_silence_cap_respects_timestamp_shift_limit() -> None:
+    parent = _ChunkSegment(
+        text="a",
+        start=0.0,
+        end=0.05,
+        words=(_WordItem(text="a", start=0.0, end=0.05),),
+        chunk_index=0,
+        avg_logprob=-0.1,
+    )
+
+    within_limit = _word_resegmented_subtitles(
+        [parent],
+        language="en",
+        duration_seconds=1.0,
+        readability_silences=[AudioInterval(start_sample=100, end_sample=200)],
+        readability_sample_rate=1_000,
+    )
+    beyond_limit = _word_resegmented_subtitles(
+        [parent],
+        language="en",
+        duration_seconds=1.0,
+        readability_silences=[AudioInterval(start_sample=80, end_sample=200)],
+        readability_sample_rate=1_000,
+    )
+
+    assert within_limit[0].end_ms == 100
+    assert beyond_limit[0].end_ms == 400
+
+
 def test_chunk_segment_mode_keeps_model_boundaries() -> None:
     parent = _ChunkSegment(
         text="モデルが返した一段落",
@@ -392,10 +523,13 @@ def _install_selective_retry_fakes(
     empty_retry: bool = False,
     near_silence: bool = False,
     confirmed_silence: bool = False,
+    timestamp_intrusion: bool = False,
+    timestamp_interval: tuple[float, float] | None = None,
+    audio_samples: int = 30 * 16_000,
 ) -> None:
     class FakeAudio:
         def __len__(self) -> int:
-            return 30 * 16_000
+            return audio_samples
 
         def __getitem__(self, key):  # type: ignore[no-untyped-def]
             calls.setdefault("slices", []).append((key.start, key.stop))  # type: ignore[union-attr]
@@ -426,11 +560,15 @@ def _install_selective_retry_fakes(
                 )
             is_retry = index == 1
             text = "清晰片段" if is_retry else "疑似片段"
-            start = 4.0 if is_retry else 5.0
+            if timestamp_interval is not None:
+                start, end = timestamp_interval
+            else:
+                start = 4.0 if is_retry else (3.9 if timestamp_intrusion else 5.0)
+                end = 8.1 if timestamp_intrusion and not is_retry else start + 2.0
             segment = SimpleNamespace(
                 text=text,
                 start=start,
-                end=start + 2.0,
+                end=end,
                 avg_logprob=(
                     -0.1
                     if is_retry
@@ -444,7 +582,7 @@ def _install_selective_retry_fakes(
                 compression_ratio=1.2,
                 temperature=0.0,
                 words=[
-                    SimpleNamespace(word=text, start=start, end=start + 2.0),
+                    SimpleNamespace(word=text, start=start, end=end),
                 ],
             )
             return iter([segment]), SimpleNamespace(
@@ -458,6 +596,8 @@ def _install_selective_retry_fakes(
 
     def get_speech_timestamps(audio, **kwargs):  # type: ignore[no-untyped-def]
         calls["vad_count"] = int(calls.get("vad_count", 0)) + 1
+        if timestamp_interval is not None:
+            return [{"start": 0, "end": min(audio_samples, 16_000)}]
         if confirmed_silence:
             return []
         if near_silence:
@@ -597,6 +737,115 @@ def test_provider_rejects_character_valid_cjk_hotwords_over_model_token_budget(
     assert hotwords[0] not in error
     assert hotwords[-1] not in error
     assert "transcribe_kwargs" not in calls
+
+
+@pytest.mark.parametrize(
+    "output_mode",
+    [ASROutputMode.WORD_RESEGMENTED, ASROutputMode.CHUNK_SEGMENTS],
+)
+def test_provider_normalizes_silence_boundaries_for_both_output_modes(
+    output_mode: ASROutputMode,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: dict[str, object] = {}
+    _install_selective_retry_fakes(
+        monkeypatch,
+        calls,
+        timestamp_intrusion=True,
+    )
+
+    result = FasterWhisperProvider().transcribe(
+        tmp_path / "video.mp4",
+        language="zh",
+        settings=ASRSettings(
+            dynamic_chunking=False,
+            selective_retry=False,
+            timestamp_normalization=True,
+            output_mode=output_mode,
+        ),
+    )
+
+    assert calls["vad_count"] == 1
+    assert len(calls["transcribe_kwargs"]) == 1  # type: ignore[arg-type]
+    assert [(item.id, item.text) for item in result.segments] == [
+        ("seg-000001", "疑似片段")
+    ]
+    assert [(item.start_ms, item.end_ms) for item in result.segments] == [
+        (4_000, 8_000)
+    ]
+    assert result.diagnostics is not None
+    summary = result.diagnostics.summary
+    assert summary.timestamp_normalization_status == "applied"
+    assert summary.timestamp_word_boundary_shift_count == 2
+    assert summary.timestamp_segment_boundary_shift_count == 2
+    assert summary.timestamp_boundary_shift_abs_total_samples == 6_400
+    assert summary.timestamp_fallback_to_original_count == 0
+
+
+@pytest.mark.parametrize(
+    "output_mode",
+    [ASROutputMode.WORD_RESEGMENTED, ASROutputMode.CHUNK_SEGMENTS],
+)
+@pytest.mark.parametrize(
+    (
+        "audio_samples",
+        "timestamp_interval",
+        "expected_status",
+        "expected_fallback_count",
+    ),
+    [
+        (30 * 16_000, (0.1, 0.15), "applied", 0),
+        (800, (0.01, 0.04), "fallback", 1),
+    ],
+)
+def test_provider_repairs_short_timestamps_or_reports_fallback_for_both_modes(
+    output_mode: ASROutputMode,
+    audio_samples: int,
+    timestamp_interval: tuple[float, float],
+    expected_status: str,
+    expected_fallback_count: int,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: dict[str, object] = {}
+    _install_selective_retry_fakes(
+        monkeypatch,
+        calls,
+        timestamp_interval=timestamp_interval,
+        audio_samples=audio_samples,
+    )
+
+    result = FasterWhisperProvider().transcribe(
+        tmp_path / "video.mp4",
+        language="zh",
+        settings=ASRSettings(
+            dynamic_chunking=False,
+            selective_retry=False,
+            timestamp_normalization=True,
+            output_mode=output_mode,
+        ),
+    )
+
+    assert calls["vad_count"] == 1
+    assert len(result.segments) == 1
+    assert result.segments[0].id == "seg-000001"
+    if expected_status == "applied":
+        assert result.segments[0].end_ms - result.segments[0].start_ms >= 100
+
+    assert result.diagnostics is not None
+    summary = result.diagnostics.summary
+    assert summary.timestamp_normalization_status == expected_status
+    assert (
+        summary.timestamp_fallback_to_original_count == expected_fallback_count
+    )
+    if expected_status == "applied":
+        assert summary.timestamp_word_boundary_shift_count == 2
+        assert summary.timestamp_segment_boundary_shift_count == 2
+    else:
+        assert summary.timestamp_unsafe_adjustment_count >= 1
+        assert summary.timestamp_word_boundary_shift_count == 0
+        assert summary.timestamp_segment_boundary_shift_count == 0
 
 
 @pytest.mark.parametrize(
@@ -1143,7 +1392,10 @@ def test_provider_falls_back_to_fixed_windows_when_boundary_vad_fails(
     result = FasterWhisperProvider().transcribe(
         tmp_path / "video.mp4",
         language="zh",
-        settings=ASRSettings(output_mode=ASROutputMode.CHUNK_SEGMENTS),
+        settings=ASRSettings(
+            output_mode=ASROutputMode.CHUNK_SEGMENTS,
+            timestamp_normalization=True,
+        ),
     )
 
     assert result.diagnostics is not None
@@ -1158,11 +1410,16 @@ def test_provider_falls_back_to_fixed_windows_when_boundary_vad_fails(
         False,
     ]
     assert result.diagnostics.summary.fallback_window_count == 1
+    assert (
+        result.diagnostics.summary.timestamp_normalization_status
+        == "unavailable"
+    )
 
 
 def test_output_mode_defaults_to_word_resegmentation() -> None:
     assert ASRSettings().output_mode == ASROutputMode.WORD_RESEGMENTED
     assert ASRSettings().dynamic_chunking is True
+    assert ASRSettings().timestamp_normalization is False
     assert ASRSettings().selective_retry is True
 
 

@@ -34,6 +34,7 @@ export interface AsrStepConfig {
   vad_filter: boolean
   dynamic_chunking?: boolean
   selective_retry?: boolean
+  timestamp_normalization?: boolean
   beam_size: number
   output_mode: AsrOutputMode
   hotwords?: string[]
@@ -197,6 +198,7 @@ export interface JobRequest {
     vad_filter: boolean
     dynamic_chunking: boolean
     selective_retry: boolean
+    timestamp_normalization: boolean
     beam_size: number
     output_mode: AsrOutputMode
     hotwords: string[]

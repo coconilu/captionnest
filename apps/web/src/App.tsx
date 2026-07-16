@@ -210,6 +210,7 @@ export function App() {
         vad_filter: settings.asrVadFilter,
         dynamic_chunking: settings.asrDynamicChunking,
         selective_retry: settings.asrSelectiveRetry,
+        timestamp_normalization: settings.asrTimestampNormalization,
         beam_size: settings.asrBeamSize,
         output_mode: settings.asrOutputMode,
         hotwords: hotwordValidation.hotwords,

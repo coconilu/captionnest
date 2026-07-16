@@ -738,6 +738,11 @@ class ProcessingPipeline:
             if record.asr.selective_retry
             else "，仅单次识别"
         )
+        timestamp_label = (
+            "，实验性时间轴校正"
+            if record.asr.timestamp_normalization
+            else ""
+        )
         hotword_label = (
             f"，已配置 {len(record.asr.hotwords)} 个提示词"
             if record.asr.hotwords
@@ -745,7 +750,7 @@ class ProcessingPipeline:
         )
         message = (
             f"正在使用 Faster-Whisper {record.asr.model} 进行{chunking_label}识别"
-            f"（{output_mode_label}{retry_label}{hotword_label}）"
+            f"（{output_mode_label}{retry_label}{timestamp_label}{hotword_label}）"
         )
         record.begin_step(JobStep.TRANSCRIPTION, message)
         asr = self._create_asr()

@@ -13,6 +13,7 @@ export interface SettingsValue {
   asrVadFilter: boolean
   asrDynamicChunking: boolean
   asrSelectiveRetry: boolean
+  asrTimestampNormalization: boolean
   asrBeamSize: number
   asrHotwordsText: string
   provider: TranslationProvider
@@ -33,6 +34,7 @@ export const DEFAULT_SETTINGS: SettingsValue = {
   asrVadFilter: true,
   asrDynamicChunking: true,
   asrSelectiveRetry: true,
+  asrTimestampNormalization: false,
   asrBeamSize: 5,
   asrHotwordsText: '',
   provider: 'codex_spark',
