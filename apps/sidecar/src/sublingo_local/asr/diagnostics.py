@@ -112,12 +112,33 @@ class ASRAudioAnalysis(BaseModel):
         return self
 
     @classmethod
-    def unavailable(cls, *, sample_rate: int, total_samples: int) -> ASRAudioAnalysis:
+    def unavailable(
+        cls,
+        *,
+        sample_rate: int,
+        total_samples: int,
+        vad_source: str = "unavailable",
+    ) -> ASRAudioAnalysis:
         return cls(
             sample_rate=sample_rate,
             total_samples=total_samples,
-            vad_source="unavailable",
+            vad_source=vad_source,
             vad_status="unavailable",
+        )
+
+    @classmethod
+    def failed(
+        cls,
+        *,
+        sample_rate: int,
+        total_samples: int,
+        vad_source: str,
+    ) -> ASRAudioAnalysis:
+        return cls(
+            sample_rate=sample_rate,
+            total_samples=total_samples,
+            vad_source=vad_source,
+            vad_status="failed",
         )
 
     @property

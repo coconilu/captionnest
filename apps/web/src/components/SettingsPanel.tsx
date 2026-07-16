@@ -95,6 +95,7 @@ export function SettingsPanel({
           <span>目标 · {targetLanguage}</span>
           <span>模型 · {MODEL_LABELS[value.asrModel]}</span>
           <span>切分 · {outputMode}</span>
+          <span>边界 · {value.asrDynamicChunking ? '动态' : '固定'}</span>
           <span className="is-provider"><i aria-hidden="true" />{provider}</span>
         </div>
       </section>
@@ -171,6 +172,19 @@ export function SettingsPanel({
                 checked={value.asrVadFilter}
                 disabled={disabled}
                 onChange={(event) => patch('asrVadFilter', event.target.checked)}
+              />
+              <i aria-hidden="true" />
+            </label>
+            <label className="switch-row">
+              <span>
+                <strong>动态切片边界</strong>
+                <small>将 60 秒边界吸附到附近自然停顿</small>
+              </span>
+              <input
+                type="checkbox"
+                checked={value.asrDynamicChunking}
+                disabled={disabled}
+                onChange={(event) => patch('asrDynamicChunking', event.target.checked)}
               />
               <i aria-hidden="true" />
             </label>

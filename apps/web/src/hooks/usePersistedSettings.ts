@@ -58,6 +58,10 @@ function loadSettings(): SettingsValue {
         : DEFAULT_SETTINGS.asrOutputMode,
       useCuda: booleanValue(value.useCuda, DEFAULT_SETTINGS.useCuda),
       asrVadFilter: booleanValue(value.asrVadFilter, DEFAULT_SETTINGS.asrVadFilter),
+      asrDynamicChunking: booleanValue(
+        value.asrDynamicChunking,
+        DEFAULT_SETTINGS.asrDynamicChunking,
+      ),
       asrBeamSize: numberValue(value.asrBeamSize, DEFAULT_SETTINGS.asrBeamSize, 1, 20),
       provider: TRANSLATION_PROVIDERS.has(provider)
         ? provider as SettingsValue['provider']
@@ -102,6 +106,7 @@ function persistedValue(settings: SettingsValue) {
       asrOutputMode: settings.asrOutputMode,
       useCuda: settings.useCuda,
       asrVadFilter: settings.asrVadFilter,
+      asrDynamicChunking: settings.asrDynamicChunking,
       asrBeamSize: settings.asrBeamSize,
       provider: settings.provider,
       translationTimeoutSeconds: settings.translationTimeoutSeconds,

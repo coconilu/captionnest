@@ -201,6 +201,7 @@ export function App() {
         device: settings.useCuda && cudaAvailable ? 'cuda' : 'cpu',
         compute_type: settings.useCuda && cudaAvailable ? 'float16' : 'int8',
         vad_filter: settings.asrVadFilter,
+        dynamic_chunking: settings.asrDynamicChunking,
         beam_size: settings.asrBeamSize,
         output_mode: settings.asrOutputMode,
       },

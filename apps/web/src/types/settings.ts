@@ -11,6 +11,7 @@ export interface SettingsValue {
   asrOutputMode: AsrOutputMode
   useCuda: boolean
   asrVadFilter: boolean
+  asrDynamicChunking: boolean
   asrBeamSize: number
   provider: TranslationProvider
   translationTimeoutSeconds: number
@@ -28,6 +29,7 @@ export const DEFAULT_SETTINGS: SettingsValue = {
   asrOutputMode: 'word_resegmented',
   useCuda: true,
   asrVadFilter: true,
+  asrDynamicChunking: true,
   asrBeamSize: 5,
   provider: 'codex_spark',
   translationTimeoutSeconds: 300,

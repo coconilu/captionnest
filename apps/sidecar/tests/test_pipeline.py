@@ -16,6 +16,7 @@ from sublingo_local.job_store import JobStore
 from sublingo_local.jobs import JobManager, JobRecord, ProcessingPipeline
 from sublingo_local.models import (
     ASROutputMode,
+    ASRSettings,
     JobCreateRequest,
     JobRunRequest,
     JobStep,
@@ -361,6 +362,27 @@ def test_legacy_qwen_job_remains_visible_until_asr_config_is_migrated(
     assert "qwen3_asr" not in store.job_file("legacy-qwen-job").read_text(
         encoding="utf-8"
     )
+
+
+def test_job_created_before_dynamic_chunking_keeps_fixed_windows(
+    tmp_path: Path,
+) -> None:
+    payload = JobRecord(
+        id="legacy-fixed-window-job",
+        media=MediaStepSettings(
+            source_kind=SourceKind.PATH,
+            path=str(tmp_path / "legacy.mp4"),
+            name="legacy.mp4",
+        ),
+    ).to_payload()
+    payload["asr"].pop("dynamic_chunking")
+
+    record = JobRecord.from_payload(payload)
+
+    assert isinstance(record.asr, ASRSettings)
+    assert record.asr.dynamic_chunking is False
+    assert record.to_view().steps[1].config["dynamic_chunking"] is False
+    assert ASRSettings().dynamic_chunking is True
 
 
 def test_job_request_exposes_only_target_language() -> None:

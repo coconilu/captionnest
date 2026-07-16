@@ -94,6 +94,7 @@ class ASRSettings(BaseModel):
     device: Literal["auto", "cpu", "cuda"] = "auto"
     compute_type: str = "auto"
     vad_filter: bool = True
+    dynamic_chunking: bool = True
     beam_size: int = Field(default=5, ge=1, le=20)
     output_mode: ASROutputMode = ASROutputMode.WORD_RESEGMENTED
 

@@ -32,6 +32,7 @@ export interface AsrStepConfig {
   device: 'auto' | 'cuda' | 'cpu'
   compute_type: string
   vad_filter: boolean
+  dynamic_chunking?: boolean
   beam_size: number
   output_mode: AsrOutputMode
 }
@@ -171,6 +172,7 @@ export interface JobRequest {
     device: 'cuda' | 'cpu'
     compute_type: 'float16' | 'int8'
     vad_filter: boolean
+    dynamic_chunking: boolean
     beam_size: number
     output_mode: AsrOutputMode
   }
