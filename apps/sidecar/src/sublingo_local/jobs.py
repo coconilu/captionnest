@@ -82,6 +82,10 @@ LEGACY_ASR_UNAVAILABLE_MESSAGE = (
 )
 
 
+class _BlockingCallCancelled(RuntimeError):
+    """Cooperatively stop a blocking provider after its asyncio owner is cancelled."""
+
+
 def _language_key(language: str | TargetLanguage) -> str:
     normalized = str(language).strip().lower().replace("_", "-")
     return {
@@ -122,6 +126,34 @@ def _fingerprint(payload: Mapping[str, Any]) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(content).hexdigest()
+
+
+async def _run_blocking_call(
+    function: Callable[..., Any],
+    /,
+    *args: Any,
+    cancel_callback: Callable[[], None] | None = None,
+    **kwargs: Any,
+) -> Any:
+    """Keep a scheduler resource claimed until its worker thread really stops."""
+
+    worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        if cancel_callback is not None:
+            cancel_callback()
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                # Repeated cancellation must not detach a still-running thread.
+                continue
+            except Exception:
+                break
+        if worker.done() and not worker.cancelled():
+            worker.exception()
+        raise
 
 
 def _default_steps() -> dict[JobStep, JobStepView]:
@@ -458,6 +490,7 @@ class JobRecord:
                     attempt.finished_at = now
                     attempt.error = "任务执行被应用退出中断"
             self.current_step = None
+            self.queued_start_step = step
             self.status = JobStatus.INTERRUPTED
             self.queue_status = QueueStatus.INTERRUPTED
             self.queue_position = None
@@ -575,8 +608,15 @@ class JobRecord:
                 for attempt in self.steps[step].attempts
             ]
             summary_step = self.current_step
+            if summary_step is None and self.status in {
+                JobStatus.QUEUED,
+                JobStatus.RUNNING,
+                JobStatus.WAITING_FOR_INPUT,
+                JobStatus.INTERRUPTED,
+            }:
+                summary_step = self.queued_start_step
             if summary_step is None and self.status != JobStatus.COMPLETED:
-                summary_step = self.queued_start_step or next(
+                summary_step = next(
                     (
                         step
                         for step in STEP_ORDER
@@ -891,8 +931,11 @@ class ProcessingPipeline:
 
     async def _prepare_media(self, record: JobRecord) -> StepArtifactView:
         record.begin_step(JobStep.MEDIA, "正在验证媒体文件")
-        path = await asyncio.to_thread(ensure_supported_video, Path(record.media.path))
-        stat = await asyncio.to_thread(path.stat)
+        path = await _run_blocking_call(
+            ensure_supported_video,
+            Path(record.media.path),
+        )
+        stat = await _run_blocking_call(path.stat)
         payload = {
             "path": str(path),
             "name": path.name,
@@ -900,7 +943,7 @@ class ProcessingPipeline:
             "size": stat.st_size,
             "modified_ns": stat.st_mtime_ns,
         }
-        artifact_path, fingerprint = await asyncio.to_thread(
+        artifact_path, fingerprint = await _run_blocking_call(
             self.store.write_artifact,
             record.id,
             "media.json",
@@ -947,19 +990,23 @@ class ProcessingPipeline:
         )
         record.begin_step(JobStep.TRANSCRIPTION, message)
         asr = self._create_asr()
+        cancel_requested = threading.Event()
 
         def on_progress(value: float) -> None:
+            if cancel_requested.is_set():
+                raise _BlockingCallCancelled
             record.update_step_progress(JobStep.TRANSCRIPTION, value)
 
-        transcription = await asyncio.to_thread(
+        transcription = await _run_blocking_call(
             asr.transcribe,
             record.source.path,
             language="auto",
             settings=record.asr,
             on_progress=on_progress,
+            cancel_callback=cancel_requested.set,
         )
         payload = transcription.model_dump(mode="json")
-        artifact_path, fingerprint = await asyncio.to_thread(
+        artifact_path, fingerprint = await _run_blocking_call(
             self.store.write_artifact,
             record.id,
             "transcription.json",
@@ -1044,7 +1091,7 @@ class ProcessingPipeline:
             "target_language": record.translation.target_language.value,
             "items": [item.model_dump(mode="json") for item in translated],
         }
-        artifact_path, fingerprint = await asyncio.to_thread(
+        artifact_path, fingerprint = await _run_blocking_call(
             self.store.write_artifact,
             record.id,
             "translation.json",
@@ -1085,13 +1132,13 @@ class ProcessingPipeline:
         subtitle_path = output_directory / record.source.path.with_suffix(".srt").name
         if subtitle_path.exists() and not record.export.overwrite_existing:
             raise FileExistsError("目标字幕已存在，请允许覆盖或修改输出目录")
-        await asyncio.to_thread(
+        await _run_blocking_call(
             write_bilingual_srt,
             subtitle_path,
             transcription.segments,
             translated,
         )
-        content = await asyncio.to_thread(subtitle_path.read_bytes)
+        content = await _run_blocking_call(subtitle_path.read_bytes)
         fingerprint = hashlib.sha256(content).hexdigest()
         record.update_step_progress(JobStep.EXPORT, 1.0)
         return self._artifact(

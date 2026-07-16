@@ -17,6 +17,7 @@
 | running 重启语义 | PASS；Job、Step、Attempt 标记 `interrupted`，成功上游 Artifact 保留 |
 | DeepSeek 运行时密钥 | PASS；只存在于内存 ScheduleEntry；重启后进入 `waiting_for_input`，JSON 中无密钥 |
 | 取消隔离 | PASS；queued 可直接移除，running 只取消对应 Task，不影响其他 Job |
+| 阻塞线程取消 | PASS；ASR/IO 的底层线程真正结束前不释放 Scheduler 资源槽，取消后进度回调不再写入 |
 | 旧任务兼容 | PASS；缺失新字段时 `batch_id=null`，队列状态由旧 `status` 推导 |
 | 轻量 Summary | PASS；`to_summary()` 直接聚合数值，不深拷贝日志、Steps 或 Attempts |
 
@@ -24,8 +25,9 @@
 
 | 检查 | 结果 |
 |---|---:|
-| Scheduler/Batch 定向测试 | 5 passed |
-| Sidecar 全量 | 210 passed，1 个 Starlette 弃用警告 |
+| Scheduler/Batch 定向测试 | 7 passed |
+| Sidecar 全量 | 187 passed，1 个 Starlette 弃用警告 |
+| 仓库 Python 总计 | 212 passed |
 | Sidecar Ruff | passed |
 | Tooling | 25 passed |
 | Tooling Ruff | passed |
@@ -33,7 +35,7 @@
 | Desktop fmt/check | passed |
 | `git diff --check` | passed |
 
-定向测试覆盖 3 个 Job 同时被 worker claim 时 CUDA 活跃数仍为 1、FIFO 启动顺序、重复 claim 拒绝、queued/running 独立取消、异常退出后 queued 顺序恢复、running Attempt 中断、DeepSeek 密钥丢失后等待输入，以及 Batch 配置无密钥持久化。
+定向测试覆盖 3 个 Job 同时被 worker claim 时 CUDA 活跃数仍为 1、FIFO 启动顺序、重复 claim 拒绝、queued/running 独立取消、取消 ASR 时底层线程结束前不释放 CUDA 槽且不再回写进度、异常退出后 queued 顺序恢复、running Attempt 中断、Summary 当前步骤推导、DeepSeek 密钥丢失后等待输入，以及 Batch 配置无密钥持久化。
 
 ## 真实浏览器回归
 

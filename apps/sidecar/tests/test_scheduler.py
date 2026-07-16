@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from pathlib import Path
 
 import pytest
 
+from sublingo_local.asr.base import ASRProvider, TranscriptionResult
 from sublingo_local.batch_store import BatchStore
 from sublingo_local.job_store import JobStore
-from sublingo_local.jobs import JobManager, JobRecord
+from sublingo_local.jobs import JobManager, JobRecord, ProcessingPipeline
 from sublingo_local.models import (
     BatchConfigSnapshot,
     BatchRecord,
@@ -19,6 +21,7 @@ from sublingo_local.models import (
     SchedulerSettings,
     StepArtifactView,
     StepStatus,
+    SubtitleSegment,
     TranslationStepSettings,
 )
 
@@ -77,6 +80,57 @@ class GateStepPipeline:
         finally:
             self.active -= 1
         record.complete_step(step, _artifact(step, record.id), "test complete")
+
+
+class BlockingThreadASR(ASRProvider):
+    def __init__(self) -> None:
+        self.first_started = threading.Event()
+        self.second_started = threading.Event()
+        self.release_first = threading.Event()
+        self.started: list[str] = []
+        self.active = 0
+        self.maximum_active = 0
+        self._lock = threading.Lock()
+
+    def transcribe(  # type: ignore[no-untyped-def]
+        self,
+        audio_path,
+        *,
+        language,
+        settings,
+        on_progress=None,
+    ) -> TranscriptionResult:
+        del language, settings
+        with self._lock:
+            self.started.append(audio_path.name)
+            self.active += 1
+            self.maximum_active = max(self.maximum_active, self.active)
+        try:
+            if audio_path.name == "first.mp4":
+                self.first_started.set()
+                if not self.release_first.wait(timeout=2):
+                    raise TimeoutError("first ASR worker was not released")
+                if on_progress:
+                    on_progress(0.55)
+            else:
+                self.second_started.set()
+                if on_progress:
+                    on_progress(1.0)
+            return TranscriptionResult(
+                language="en",
+                duration_seconds=1.0,
+                segments=[
+                    SubtitleSegment(
+                        id=f"segment-{audio_path.stem}",
+                        start_ms=0,
+                        end_ms=1_000,
+                        text=audio_path.stem,
+                    )
+                ],
+            )
+        finally:
+            with self._lock:
+                self.active -= 1
 
 
 def _manager(
@@ -179,6 +233,105 @@ async def test_scheduler_cancels_queued_and_running_jobs_independently(
     assert first_view.status == "cancelled"
     assert first_view.steps[0].status == "cancelled"
     assert manager.get(second.id).status == "cancelled"
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_threaded_asr_keeps_resource_until_worker_stops(
+    tmp_path: Path,
+) -> None:
+    first_video = tmp_path / "first.mp4"
+    second_video = tmp_path / "second.mp4"
+    first_video.write_bytes(b"first")
+    second_video.write_bytes(b"second")
+    store = JobStore(tmp_path / "jobs")
+    asr = BlockingThreadASR()
+    pipeline = ProcessingPipeline(
+        tmp_path / "jobs",
+        asr_factory=lambda: asr,
+        job_store=store,
+    )
+    manager = JobManager(
+        None,
+        pipeline,
+        job_store=store,
+        scheduler_settings=SchedulerSettings(
+            worker_concurrency=2,
+            cuda_asr_concurrency=1,
+        ),
+    )
+    first = manager.create(JobCreateRequest(video_path=str(first_video)))
+    second = manager.create(JobCreateRequest(video_path=str(second_video)))
+    _mark_succeeded(manager._record(first.id), JobStep.MEDIA)
+    _mark_succeeded(manager._record(second.id), JobStep.MEDIA)
+
+    manager.run_step(
+        first.id,
+        JobStep.TRANSCRIPTION,
+        JobRunRequest(continue_pipeline=False),
+    )
+    manager.run_step(
+        second.id,
+        JobStep.TRANSCRIPTION,
+        JobRunRequest(continue_pipeline=False),
+    )
+    await _eventually(asr.first_started.is_set)
+    manager.cancel(first.id)
+
+    await asyncio.sleep(0.05)
+    assert not asr.second_started.is_set()
+    assert asr.maximum_active == 1
+
+    asr.release_first.set()
+    await manager.wait(first.id)
+    await manager.wait(second.id)
+
+    first_view = manager.get(first.id)
+    assert first_view.status == "cancelled"
+    assert first_view.steps[1].status == "cancelled"
+    assert first_view.progress == 8
+    assert manager.get(second.id).steps[1].status == "succeeded"
+    assert asr.started == ["first.mp4", "second.mp4"]
+    assert asr.maximum_active == 1
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_summary_uses_actual_next_failed_and_interrupted_steps(
+    tmp_path: Path,
+) -> None:
+    video = tmp_path / "summary.mp4"
+    video.write_bytes(b"video")
+    pipeline = GateStepPipeline(block_all=False)
+    _, manager = _manager(tmp_path, pipeline, worker_concurrency=1)
+
+    paused = manager.create(JobCreateRequest(video_path=str(video)))
+    manager.run_step(
+        paused.id,
+        JobStep.MEDIA,
+        JobRunRequest(continue_pipeline=False),
+    )
+    await manager.wait(paused.id)
+    paused_summary = manager._record(paused.id).to_summary()
+    assert paused_summary.status == "draft"
+    assert paused_summary.current_step == JobStep.TRANSCRIPTION
+
+    failed = manager.create(JobCreateRequest(video_path=str(video)))
+    failed_record = manager._record(failed.id)
+    _mark_succeeded(failed_record, JobStep.MEDIA, JobStep.TRANSCRIPTION)
+    failed_record.queued_start_step = JobStep.MEDIA
+    failed_record.begin_step(JobStep.TRANSLATION, "test translation")
+    failed_record.fail_current(RuntimeError("translation failed"))
+    assert failed_record.to_summary().current_step == JobStep.TRANSLATION
+
+    interrupted = manager.create(JobCreateRequest(video_path=str(video)))
+    interrupted_record = manager._record(interrupted.id)
+    _mark_succeeded(interrupted_record, JobStep.MEDIA, JobStep.TRANSCRIPTION)
+    interrupted_record.queued_start_step = JobStep.MEDIA
+    interrupted_record.begin_step(JobStep.TRANSLATION, "test translation")
+    interrupted_record.mark_interrupted()
+    assert interrupted_record.to_summary().current_step == JobStep.TRANSLATION
+    assert interrupted_record.queued_start_step == JobStep.TRANSLATION
     await manager.shutdown()
 
 
