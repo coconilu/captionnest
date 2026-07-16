@@ -93,6 +93,14 @@ class CountingASR(ASRProvider):
         )
 
 
+class TokenBudgetRejectingASR(ASRProvider):
+    def transcribe(self, audio_path, *, language, settings, on_progress=None):  # type: ignore[no-untyped-def]
+        raise ValueError(
+            "提示词经当前语音模型分词后为 549 个 Token，"
+            "超过 223 个 Token 的模型上限；请减少提示词条数或缩短内容后重试"
+        )
+
+
 class CountingTranslator(TranslationProvider):
     def __init__(self) -> None:
         self.calls = 0
@@ -120,7 +128,7 @@ class CountingTranslator(TranslationProvider):
 def _pipeline(
     tmp_path: Path,
     *,
-    asr: CountingASR,
+    asr: ASRProvider,
 ) -> tuple[JobStore, ProcessingPipeline]:
     store = JobStore(tmp_path / "jobs")
     return store, ProcessingPipeline(store.root, asr_factory=lambda: asr, job_store=store)
@@ -511,8 +519,44 @@ def test_transcription_logs_and_diagnostics_only_expose_hotword_count(
     persisted_diagnostics = store.read_artifact(Path(artifact.path))
     assert private_hotword not in log_payload
     assert private_hotword not in json.dumps(persisted_diagnostics, ensure_ascii=False)
+    assert any("已配置 2 个提示词" in item.message for item in record.logs)
     assert any("已使用 2 个提示词" in item.message for item in record.logs)
     assert artifact.summary["hotword_count"] == 2
+
+
+def test_hotword_token_budget_failure_log_does_not_expose_content(
+    tmp_path: Path,
+) -> None:
+    private_hotword = "DO-NOT-LEAK-HOTWORD"
+    video = tmp_path / "hotword-over-budget.mp4"
+    video.write_bytes(b"fake video")
+    store, pipeline = _pipeline(tmp_path, asr=TokenBudgetRejectingASR())
+    manager = JobManager(None, pipeline, job_store=store)
+
+    async def scenario() -> str:
+        created = manager.create(
+            JobCreateRequest(
+                video_path=str(video),
+                asr={"hotwords": [private_hotword, "初音未来"]},
+            )
+        )
+        manager.run(created.id)
+        await _wait_for_job(manager, created.id)
+        return created.id
+
+    job_id = asyncio.run(scenario())
+    view = manager.get(job_id)
+    log_payload = json.dumps(
+        [item.model_dump(mode="json") for item in view.logs],
+        ensure_ascii=False,
+    )
+
+    assert view.status == "failed"
+    assert view.steps[1].status == "failed"
+    assert private_hotword not in log_payload
+    assert "已配置 2 个提示词" in log_payload
+    assert "已使用 2 个提示词" not in log_payload
+    assert "超过 223 个 Token 的模型上限" in (view.error or "")
 
 
 def test_job_request_exposes_only_target_language() -> None:

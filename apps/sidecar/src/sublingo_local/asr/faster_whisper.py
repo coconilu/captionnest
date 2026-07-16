@@ -66,6 +66,31 @@ def _serialize_hotwords(hotwords: Sequence[str]) -> str | None:
     return serialized or None
 
 
+def _validate_hotword_token_budget(
+    model: Any,
+    serialized_hotwords: str | None,
+) -> int:
+    """Reject prompts that Faster-Whisper would otherwise silently truncate."""
+    if serialized_hotwords is None:
+        return 0
+
+    # Faster-Whisper's Tokenizer.encode delegates to this exact tokenizer call.
+    # Its get_prompt keeps at most max_length // 2 - 1 hotword tokens.
+    encoding = model.hf_tokenizer.encode(
+        " " + serialized_hotwords.strip(),
+        add_special_tokens=False,
+    )
+    token_count = len(encoding.ids)
+    token_budget = max(0, int(model.max_length) // 2 - 1)
+    if token_count > token_budget:
+        raise ValueError(
+            f"提示词经当前语音模型分词后为 {token_count} 个 Token，"
+            f"超过 {token_budget} 个 Token 的模型上限；"
+            "请减少提示词条数或缩短内容后重试"
+        )
+    return token_count
+
+
 @dataclass(frozen=True)
 class _ChunkWindow:
     index: int
@@ -1048,6 +1073,8 @@ class FasterWhisperProvider(ASRProvider):
         audio: Any | None = None
         try:
             model = WhisperModel(model_reference, device=device, compute_type=compute_type)
+            serialized_hotwords = _serialize_hotwords(settings.hotwords)
+            _validate_hotword_token_budget(model, serialized_hotwords)
             audio = decode_audio(str(audio_path), sampling_rate=_SAMPLE_RATE)
             duration = len(audio) / _SAMPLE_RATE
             fixed_windows = _chunk_windows(len(audio))
@@ -1101,7 +1128,6 @@ class FasterWhisperProvider(ASRProvider):
             if on_progress:
                 on_progress(0.08)
 
-            serialized_hotwords = _serialize_hotwords(settings.hotwords)
             candidates: list[_ChunkSegment] = []
             candidate_diagnostics: list[ASRSegmentDiagnostics] = []
             window_candidate_counts = [0 for _ in windows]

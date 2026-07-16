@@ -626,7 +626,16 @@ class ProcessingPipeline:
         for step in selected:
             self._require_prerequisites(record, step)
             artifact = await self._run_step(record, step, api_key=api_key)
-            record.complete_step(step, artifact, f"{_step_label(step)}完成")
+            completion_message = f"{_step_label(step)}完成"
+            if (
+                step == JobStep.TRANSCRIPTION
+                and isinstance(record.asr, ASRSettings)
+                and record.asr.hotwords
+            ):
+                completion_message += (
+                    f"，已使用 {len(record.asr.hotwords)} 个提示词"
+                )
+            record.complete_step(step, artifact, completion_message)
         if all(
             record.steps[step].status == StepStatus.SUCCEEDED
             for step in STEP_ORDER
@@ -730,7 +739,7 @@ class ProcessingPipeline:
             else "，仅单次识别"
         )
         hotword_label = (
-            f"，已使用 {len(record.asr.hotwords)} 个提示词"
+            f"，已配置 {len(record.asr.hotwords)} 个提示词"
             if record.asr.hotwords
             else ""
         )
