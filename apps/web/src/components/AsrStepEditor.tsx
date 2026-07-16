@@ -1,3 +1,4 @@
+import { AlertCircle } from 'lucide-react'
 import { useState } from 'react'
 
 import type { AsrModel, AsrStepConfig } from '../types/api'
@@ -18,15 +19,17 @@ export function AsrStepEditor({
   onSave,
 }: AsrStepEditorProps) {
   const [draft, setDraft] = useState(value)
+  const legacy = draft.provider === 'qwen3_asr'
   const useCuda = draft.device === 'cuda' && cudaAvailable
 
   const selectModel = (model: AsrModel) => {
-    const qwen = model === 'qwen3-asr-1.7b'
     setDraft((current) => ({
       ...current,
       model,
-      provider: qwen ? 'qwen3_asr' : 'faster_whisper',
-      output_mode: qwen ? 'word_resegmented' : current.output_mode,
+      provider: 'faster_whisper',
+      device: current.device === 'cuda' && cudaAvailable ? 'cuda' : 'cpu',
+      compute_type:
+        current.device === 'cuda' && cudaAvailable ? current.compute_type : 'int8',
     }))
   }
 
@@ -49,16 +52,22 @@ export function AsrStepEditor({
           <option value="medium">medium · CPU 均衡</option>
           <option value="large-v3-turbo">large-v3-turbo · 速度优先</option>
           <option value="large-v3">large-v3 · 精度优先</option>
-          {draft.model === 'qwen3-asr-1.7b' ? (
+          {legacy ? (
             <option value="qwen3-asr-1.7b" disabled>Qwen3-ASR-1.7B · 兼容任务</option>
           ) : null}
         </select>
       </label>
+      {legacy ? (
+        <div className="pipeline-step-error" role="alert">
+          <AlertCircle size={15} />
+          <span>Qwen3-ASR 已停用。请选择上方任一 Faster-Whisper 模型后保存。</span>
+        </div>
+      ) : null}
       <label className="field">
         <span>字幕切分</span>
         <select
           value={draft.output_mode}
-          disabled={saving || draft.provider === 'qwen3_asr'}
+          disabled={saving || legacy}
           onChange={(event) => setDraft((current) => ({
             ...current,
             output_mode: event.target.value as AsrStepConfig['output_mode'],
@@ -76,7 +85,7 @@ export function AsrStepEditor({
         <input
           type="checkbox"
           checked={useCuda}
-          disabled={saving || !cudaAvailable}
+          disabled={saving || legacy || !cudaAvailable}
           onChange={(event) => setDraft((current) => ({
             ...current,
             device: event.target.checked ? 'cuda' : 'cpu',
@@ -93,7 +102,7 @@ export function AsrStepEditor({
         <input
           type="checkbox"
           checked={draft.vad_filter}
-          disabled={saving}
+          disabled={saving || legacy}
           onChange={(event) => setDraft((current) => ({
             ...current,
             vad_filter: event.target.checked,
@@ -108,7 +117,7 @@ export function AsrStepEditor({
           min={1}
           max={20}
           value={draft.beam_size}
-          disabled={saving}
+          disabled={saving || legacy}
           onChange={(event) => setDraft((current) => ({
             ...current,
             beam_size: Math.max(1, Math.min(20, Number(event.target.value) || 1)),
@@ -117,7 +126,7 @@ export function AsrStepEditor({
       </label>
       <div className="pipeline-editor-actions">
         <button type="button" onClick={onCancel} disabled={saving}>取消</button>
-        <button type="submit" className="button-primary" disabled={saving}>
+        <button type="submit" className="button-primary" disabled={saving || legacy}>
           {saving ? '保存中…' : '保存识别配置'}
         </button>
       </div>

@@ -173,12 +173,3 @@ def test_provider_votes_across_video_then_transcribes_each_core(
 
 def test_output_mode_defaults_to_word_resegmentation() -> None:
     assert ASRSettings().output_mode == ASROutputMode.WORD_RESEGMENTED
-
-
-def test_qwen_compatibility_rejects_chunk_segment_mode() -> None:
-    with pytest.raises(ValueError, match="只支持逐词重排"):
-        ASRSettings(
-            provider="qwen3_asr",
-            model="qwen3-asr-1.7b",
-            output_mode="chunk_segments",
-        )

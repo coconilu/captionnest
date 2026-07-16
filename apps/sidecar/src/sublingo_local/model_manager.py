@@ -26,16 +26,6 @@ _WHISPER_ALLOW_PATTERNS = (
     "vocabulary.*",
 )
 _WHISPER_REQUIRED_FILES = ("config.json", "model.bin", "tokenizer.json")
-_QWEN_ALLOW_PATTERNS = ("*.json", "*.txt", "*.safetensors")
-
-
-@dataclass(frozen=True)
-class ModelArtifactSpec:
-    name: str
-    repo_id: str
-    revision: str
-    allow_patterns: tuple[str, ...]
-    required_files: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -46,7 +36,6 @@ class ModelSpec:
     recommended_for: Literal["cpu", "cuda", "quality"]
     revision: str
     provider: ASRProviderName = ASRProviderName.FASTER_WHISPER
-    artifacts: tuple[ModelArtifactSpec, ...] = ()
 
 
 MODEL_SPECS: tuple[ModelSpec, ...] = (
@@ -78,52 +67,11 @@ MODEL_SPECS: tuple[ModelSpec, ...] = (
         recommended_for="quality",
         revision="edaa852ec7e145841d8ffdb056a99866b5f0a478",
     ),
-    ModelSpec(
-        id="qwen3-asr-1.7b",
-        label="Qwen3-ASR-1.7B + ForcedAligner · 实验兼容",
-        repo_id="Qwen/Qwen3-ASR-1.7B",
-        recommended_for="quality",
-        revision="7278e1e70fe206f11671096ffdd38061171dd6e5",
-        provider=ASRProviderName.QWEN3_ASR,
-        artifacts=(
-            ModelArtifactSpec(
-                name="asr",
-                repo_id="Qwen/Qwen3-ASR-1.7B",
-                revision="7278e1e70fe206f11671096ffdd38061171dd6e5",
-                allow_patterns=_QWEN_ALLOW_PATTERNS,
-                required_files=(
-                    "config.json",
-                    "model-00001-of-00002.safetensors",
-                    "model-00002-of-00002.safetensors",
-                    "model.safetensors.index.json",
-                    "preprocessor_config.json",
-                    "tokenizer_config.json",
-                    "merges.txt",
-                    "vocab.json",
-                ),
-            ),
-            ModelArtifactSpec(
-                name="aligner",
-                repo_id="Qwen/Qwen3-ForcedAligner-0.6B",
-                revision="c7cbfc2048c462b0d63a45797104fc9db3ad62b7",
-                allow_patterns=_QWEN_ALLOW_PATTERNS,
-                required_files=(
-                    "config.json",
-                    "model.safetensors",
-                    "preprocessor_config.json",
-                    "tokenizer_config.json",
-                    "merges.txt",
-                    "vocab.json",
-                ),
-            ),
-        ),
-    ),
 )
 
 _MANIFEST_FILENAME = ".captionnest-model-manifest.json"
 _LEGACY_MANIFEST_FILENAME = ".sublingo-model-manifest.json"
 _MANIFEST_VERSION = 1
-_BUNDLE_MANIFEST_VERSION = 2
 _HASH_CHUNK_SIZE = 1024 * 1024
 
 
@@ -177,13 +125,6 @@ class ModelManager:
         if not self._is_valid_model(path, spec):
             raise RuntimeError(f"尚未下载识别模型 {model_id}，请先在环境面板中下载")
         return path
-
-    def resolve_installed_components(self, model_id: str) -> dict[str, Path]:
-        spec = self._require_spec(model_id)
-        root = self.resolve_installed_path(model_id)
-        if not spec.artifacts:
-            return {"model": root}
-        return {artifact.name: root / artifact.name for artifact in spec.artifacts}
 
     def list(self) -> ModelListView:
         return ModelListView(
@@ -300,27 +241,11 @@ class ModelManager:
             from huggingface_hub import HfApi, snapshot_download
 
             api = HfApi()
-            if spec.artifacts:
-                infos = {
-                    artifact.name: api.model_info(
-                        artifact.repo_id,
-                        revision=artifact.revision,
-                        files_metadata=True,
-                    )
-                    for artifact in spec.artifacts
-                }
-                manifest = self._build_bundle_manifest(spec, infos)
-                state.expected_bytes = sum(
-                    int(metadata["size"])
-                    for artifact_manifest in manifest["artifacts"].values()
-                    for metadata in artifact_manifest["files"].values()
-                )
-            else:
-                info = api.model_info(spec.repo_id, revision=spec.revision, files_metadata=True)
-                manifest = self._build_manifest(spec, info)
-                state.expected_bytes = sum(
-                    int(metadata["size"]) for metadata in manifest["files"].values()
-                )
+            info = api.model_info(spec.repo_id, revision=spec.revision, files_metadata=True)
+            manifest = self._build_manifest(spec, info)
+            state.expected_bytes = sum(
+                int(metadata["size"]) for metadata in manifest["files"].values()
+            )
             if state.expected_bytes:
                 required = round(state.expected_bytes * 1.15)
                 if shutil.disk_usage(self.root).free < required:
@@ -329,35 +254,18 @@ class ModelManager:
             # Keep this revision-scoped staging directory after transport failures so
             # Hugging Face Hub can resume its .incomplete files on the next attempt.
             temporary.mkdir(parents=True, exist_ok=True)
-            if spec.artifacts:
-                for artifact in spec.artifacts:
-                    snapshot_download(
-                        repo_id=artifact.repo_id,
-                        revision=artifact.revision,
-                        local_dir=temporary / artifact.name,
-                        allow_patterns=list(artifact.allow_patterns),
-                    )
-                try:
-                    self._verify_bundle_model(temporary, spec, manifest, verify_hashes=True)
-                except RuntimeError:
-                    cleanup_partial = not self._bundle_download_is_incomplete(
-                        temporary, spec, manifest
-                    )
-                    raise
-                cleanup_partial = True
-            else:
-                snapshot_download(
-                    repo_id=spec.repo_id,
-                    revision=spec.revision,
-                    local_dir=temporary,
-                    allow_patterns=list(_WHISPER_ALLOW_PATTERNS),
-                )
-                try:
-                    self._verify_model_files(temporary, spec, manifest, verify_hashes=True)
-                except RuntimeError:
-                    cleanup_partial = not self._download_is_incomplete(temporary, manifest)
-                    raise
-                cleanup_partial = True
+            snapshot_download(
+                repo_id=spec.repo_id,
+                revision=spec.revision,
+                local_dir=temporary,
+                allow_patterns=list(_WHISPER_ALLOW_PATTERNS),
+            )
+            try:
+                self._verify_model_files(temporary, spec, manifest, verify_hashes=True)
+            except RuntimeError:
+                cleanup_partial = not self._download_is_incomplete(temporary, manifest)
+                raise
+            cleanup_partial = True
             self._write_manifest(temporary, manifest)
 
             if destination.exists():
@@ -458,88 +366,6 @@ class ModelManager:
         }
 
     @classmethod
-    def _build_bundle_manifest(
-        cls,
-        spec: ModelSpec,
-        infos: dict[str, object],
-    ) -> dict[str, object]:
-        artifacts: dict[str, dict[str, object]] = {}
-        for artifact in spec.artifacts:
-            info = infos.get(artifact.name)
-            if info is None:
-                raise RuntimeError(f"模型元数据缺少组件：{artifact.name}")
-            resolved_revision = str(getattr(info, "sha", "") or "")
-            if resolved_revision != artifact.revision:
-                raise RuntimeError(f"模型组件 {artifact.name} 的提交与固定版本不一致")
-            files = cls._collect_manifest_files(
-                info,
-                allow_patterns=artifact.allow_patterns,
-                required_files=artifact.required_files,
-            )
-            artifacts[artifact.name] = {
-                "repo_id": artifact.repo_id,
-                "revision": artifact.revision,
-                "files": files,
-            }
-        return {
-            "manifest_version": _BUNDLE_MANIFEST_VERSION,
-            "model_id": spec.id,
-            "artifacts": artifacts,
-        }
-
-    @classmethod
-    def _collect_manifest_files(
-        cls,
-        info: object,
-        *,
-        allow_patterns: tuple[str, ...],
-        required_files: tuple[str, ...],
-    ) -> dict[str, dict[str, object]]:
-        files: dict[str, dict[str, object]] = {}
-        for sibling in getattr(info, "siblings", ()) or ():
-            raw_name = getattr(sibling, "rfilename", None)
-            if not isinstance(raw_name, str) or not any(
-                fnmatch.fnmatch(raw_name, pattern) for pattern in allow_patterns
-            ):
-                continue
-            name = cls._validated_relative_name(raw_name)
-            if name in files:
-                raise RuntimeError(f"模型元数据包含重复文件：{name}")
-
-            declared_size = getattr(sibling, "size", None)
-            lfs = getattr(sibling, "lfs", None)
-            lfs_size = getattr(lfs, "size", None) if lfs is not None else None
-            if (
-                declared_size is not None
-                and lfs_size is not None
-                and int(declared_size) != int(lfs_size)
-            ):
-                raise RuntimeError(f"模型元数据文件大小不一致：{name}")
-            size_value = lfs_size if lfs_size is not None else declared_size
-            try:
-                size = int(size_value)
-            except (TypeError, ValueError) as exc:
-                raise RuntimeError(f"模型元数据缺少文件大小：{name}") from exc
-            if size <= 0:
-                raise RuntimeError(f"模型元数据文件大小无效：{name}")
-
-            metadata: dict[str, object] = {"size": size}
-            raw_sha256 = getattr(lfs, "sha256", None) if lfs is not None else None
-            if raw_sha256:
-                sha256 = str(raw_sha256).strip().lower()
-                if len(sha256) != 64 or any(
-                    character not in "0123456789abcdef" for character in sha256
-                ):
-                    raise RuntimeError(f"模型元数据 SHA-256 无效：{name}")
-                metadata["sha256"] = sha256
-            files[name] = metadata
-
-        missing = sorted(set(required_files) - set(files))
-        if missing:
-            raise RuntimeError(f"模型元数据缺少必需文件：{', '.join(missing)}")
-        return files
-
-    @classmethod
     def _verify_model_files(
         cls,
         path: Path,
@@ -561,54 +387,6 @@ class ModelManager:
             required_files=_WHISPER_REQUIRED_FILES,
             verify_hashes=verify_hashes,
         )
-
-    @classmethod
-    def _verify_bundle_model(
-        cls,
-        path: Path,
-        spec: ModelSpec,
-        manifest: dict[str, object],
-        *,
-        verify_hashes: bool,
-    ) -> None:
-        if manifest.get("manifest_version") != _BUNDLE_MANIFEST_VERSION:
-            raise RuntimeError("组合模型清单版本不受支持")
-        if manifest.get("model_id") != spec.id:
-            raise RuntimeError("组合模型清单与所选模型不一致")
-        artifacts = manifest.get("artifacts")
-        if not isinstance(artifacts, dict):
-            raise RuntimeError("组合模型清单缺少组件列表")
-
-        expected_names = {artifact.name for artifact in spec.artifacts}
-        actual_names = set(artifacts)
-        if actual_names != expected_names:
-            missing = sorted(expected_names - actual_names)
-            extra = sorted(actual_names - expected_names)
-            details: list[str] = []
-            if missing:
-                details.append(f"缺少 {', '.join(missing)}")
-            if extra:
-                details.append(f"多出 {', '.join(extra)}")
-            raise RuntimeError(f"组合模型组件不一致：{'；'.join(details)}")
-
-        for artifact in spec.artifacts:
-            raw_manifest = artifacts.get(artifact.name)
-            if not isinstance(raw_manifest, dict):
-                raise RuntimeError(f"模型组件清单无效：{artifact.name}")
-            if (
-                raw_manifest.get("repo_id") != artifact.repo_id
-                or raw_manifest.get("revision") != artifact.revision
-            ):
-                raise RuntimeError(f"模型组件 {artifact.name} 与固定仓库版本不一致")
-            files = raw_manifest.get("files")
-            if not isinstance(files, dict):
-                raise RuntimeError(f"模型组件 {artifact.name} 缺少文件列表")
-            cls._verify_files(
-                path / artifact.name,
-                files,
-                required_files=artifact.required_files,
-                verify_hashes=verify_hashes,
-            )
 
     @classmethod
     def _verify_files(
@@ -657,27 +435,6 @@ class ModelManager:
                 actual_sha256 = cls._sha256(resolved)
                 if actual_sha256 != expected_sha256.lower():
                     raise RuntimeError(f"模型文件 SHA-256 校验失败：{name}")
-
-    @classmethod
-    def _bundle_download_is_incomplete(
-        cls,
-        path: Path,
-        spec: ModelSpec,
-        manifest: dict[str, object],
-    ) -> bool:
-        artifacts = manifest.get("artifacts")
-        if not isinstance(artifacts, dict):
-            return False
-        for artifact in spec.artifacts:
-            artifact_manifest = artifacts.get(artifact.name)
-            if not isinstance(artifact_manifest, dict):
-                return False
-            files = artifact_manifest.get("files")
-            if not isinstance(files, dict):
-                return False
-            if cls._download_is_incomplete(path / artifact.name, artifact_manifest):
-                return True
-        return False
 
     @classmethod
     def _download_is_incomplete(
@@ -753,11 +510,8 @@ class ModelManager:
             return False
         try:
             manifest = cls._read_manifest(path)
-            if spec.artifacts:
-                cls._verify_bundle_model(path, spec, manifest, verify_hashes=False)
-            else:
-                cls._verify_model_files(path, spec, manifest, verify_hashes=False)
-            if not spec.artifacts and not (path / _MANIFEST_FILENAME).is_file():
+            cls._verify_model_files(path, spec, manifest, verify_hashes=False)
+            if not (path / _MANIFEST_FILENAME).is_file():
                 with suppress(OSError):
                     cls._write_manifest(path, manifest)
             return True

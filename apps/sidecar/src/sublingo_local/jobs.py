@@ -13,14 +13,13 @@ from typing import Any
 
 from pydantic import BaseModel, SecretStr
 
-from .asr import ASRProvider, FasterWhisperProvider, Qwen3ASRProvider
+from .asr import ASRProvider, FasterWhisperProvider
 from .asr.base import TranscriptionResult
 from .job_store import JobStore
 from .media import ensure_supported_video
 from .model_manager import ModelManager
 from .models import (
     ASROutputMode,
-    ASRProviderName,
     ASRSettings,
     ExportSettings,
     JobCreateRequest,
@@ -30,6 +29,7 @@ from .models import (
     JobStep,
     JobStepView,
     JobView,
+    LegacyASRSettings,
     LogEntry,
     LogLevel,
     MediaStepSettings,
@@ -69,6 +69,9 @@ STEP_PROGRESS = {
     JobStep.TRANSLATION: (60, 94),
     JobStep.EXPORT: (94, 100),
 }
+LEGACY_ASR_UNAVAILABLE_MESSAGE = (
+    "Qwen3-ASR 已停用；历史任务仍可查看，请先在识别配置中改选 Faster-Whisper 模型"
+)
 
 
 def _language_key(language: str | TargetLanguage) -> str:
@@ -112,7 +115,7 @@ def _default_steps() -> dict[JobStep, JobStepView]:
 class JobRecord:
     id: str
     media: MediaStepSettings
-    asr: ASRSettings = field(default_factory=ASRSettings)
+    asr: ASRSettings | LegacyASRSettings = field(default_factory=ASRSettings)
     translation: TranslationStepSettings = field(default_factory=TranslationStepSettings)
     export: ExportSettings = field(default_factory=ExportSettings)
     status: JobStatus = JobStatus.DRAFT
@@ -364,6 +367,7 @@ class JobRecord:
     def to_view(self) -> JobView:
         with self._lock:
             active = self.status in {JobStatus.QUEUED, JobStatus.RUNNING}
+            legacy_asr = isinstance(self.asr, LegacyASRSettings)
             views: list[JobStepView] = []
             for index, step in enumerate(STEP_ORDER):
                 state = self.steps[step].model_copy(deep=True)
@@ -372,7 +376,10 @@ class JobRecord:
                     self.steps[item].status == StepStatus.SUCCEEDED
                     for item in STEP_ORDER[:index]
                 )
-                state.can_run = not active and prerequisites_ok
+                legacy_transcription = legacy_asr and step == JobStep.TRANSCRIPTION
+                state.can_run = not active and prerequisites_ok and not legacy_transcription
+                if legacy_transcription:
+                    state.error = LEGACY_ASR_UNAVAILABLE_MESSAGE
                 views.append(state)
             return JobView(
                 id=self.id,
@@ -421,10 +428,19 @@ class JobRecord:
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> JobRecord:
+        raw_asr = payload["asr"]
+        legacy_asr = (
+            isinstance(raw_asr, Mapping)
+            and raw_asr.get("provider") == "qwen3_asr"
+        )
         record = cls(
             id=str(payload["id"]),
             media=MediaStepSettings.model_validate(payload["media"]),
-            asr=ASRSettings.model_validate(payload["asr"]),
+            asr=(
+                LegacyASRSettings.model_validate(raw_asr)
+                if legacy_asr
+                else ASRSettings.model_validate(raw_asr)
+            ),
             translation=TranslationStepSettings.model_validate(payload["translation"]),
             export=ExportSettings.model_validate(payload.get("export", {})),
             status=JobStatus(payload.get("status", JobStatus.DRAFT)),
@@ -476,13 +492,9 @@ class ProcessingPipeline:
         self.model_manager = model_manager
         self.asr_factory = asr_factory
 
-    def _create_asr(self, provider: ASRProviderName) -> ASRProvider:
+    def _create_asr(self) -> ASRProvider:
         if self.asr_factory is not None:
             return self.asr_factory()
-        if provider == ASRProviderName.QWEN3_ASR:
-            if self.model_manager is None:
-                raise RuntimeError("Qwen3-ASR 需要应用模型管理器")
-            return Qwen3ASRProvider(self.model_manager)
         return FasterWhisperProvider(self.model_manager)
 
     async def run_from(
@@ -586,21 +598,19 @@ class ProcessingPipeline:
         )
 
     async def _transcribe(self, record: JobRecord) -> StepArtifactView:
+        if isinstance(record.asr, LegacyASRSettings):
+            raise ValueError(LEGACY_ASR_UNAVAILABLE_MESSAGE)
         output_mode_label = (
             "逐词重排"
             if record.asr.output_mode == ASROutputMode.WORD_RESEGMENTED
             else "分片原始段"
         )
         message = (
-            f"正在使用 Qwen3-ASR {record.asr.model} 识别并生成精确时间戳"
-            if record.asr.provider == ASRProviderName.QWEN3_ASR
-            else (
-                f"正在使用 Faster-Whisper {record.asr.model} 进行 60 秒分片识别"
-                f"（{output_mode_label}）"
-            )
+            f"正在使用 Faster-Whisper {record.asr.model} 进行 60 秒分片识别"
+            f"（{output_mode_label}）"
         )
         record.begin_step(JobStep.TRANSCRIPTION, message)
-        asr = self._create_asr(record.asr.provider)
+        asr = self._create_asr()
 
         def on_progress(value: float) -> None:
             record.update_step_progress(JobStep.TRANSCRIPTION, value)
@@ -885,6 +895,15 @@ class JobManager:
         if record.id in self._tasks or record.status in {JobStatus.QUEUED, JobStatus.RUNNING}:
             raise ValueError("任务正在运行")
         start_index = STEP_ORDER.index(start_step)
+        selected = (
+            STEP_ORDER[start_index:]
+            if request.continue_pipeline
+            else (start_step,)
+        )
+        if JobStep.TRANSCRIPTION in selected and isinstance(
+            record.asr, LegacyASRSettings
+        ):
+            raise ValueError(LEGACY_ASR_UNAVAILABLE_MESSAGE)
         missing = [
             step
             for step in STEP_ORDER[:start_index]
@@ -896,11 +915,6 @@ class JobManager:
             raise ValueError(f"请先完成上游步骤：{labels}")
 
         record.invalidate_from(start_step)
-        selected = (
-            STEP_ORDER[start_index:]
-            if request.continue_pipeline
-            else (start_step,)
-        )
         api_key = request.api_key.get_secret_value().strip() if request.api_key else None
         if (
             JobStep.TRANSLATION in selected

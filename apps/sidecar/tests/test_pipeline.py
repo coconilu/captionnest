@@ -250,6 +250,59 @@ def test_job_metadata_survives_reload_and_delete_cleans_artifacts(
         reloaded.get(job_id)
 
 
+def test_legacy_qwen_job_remains_visible_until_asr_config_is_migrated(
+    tmp_path: Path,
+) -> None:
+    video = tmp_path / "legacy.mp4"
+    video.write_bytes(b"fake video")
+    asr = CountingASR()
+    store, pipeline = _pipeline(tmp_path, asr=asr)
+    payload = JobRecord(
+        id="legacy-qwen-job",
+        media=MediaStepSettings(
+            source_kind=SourceKind.PATH,
+            path=str(video),
+            name=video.name,
+        ),
+    ).to_payload()
+    payload["asr"] = {
+        "provider": "qwen3_asr",
+        "model": "qwen3-asr-1.7b",
+        "device": "cuda",
+        "compute_type": "float16",
+        "vad_filter": True,
+        "beam_size": 5,
+        "output_mode": "word_resegmented",
+    }
+    store.save_job("legacy-qwen-job", payload)
+
+    manager = JobManager(None, pipeline, job_store=store)
+    view = manager.get("legacy-qwen-job")
+    transcription = view.steps[1]
+
+    assert view.asr_provider == "qwen3_asr"
+    assert transcription.config["model"] == "qwen3-asr-1.7b"
+    assert transcription.can_run is False
+    assert "Qwen3-ASR 已停用" in (transcription.error or "")
+    with pytest.raises(ValueError, match="Qwen3-ASR 已停用"):
+        manager.run_step("legacy-qwen-job", JobStep.TRANSCRIPTION)
+
+    migrated_config = dict(transcription.config)
+    migrated_config.update(provider="faster_whisper", model="small")
+    migrated = manager.update_step_config(
+        "legacy-qwen-job",
+        JobStep.TRANSCRIPTION,
+        migrated_config,
+    )
+
+    assert migrated.asr_provider == "faster_whisper"
+    assert migrated.steps[1].config["model"] == "small"
+    assert migrated.steps[1].error is None
+    assert "qwen3_asr" not in store.job_file("legacy-qwen-job").read_text(
+        encoding="utf-8"
+    )
+
+
 def test_job_request_exposes_only_target_language() -> None:
     request = JobCreateRequest(video_path="movie.mp4")
 

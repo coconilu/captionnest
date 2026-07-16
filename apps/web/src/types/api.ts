@@ -1,6 +1,10 @@
 export type TargetLanguage = 'zh-CN' | 'en' | 'ko'
-export type AsrProvider = 'faster_whisper' | 'qwen3_asr'
-export type AsrModel = 'small' | 'medium' | 'large-v3-turbo' | 'large-v3' | 'qwen3-asr-1.7b'
+export type AsrProvider = 'faster_whisper'
+export type AsrModel = 'small' | 'medium' | 'large-v3-turbo' | 'large-v3'
+export type LegacyAsrProvider = 'qwen3_asr'
+export type LegacyAsrModel = 'qwen3-asr-1.7b'
+export type JobAsrProvider = AsrProvider | LegacyAsrProvider
+export type JobAsrModel = AsrModel | LegacyAsrModel
 export type AsrOutputMode = 'chunk_segments' | 'word_resegmented'
 export type TranslationProvider = 'codex_spark' | 'lmstudio' | 'deepseek'
 export type JobStatus = 'draft' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
@@ -23,8 +27,8 @@ export interface MediaStepConfig {
 }
 
 export interface AsrStepConfig {
-  provider: AsrProvider
-  model: AsrModel
+  provider: JobAsrProvider
+  model: JobAsrModel
   device: 'auto' | 'cuda' | 'cpu'
   compute_type: string
   vad_filter: boolean
@@ -108,7 +112,7 @@ export interface JobView {
   source_kind: 'path' | 'upload'
   detected_language: string | null
   target_language: TargetLanguage
-  asr_provider: AsrProvider
+  asr_provider: JobAsrProvider
   translation_provider: TranslationProvider
   created_at: string
   updated_at: string
