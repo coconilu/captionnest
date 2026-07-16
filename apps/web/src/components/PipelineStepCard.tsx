@@ -3,6 +3,7 @@ import {
   Check,
   Clock3,
   FileOutput,
+  History,
   LoaderCircle,
   Pencil,
   Play,
@@ -11,7 +12,9 @@ import {
 } from 'lucide-react'
 import type { ReactNode } from 'react'
 
+import { formatDateTime, formatDuration } from '../lib/format'
 import type { JobStepView } from '../types/api'
+import { ModelUsagePanel } from './ModelUsagePanel'
 
 const STATUS_LABELS = {
   pending: '等待中',
@@ -57,6 +60,7 @@ export function PipelineStepCard({
   onReplaceMedia,
 }: PipelineStepCardProps) {
   const canConfigure = step.status !== 'running' && !disabled
+  const latestAttempt = step.attempts.at(-1)
   const runLabel = step.status === 'failed'
     ? '从此步骤重试'
     : step.status === 'succeeded'
@@ -81,7 +85,74 @@ export function PipelineStepCard({
         <div className="pipeline-attempt-meta">
           <span>配置 v{step.config_revision}</span>
           <span>执行 {step.attempts.length} 次</span>
+          <span>
+            最近 {latestAttempt?.status === 'running'
+              ? '计时中'
+              : formatDuration(step.latest_duration_ms)}
+          </span>
+          <span>累计 {formatDuration(step.total_duration_ms)}</span>
         </div>
+        {latestAttempt ? (
+          <section className="pipeline-latest-attempt" aria-label="最近一次执行指标">
+            <header>
+              <strong>最近 Attempt #{latestAttempt.number}</strong>
+              <span>{STATUS_LABELS[latestAttempt.status]}</span>
+            </header>
+            <dl>
+              <div><dt>开始</dt><dd>{formatDateTime(latestAttempt.started_at)}</dd></div>
+              <div><dt>结束</dt><dd>{formatDateTime(latestAttempt.finished_at)}</dd></div>
+              <div>
+                <dt>本次耗时</dt>
+                <dd>
+                  {latestAttempt.status === 'running'
+                    ? '计时中'
+                    : formatDuration(latestAttempt.duration_ms)}
+                </dd>
+              </div>
+            </dl>
+          </section>
+        ) : null}
+        {latestAttempt?.model_usage ? (
+          <ModelUsagePanel
+            usage={latestAttempt.model_usage}
+            title="最近 Attempt 模型用量"
+          />
+        ) : null}
+        {step.total_model_usage && step.attempts.length > 1 ? (
+          <ModelUsagePanel usage={step.total_model_usage} title="历史累计模型用量" />
+        ) : null}
+        {step.attempts.length > 0 ? (
+          <details className="pipeline-attempt-history">
+            <summary>
+              <History size={13} aria-hidden="true" />
+              查看 Attempt 历史（{step.attempts.length}）
+            </summary>
+            <div className="pipeline-attempt-history-list">
+              {[...step.attempts].reverse().map((attempt) => (
+                <article key={attempt.number}>
+                  <header>
+                    <strong>Attempt #{attempt.number}</strong>
+                    <span className={`is-${attempt.status}`}>
+                      {STATUS_LABELS[attempt.status]}
+                    </span>
+                  </header>
+                  <p>
+                    {formatDateTime(attempt.started_at)} → {formatDateTime(attempt.finished_at)}
+                  </p>
+                  <p>
+                    耗时：{attempt.status === 'running'
+                      ? '计时中'
+                      : formatDuration(attempt.duration_ms)}
+                  </p>
+                  {attempt.model_usage ? (
+                    <ModelUsagePanel usage={attempt.model_usage} title="本次模型用量" compact />
+                  ) : null}
+                  {attempt.error ? <p className="is-error">{attempt.error}</p> : null}
+                </article>
+              ))}
+            </div>
+          </details>
+        ) : null}
         {artifactSummary ? (
           <div className="pipeline-artifact-summary">
             {step.id === 'media' ? <Video size={15} /> : <FileOutput size={15} />}

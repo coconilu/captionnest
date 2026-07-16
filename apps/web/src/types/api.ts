@@ -83,12 +83,27 @@ export interface StepArtifact {
   summary: Record<string, unknown>
 }
 
+export interface ModelUsageSummary {
+  provider: string
+  model: string | null
+  request_count: number
+  input_tokens: number | null
+  output_tokens: number | null
+  total_tokens: number | null
+  cached_input_tokens: number | null
+  reasoning_tokens: number | null
+  source: 'provider' | 'cli' | 'unavailable' | 'mixed'
+  complete: boolean
+}
+
 export interface StepAttempt {
   number: number
   status: StepStatus
   config: Record<string, unknown>
   started_at: string
   finished_at: string | null
+  duration_ms: number | null
+  model_usage: ModelUsageSummary | null
   artifact_id: string | null
   error: string | null
 }
@@ -103,6 +118,9 @@ export interface JobStepView {
   artifact: StepArtifact | null
   error: string | null
   can_run: boolean
+  latest_duration_ms: number | null
+  total_duration_ms: number | null
+  total_model_usage: ModelUsageSummary | null
 }
 
 export interface JobView {
@@ -122,6 +140,9 @@ export interface JobView {
   error: string | null
   logs: JobLog[]
   steps: JobStepView[]
+  wall_duration_ms: number | null
+  cumulative_attempt_duration_ms: number | null
+  total_model_usage: ModelUsageSummary | null
 }
 
 export interface BackendHealth {

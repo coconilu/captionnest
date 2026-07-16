@@ -5,7 +5,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
 
 def utc_now() -> datetime:
@@ -255,6 +255,67 @@ class TranslatedItem(BaseModel):
     translated_text: str
 
 
+class ModelUsageSummary(BaseModel):
+    provider: str
+    model: str | None = None
+    request_count: int = Field(ge=1)
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    total_tokens: int | None = Field(default=None, ge=0)
+    cached_input_tokens: int | None = Field(default=None, ge=0)
+    reasoning_tokens: int | None = Field(default=None, ge=0)
+    source: Literal["provider", "cli", "unavailable", "mixed"]
+    complete: bool
+
+    @field_validator("provider")
+    @classmethod
+    def non_empty_provider(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Provider 不能为空")
+        return value
+
+    @field_validator("model", mode="before")
+    @classmethod
+    def strip_optional_model(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
+
+def merge_model_usage(
+    summaries: list[ModelUsageSummary],
+) -> ModelUsageSummary | None:
+    """Merge reported values without turning unknown usage into zero."""
+    if not summaries:
+        return None
+
+    def common_or_none(values: set[str | None]) -> str | None:
+        return next(iter(values)) if len(values) == 1 else None
+
+    def sum_reported(field_name: str) -> int | None:
+        values = [getattr(item, field_name) for item in summaries]
+        reported = [value for value in values if value is not None]
+        return sum(reported) if reported else None
+
+    providers = {item.provider for item in summaries}
+    sources = {item.source for item in summaries}
+    provider = next(iter(providers)) if len(providers) == 1 else "multiple"
+    source = next(iter(sources)) if len(sources) == 1 else "mixed"
+    return ModelUsageSummary(
+        provider=provider,
+        model=common_or_none({item.model for item in summaries}),
+        request_count=sum(item.request_count for item in summaries),
+        input_tokens=sum_reported("input_tokens"),
+        output_tokens=sum_reported("output_tokens"),
+        total_tokens=sum_reported("total_tokens"),
+        cached_input_tokens=sum_reported("cached_input_tokens"),
+        reasoning_tokens=sum_reported("reasoning_tokens"),
+        source=source,
+        complete=all(item.complete for item in summaries),
+    )
+
+
 class LogEntry(BaseModel):
     timestamp: datetime = Field(default_factory=utc_now)
     level: LogLevel = LogLevel.INFO
@@ -273,16 +334,22 @@ class StepArtifactView(BaseModel):
 
 
 class StepAttemptView(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     number: int = Field(ge=1)
     status: StepStatus
     config: dict[str, Any]
     started_at: datetime = Field(default_factory=utc_now)
     finished_at: datetime | None = None
+    duration_ms: int | None = Field(default=None, ge=0)
+    model_usage: ModelUsageSummary | None = None
     artifact_id: str | None = None
     error: str | None = None
 
 
 class JobStepView(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     id: JobStep
     status: StepStatus
     progress: int = Field(default=0, ge=0, le=100)
@@ -292,9 +359,14 @@ class JobStepView(BaseModel):
     artifact: StepArtifactView | None = None
     error: str | None = None
     can_run: bool = False
+    latest_duration_ms: int | None = Field(default=None, ge=0)
+    total_duration_ms: int | None = Field(default=None, ge=0)
+    total_model_usage: ModelUsageSummary | None = None
 
 
 class JobView(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     id: str
     status: JobStatus
     stage: JobStage
@@ -311,6 +383,9 @@ class JobView(BaseModel):
     error: str | None = None
     logs: list[LogEntry] = Field(default_factory=list)
     steps: list[JobStepView] = Field(default_factory=list)
+    wall_duration_ms: int | None = Field(default=None, ge=0)
+    cumulative_attempt_duration_ms: int | None = Field(default=None, ge=0)
+    total_model_usage: ModelUsageSummary | None = None
 
 
 class JobRunRequest(BaseModel):

@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from collections import Counter
 from collections.abc import Callable, Sequence
 
-from ..models import TargetLanguage, TranslatedItem, TranslationItem
+from ..models import ModelUsageSummary, TargetLanguage, TranslatedItem, TranslationItem
 from ..subtitles import (
     SubtitleIntegrityError,
     chunk_translation_items,
@@ -13,6 +13,21 @@ from ..subtitles import (
 
 TranslationProgress = Callable[[int, int], None]
 TranslationRecovery = Callable[[str], None]
+ModelUsageCallback = Callable[[ModelUsageSummary], None]
+
+
+def emit_model_usage(
+    callback: ModelUsageCallback | None,
+    usage: ModelUsageSummary,
+) -> None:
+    """Usage telemetry is best-effort and must never break subtitle translation."""
+    if callback is None:
+        return
+    try:
+        callback(usage)
+    except Exception:
+        # Persistence/telemetry failures are intentionally isolated from translation.
+        return
 
 
 def _canonicalize_translation_result(
@@ -56,6 +71,7 @@ class TranslationProvider(ABC):
         *,
         source_language: str,
         target_language: TargetLanguage,
+        on_usage: ModelUsageCallback | None = None,
     ) -> list[TranslatedItem]:
         """Translate one stable-ID batch without changing item order."""
 
@@ -80,6 +96,7 @@ class TranslationService:
         target_language: TargetLanguage,
         on_progress: TranslationProgress | None = None,
         on_recovery: TranslationRecovery | None = None,
+        on_usage: ModelUsageCallback | None = None,
     ) -> list[TranslatedItem]:
         chunks = chunk_translation_items(
             items, max_items=self._max_items, max_chars=self._max_chars
@@ -91,6 +108,7 @@ class TranslationService:
                 source_language=source_language,
                 target_language=target_language,
                 on_recovery=on_recovery,
+                on_usage=on_usage,
             )
             translated.extend(result)
             if on_progress:
@@ -105,11 +123,13 @@ class TranslationService:
         source_language: str,
         target_language: TargetLanguage,
         on_recovery: TranslationRecovery | None,
+        on_usage: ModelUsageCallback | None,
     ) -> list[TranslatedItem]:
         result = await self._provider.translate(
             chunk,
             source_language=source_language,
             target_language=target_language,
+            on_usage=on_usage,
         )
         try:
             canonical, recovery_note = _canonicalize_translation_result(chunk, result)
@@ -126,12 +146,14 @@ class TranslationService:
                 source_language=source_language,
                 target_language=target_language,
                 on_recovery=on_recovery,
+                on_usage=on_usage,
             )
             right = await self._translate_chunk(
                 chunk[midpoint:],
                 source_language=source_language,
                 target_language=target_language,
                 on_recovery=on_recovery,
+                on_usage=on_usage,
             )
             combined = [*left, *right]
             validate_translation_integrity(chunk, combined)

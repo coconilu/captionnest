@@ -7,7 +7,13 @@ from pathlib import Path
 import httpx
 import pytest
 
-from sublingo_local.models import TargetLanguage, TranslatedItem, TranslationItem
+from sublingo_local.models import (
+    ModelUsageSummary,
+    TargetLanguage,
+    TranslatedItem,
+    TranslationItem,
+    merge_model_usage,
+)
 from sublingo_local.subtitles import SubtitleIntegrityError
 from sublingo_local.translation.base import TranslationProvider, TranslationService
 from sublingo_local.translation.codex import CodexSparkProvider
@@ -20,7 +26,7 @@ from sublingo_local.translation.openai_compatible import (
 
 class EchoProvider(TranslationProvider):
     async def translate(  # type: ignore[no-untyped-def]
-        self, items, *, source_language, target_language
+        self, items, *, source_language, target_language, on_usage=None
     ):
         assert source_language == "en"
         assert target_language == TargetLanguage.ZH_CN
@@ -29,14 +35,14 @@ class EchoProvider(TranslationProvider):
 
 class MissingProvider(TranslationProvider):
     async def translate(  # type: ignore[no-untyped-def]
-        self, items, *, source_language, target_language
+        self, items, *, source_language, target_language, on_usage=None
     ):
         return []
 
 
 class ExtraAndReorderedProvider(TranslationProvider):
     async def translate(  # type: ignore[no-untyped-def]
-        self, items, *, source_language, target_language
+        self, items, *, source_language, target_language, on_usage=None
     ):
         translated = [
             TranslatedItem(id=item.id, translated_text=f"中:{item.text}")
@@ -51,9 +57,22 @@ class SplitRequiredProvider(TranslationProvider):
         self.batch_sizes: list[int] = []
 
     async def translate(  # type: ignore[no-untyped-def]
-        self, items, *, source_language, target_language
+        self, items, *, source_language, target_language, on_usage=None
     ):
         self.batch_sizes.append(len(items))
+        if on_usage:
+            on_usage(
+                ModelUsageSummary(
+                    provider="test",
+                    model="split-model",
+                    request_count=1,
+                    input_tokens=len(items),
+                    output_tokens=1,
+                    total_tokens=len(items) + 1,
+                    source="provider",
+                    complete=True,
+                )
+            )
         translated = [
             TranslatedItem(id=item.id, translated_text=f"中:{item.text}") for item in items
         ]
@@ -127,6 +146,7 @@ def test_translation_service_splits_invalid_batches_until_ids_are_complete() -> 
     provider = SplitRequiredProvider()
     recoveries: list[str] = []
     progress: list[tuple[int, int]] = []
+    usages: list[ModelUsageSummary] = []
 
     output = asyncio.run(
         TranslationService(provider).translate(
@@ -135,6 +155,7 @@ def test_translation_service_splits_invalid_batches_until_ids_are_complete() -> 
             target_language=TargetLanguage.ZH_CN,
             on_progress=lambda done, total: progress.append((done, total)),
             on_recovery=recoveries.append,
+            on_usage=usages.append,
         )
     )
 
@@ -143,19 +164,26 @@ def test_translation_service_splits_invalid_batches_until_ids_are_complete() -> 
     assert progress == [(1, 1)]
     assert len(recoveries) == 3
     assert all("拆分重试" in message for message in recoveries)
+    summary = merge_model_usage(usages)
+    assert summary is not None
+    assert summary.request_count == 7
+    assert summary.input_tokens == 12
+    assert summary.output_tokens == 7
+    assert summary.total_tokens == 19
 
 
 def test_codex_provider_uses_parameter_array_and_structured_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
+    usages: list[ModelUsageSummary] = []
 
     class FakeProcess:
         def __init__(self, args: list[str]) -> None:
             self.args = args
             self.returncode: int | None = None
 
-        def communicate(self, data: bytes) -> tuple[None, None]:
+        def communicate(self, data: bytes) -> tuple[bytes, None]:
             captured["input"] = data
             output = Path(self.args[self.args.index("--output-last-message") + 1])
             output.write_text(
@@ -163,7 +191,13 @@ def test_codex_provider_uses_parameter_array_and_structured_output(
                 encoding="utf-8",
             )
             self.returncode = 0
-            return None, None
+            events = (
+                b'{"type":"turn.started"}\n'
+                b'{"type":"turn.completed","usage":{"input_tokens":21,'
+                b'"cached_input_tokens":8,"output_tokens":4,'
+                b'"reasoning_output_tokens":1}}\n'
+            )
+            return events, None
 
         def poll(self) -> int | None:
             return self.returncode
@@ -191,6 +225,7 @@ def test_codex_provider_uses_parameter_array_and_structured_output(
             [TranslationItem(id="seg-1", text="hello")],
             source_language="en",
             target_language=TargetLanguage.ZH_CN,
+            on_usage=usages.append,
         )
     )
 
@@ -217,12 +252,40 @@ def test_codex_provider_uses_parameter_array_and_structured_output(
     assert args[-1] == "-"
     assert "shell" not in kwargs
     assert kwargs["stdin"] is subprocess.PIPE
-    assert kwargs["stdout"] is subprocess.DEVNULL
+    assert kwargs["stdout"] is subprocess.PIPE
     assert kwargs["stderr"] is subprocess.DEVNULL
+    assert "--json" in args
     prompt = captured["input"].decode("utf-8")
     assert "hello" in prompt
     assert '"target_language":"zh-CN"' in prompt
     assert result == [TranslatedItem(id="seg-1", translated_text="你好")]
+    assert usages == [
+        ModelUsageSummary(
+            provider="codex_spark",
+            model="gpt-5.3-codex-spark",
+            request_count=1,
+            input_tokens=21,
+            output_tokens=4,
+            total_tokens=25,
+            cached_input_tokens=8,
+            reasoning_tokens=1,
+            source="cli",
+            complete=True,
+        )
+    ]
+
+
+def test_codex_provider_marks_missing_structured_usage_as_unavailable() -> None:
+    usage = CodexSparkProvider()._usage_from_stdout(
+        b'{"type":"turn.completed"}\n'
+    )
+
+    assert usage.source == "unavailable"
+    assert usage.complete is False
+    assert usage.request_count == 1
+    assert usage.input_tokens is None
+    assert usage.output_tokens is None
+    assert usage.total_tokens is None
 
 
 class HangingCodexProcess:
@@ -349,6 +412,7 @@ def test_codex_provider_never_surfaces_process_output(
 
 def test_openai_compatible_retries_without_response_format() -> None:
     calls: list[dict[str, object]] = []
+    usages: list[ModelUsageSummary] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["authorization"] == "Bearer secret-value"
@@ -359,6 +423,13 @@ def test_openai_compatible_retries_without_response_format() -> None:
         return httpx.Response(
             200,
             json={
+                "usage": {
+                    "prompt_tokens": 11,
+                    "completion_tokens": 5,
+                    "total_tokens": 16,
+                    "prompt_tokens_details": {"cached_tokens": 3},
+                    "completion_tokens_details": {"reasoning_tokens": 2},
+                },
                 "choices": [
                     {
                         "message": {
@@ -375,6 +446,7 @@ def test_openai_compatible_retries_without_response_format() -> None:
     provider = OpenAICompatibleProvider(
         endpoint="http://127.0.0.1:1234/v1",
         model="local-model",
+        provider_name="lmstudio",
         api_key="secret-value",
         transport=httpx.MockTransport(handler),
     )
@@ -383,12 +455,125 @@ def test_openai_compatible_retries_without_response_format() -> None:
             [TranslationItem(id="1", text="good morning")],
             source_language="en",
             target_language=TargetLanguage.KO,
+            on_usage=usages.append,
         )
     )
     assert output[0].translated_text == "早上好"
     assert "response_format" in calls[0]
     assert "response_format" not in calls[1]
     assert '"target_language":"ko"' in calls[0]["messages"][1]["content"]
+    summary = merge_model_usage(usages)
+    assert summary is not None
+    assert summary.provider == "lmstudio"
+    assert summary.request_count == 2
+    assert summary.input_tokens == 11
+    assert summary.output_tokens == 5
+    assert summary.total_tokens == 16
+    assert summary.cached_input_tokens == 3
+    assert summary.reasoning_tokens == 2
+    assert summary.source == "mixed"
+    assert summary.complete is False
+
+
+def test_usage_callback_failure_does_not_break_translation() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {"items": [{"id": "1", "translated_text": "好"}]},
+                                ensure_ascii=False,
+                            )
+                        }
+                    }
+                ],
+            },
+        )
+
+    provider = OpenAICompatibleProvider(
+        endpoint="https://example.test/v1",
+        model="model",
+        transport=httpx.MockTransport(handler),
+    )
+
+    def failed_collector(usage: ModelUsageSummary) -> None:
+        raise OSError("metrics store unavailable")
+
+    output = asyncio.run(
+        provider.translate(
+            [TranslationItem(id="1", text="good")],
+            source_language="en",
+            target_language=TargetLanguage.ZH_CN,
+            on_usage=failed_collector,
+        )
+    )
+    assert output[0].translated_text == "好"
+
+
+@pytest.mark.parametrize(
+    ("fallback_before_cancel", "expected_requests"),
+    [(False, 1), (True, 2)],
+)
+def test_openai_compatible_counts_cancelled_in_flight_requests(
+    fallback_before_cancel: bool,
+    expected_requests: int,
+) -> None:
+    async def scenario() -> tuple[int, list[ModelUsageSummary]]:
+        entered = asyncio.Event()
+
+        class CancellingTransport(httpx.AsyncBaseTransport):
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def handle_async_request(
+                self,
+                request: httpx.Request,
+            ) -> httpx.Response:
+                self.calls += 1
+                if fallback_before_cancel and self.calls == 1:
+                    return httpx.Response(
+                        400,
+                        json={"error": "unsupported response_format"},
+                        request=request,
+                    )
+                entered.set()
+                await asyncio.Event().wait()
+                raise AssertionError("cancelled request must not resume")
+
+        transport = CancellingTransport()
+        usages: list[ModelUsageSummary] = []
+        provider = OpenAICompatibleProvider(
+            endpoint="https://example.test/v1",
+            model="model",
+            transport=transport,
+        )
+        task = asyncio.create_task(
+            provider.translate(
+                [TranslationItem(id="1", text="good")],
+                source_language="en",
+                target_language=TargetLanguage.ZH_CN,
+                on_usage=usages.append,
+            )
+        )
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return transport.calls, usages
+
+    calls, usages = asyncio.run(scenario())
+    summary = merge_model_usage(usages)
+
+    assert calls == expected_requests
+    assert summary is not None
+    assert summary.request_count == expected_requests
+    assert summary.source == "unavailable"
+    assert summary.complete is False
+    assert summary.total_tokens is None
 
 
 def test_openai_compatible_does_not_retry_auth_failure() -> None:

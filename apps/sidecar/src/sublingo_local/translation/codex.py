@@ -5,12 +5,12 @@ import json
 import os
 import subprocess
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from pathlib import Path
 
-from ..models import TargetLanguage, TranslatedItem, TranslationItem
-from .base import TranslationProvider
+from ..models import ModelUsageSummary, TargetLanguage, TranslatedItem, TranslationItem
+from .base import ModelUsageCallback, TranslationProvider, emit_model_usage
 from .common import TRANSLATION_SCHEMA, build_translation_prompt, parse_translation_json
 
 
@@ -34,12 +34,18 @@ class CodexSparkProvider(TranslationProvider):
         *,
         source_language: str,
         target_language: TargetLanguage,
+        on_usage: ModelUsageCallback | None = None,
     ) -> list[TranslatedItem]:
         prompt = build_translation_prompt(items, source_language, target_language)
-        raw = await self._invoke(prompt)
+        raw = await self._invoke(prompt, on_usage=on_usage)
         return parse_translation_json(raw)
 
-    async def _invoke(self, prompt: str) -> str:
+    async def _invoke(
+        self,
+        prompt: str,
+        *,
+        on_usage: ModelUsageCallback | None,
+    ) -> str:
         with tempfile.TemporaryDirectory(prefix="captionnest-codex-") as temp_dir:
             temp = Path(temp_dir)
             schema_path = temp / "translation.schema.json"
@@ -52,6 +58,7 @@ class CodexSparkProvider(TranslationProvider):
                 "--ask-for-approval",
                 "never",
                 "exec",
+                "--json",
                 "--ignore-user-config",
                 "--ignore-rules",
                 "--disable",
@@ -89,7 +96,7 @@ class CodexSparkProvider(TranslationProvider):
                     subprocess.Popen,
                     args,
                     stdin=subprocess.PIPE,
-                    stdout=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
                     cwd=temp,
                     creationflags=creationflags,
@@ -101,20 +108,24 @@ class CodexSparkProvider(TranslationProvider):
                 asyncio.to_thread(process.communicate, prompt.encode("utf-8"))
             )
             try:
-                await asyncio.wait_for(
+                stdout, _ = await asyncio.wait_for(
                     asyncio.shield(communication),
                     timeout=self.timeout_seconds,
                 )
             except asyncio.CancelledError:
-                await _kill_and_wait(process, communication)
+                stdout = await _kill_and_wait(process, communication)
+                emit_model_usage(on_usage, self._usage_from_stdout(stdout))
                 raise
             except TimeoutError as exc:
-                await _kill_and_wait(process, communication)
+                stdout = await _kill_and_wait(process, communication)
+                emit_model_usage(on_usage, self._usage_from_stdout(stdout))
                 raise RuntimeError("Codex 翻译超时") from exc
             except BaseException:
-                await _kill_and_wait(process, communication)
+                stdout = await _kill_and_wait(process, communication)
+                emit_model_usage(on_usage, self._usage_from_stdout(stdout))
                 raise
 
+            emit_model_usage(on_usage, self._usage_from_stdout(stdout))
             if process.returncode != 0:
                 # Do not surface stdout/stderr: local hooks or proxies could print secrets.
                 raise RuntimeError(f"Codex 翻译失败（退出码 {process.returncode}）")
@@ -122,16 +133,81 @@ class CodexSparkProvider(TranslationProvider):
                 raise RuntimeError("Codex 没有生成结构化翻译结果")
             return output_path.read_text(encoding="utf-8")
 
+    def _usage_from_stdout(self, stdout: bytes | None) -> ModelUsageSummary:
+        usage: Mapping[object, object] | None = None
+        if stdout:
+            for line in stdout.splitlines():
+                try:
+                    event = json.loads(line)
+                except (UnicodeDecodeError, ValueError, TypeError):
+                    continue
+                if (
+                    isinstance(event, Mapping)
+                    and event.get("type") == "turn.completed"
+                    and isinstance(event.get("usage"), Mapping)
+                ):
+                    usage = event["usage"]
+
+        input_tokens = _token_count(usage, "input_tokens")
+        output_tokens = _token_count(usage, "output_tokens")
+        total_tokens = (
+            input_tokens + output_tokens
+            if input_tokens is not None and output_tokens is not None
+            else None
+        )
+        cached_input_tokens = _token_count(usage, "cached_input_tokens")
+        reasoning_tokens = _token_count(
+            usage,
+            "reasoning_output_tokens",
+            "reasoning_tokens",
+        )
+        reported = any(
+            value is not None
+            for value in (
+                input_tokens,
+                output_tokens,
+                cached_input_tokens,
+                reasoning_tokens,
+            )
+        )
+        return ModelUsageSummary(
+            provider="codex_spark",
+            model=self.model,
+            request_count=1,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+            cached_input_tokens=cached_input_tokens,
+            reasoning_tokens=reasoning_tokens,
+            source="cli" if reported else "unavailable",
+            complete=input_tokens is not None and output_tokens is not None,
+        )
+
 
 async def _kill_and_wait(
     process: subprocess.Popen[bytes],
     communication: asyncio.Task[tuple[bytes | None, bytes | None]],
-) -> None:
+) -> bytes | None:
     if process.poll() is None:
         with suppress(ProcessLookupError):
             process.kill()
     # Killing the process releases the worker blocked inside communicate().
+    result: tuple[bytes | None, bytes | None] = (None, None)
     with suppress(Exception):
-        await asyncio.shield(communication)
+        result = await asyncio.shield(communication)
     with suppress(ProcessLookupError):
         await asyncio.to_thread(process.wait)
+    return result[0]
+
+
+def _token_count(
+    usage: Mapping[object, object] | None,
+    *keys: str,
+) -> int | None:
+    if usage is None:
+        return None
+    for key in keys:
+        value = usage.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
+    return None
