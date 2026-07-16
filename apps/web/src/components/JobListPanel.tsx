@@ -109,6 +109,11 @@ function JobRow({
   const tokens = item.total_model_usage
     ? formatTokenCount(item.total_model_usage.total_tokens)
     : null
+  const summaries = [
+    duration ? `耗时 ${duration}` : null,
+    tokens ? `Token ${tokens}` : null,
+    item.subtitle_path ? '已有输出' : null,
+  ].filter((summary): summary is string => Boolean(summary))
 
   return (
     <article className={`job-list-row ${selected ? 'is-selected' : ''}`}>
@@ -121,7 +126,12 @@ function JobRow({
         />
         <span aria-hidden="true" />
       </label>
-      <button type="button" className="job-row-main" onClick={onSelect}>
+      <button
+        type="button"
+        className="job-row-main"
+        aria-current={selected ? 'true' : undefined}
+        onClick={onSelect}
+      >
         <span className={`job-status-dot is-${item.status}`} aria-hidden="true" />
         <span className="job-row-copy">
           <strong title={item.source_name}>{item.source_name}</strong>
@@ -134,7 +144,7 @@ function JobRow({
         </span>
         <span className="job-row-side">
           <b>{Math.round(item.progress)}%</b>
-          <small>{duration ?? tokens ?? (item.subtitle_path ? '已有输出' : '—')}</small>
+          <small>{summaries.length ? summaries.join(' · ') : '—'}</small>
           <ChevronRight size={15} aria-hidden="true" />
         </span>
         <span className="job-row-progress" aria-hidden="true">
