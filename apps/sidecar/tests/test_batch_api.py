@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import time
 from pathlib import Path
@@ -425,10 +426,11 @@ def test_bulk_upload_actions_failure_isolation_and_batch_delete_modes(
         assert client.get(f"/api/batches/{batch['id']}").status_code == 404
         assert client.get(f"/api/jobs/{job_ids[0]}").json()["batch_id"] is None
 
-        disposable = _create_batch(client, [good_one])
+        disposable_source = _video(tmp_path / "disposable.mp4")
+        disposable = _create_batch(client, [disposable_source])
         disposable_batch = disposable["batch"]
         disposable_job = disposable_batch["job_ids"][0]
-        exported_srt = good_one.with_suffix(".srt")
+        exported_srt = disposable_source.with_suffix(".srt")
         exported_srt.write_text("keep me", encoding="utf-8")
         deleted = client.delete(
             f"/api/batches/{disposable_batch['id']}",
@@ -439,7 +441,7 @@ def test_bulk_upload_actions_failure_isolation_and_batch_delete_modes(
         assert client.get(f"/api/jobs/{disposable_job}").status_code == 404
         assert exported_srt.read_text(encoding="utf-8") == "keep me"
 
-        single = _create_batch(client, [good_two])
+        single = _create_batch(client, [_video(tmp_path / "single.mp4")])
         single_batch = single["batch"]
         single_job = single_batch["job_ids"][0]
         assert client.delete(f"/api/jobs/{single_job}").status_code == 200
@@ -501,3 +503,282 @@ def test_deleting_batch_with_active_jobs_detaches_them_before_group_removal(
                 break
             time.sleep(0.01)
         assert states == ["cancelled", "cancelled"]
+
+
+def test_summary_cursor_keeps_snapshot_order_filters_and_original_watermark(
+    tmp_path: Path,
+) -> None:
+    app = create_app(data_dir=tmp_path / "data", pipeline=ImmediatePipeline())  # type: ignore[arg-type]
+    with TestClient(app) as client:
+        created_ids: list[str] = []
+        for name in ("alpha-oldest.mp4", "alpha-middle.mp4", "alpha-newest.mp4"):
+            response = client.post(
+                "/api/jobs",
+                json={"video_path": str(_video(tmp_path / name))},
+            )
+            assert response.status_code == 200
+            created_ids.append(response.json()["id"])
+            time.sleep(0.002)
+        beta = client.post(
+            "/api/jobs",
+            json={"video_path": str(_video(tmp_path / "beta-newest.mp4"))},
+        )
+        assert beta.status_code == 200
+
+        first = client.get("/api/jobs", params={"limit": 1, "q": "alpha"})
+        assert first.status_code == 200
+        first_page = first.json()
+        assert [item["id"] for item in first_page["items"]] == [created_ids[2]]
+
+        middle = client.get(f"/api/jobs/{created_ids[1]}").json()
+        translation = next(
+            step for step in middle["steps"] if step["id"] == "translation"
+        )
+        config = dict(translation["config"])
+        config["target_language"] = "ko"
+        updated = client.patch(
+            f"/api/jobs/{created_ids[1]}/steps/translation/config",
+            json={"config": config},
+        )
+        assert updated.status_code == 200
+
+        second = client.get(
+            "/api/jobs",
+            params={"limit": 1, "cursor": first_page["next_cursor"]},
+        )
+        assert second.status_code == 200
+        second_page = second.json()
+        assert [item["id"] for item in second_page["items"]] == [created_ids[1]]
+        assert second_page["server_time"] == first_page["server_time"]
+        assert all(
+            item["source_name"].startswith("alpha")
+            for item in second_page["items"]
+        )
+
+        mismatched = client.get(
+            "/api/jobs",
+            params={
+                "limit": 1,
+                "cursor": first_page["next_cursor"],
+                "q": "beta",
+            },
+        )
+        assert mismatched.status_code == 400
+
+        incremental = client.get(
+            "/api/jobs",
+            params={"limit": 20, "updated_after": first_page["server_time"]},
+        )
+        assert incremental.status_code == 200
+        assert created_ids[1] in {
+            item["id"] for item in incremental.json()["items"]
+        }
+
+
+def test_output_claims_span_batches_and_reject_non_file_targets(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    output = tmp_path / "output"
+    output.mkdir()
+    first = _video(tmp_path / "a" / "same.mp4")
+    second = _video(tmp_path / "b" / "same.mp4")
+    app = create_app(data_dir=data_dir, pipeline=ImmediatePipeline())  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        first_batch = _create_batch(
+            client,
+            [first],
+            config={"export": {"output_directory": str(output)}},
+        )
+        assert first_batch["created_count"] == 1
+
+        conflicting_payload = {
+            "sources": [{"video_path": str(second)}],
+            "config": {"export": {"output_directory": str(output)}},
+        }
+        preflight = client.post("/api/batches/preflight", json=conflicting_payload)
+        assert preflight.status_code == 200
+        assert preflight.json()["valid_count"] == 0
+        assert "output_conflict" in {
+            issue["code"] for issue in preflight.json()["items"][0]["issues"]
+        }
+        rejected = client.post("/api/batches", json=conflicting_payload)
+        assert rejected.status_code == 200
+        assert rejected.json()["created_count"] == 0
+        assert rejected.json()["batch"] is None
+
+        direct = client.post(
+            "/api/jobs",
+            json={
+                "video_path": str(second),
+                "export": {"output_directory": str(output)},
+            },
+        )
+        assert direct.status_code == 400
+
+        alternate_output = tmp_path / "alternate-output"
+        alternate = client.post(
+            "/api/jobs",
+            json={
+                "video_path": str(second),
+                "export": {"output_directory": str(alternate_output)},
+            },
+        )
+        assert alternate.status_code == 200
+        alternate_record = app.state.job_manager._record(alternate.json()["id"])
+        alternate_record.export = alternate_record.export.model_copy(
+            update={"output_directory": str(output)}
+        )
+        alternate_record._persist()
+        run_conflict = client.post(f"/api/jobs/{alternate.json()['id']}/run", json={})
+        assert run_conflict.status_code == 400
+
+        target_directory_source = _video(tmp_path / "lesson.mp4")
+        (output / "lesson.srt").mkdir()
+        directory_target = client.post(
+            "/api/batches/preflight",
+            json={
+                "sources": [{"video_path": str(target_directory_source)}],
+                "config": {"export": {"output_directory": str(output)}},
+            },
+        )
+        assert directory_target.status_code == 200
+        assert directory_target.json()["valid_count"] == 0
+        assert "invalid_output" in {
+            issue["code"]
+            for issue in directory_target.json()["items"][0]["issues"]
+        }
+
+        output_file = tmp_path / "not-a-directory"
+        output_file.write_text("file", encoding="utf-8")
+        invalid_directory = client.post(
+            "/api/batches/preflight",
+            json={
+                "sources": [{"video_path": str(_video(tmp_path / "other.mp4"))}],
+                "config": {"export": {"output_directory": str(output_file)}},
+            },
+        )
+        assert invalid_directory.status_code == 200
+        assert invalid_directory.json()["valid_count"] == 0
+        assert "invalid_output" in {
+            issue["code"]
+            for issue in invalid_directory.json()["items"][0]["issues"]
+        }
+
+
+def test_create_failures_compensate_job_and_batch_persistence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir = tmp_path / "data"
+    app = create_app(data_dir=data_dir, pipeline=ImmediatePipeline())  # type: ignore[arg-type]
+    source = _video(tmp_path / "create-failure.mp4")
+
+    with TestClient(app) as client:
+        job_store = app.state.job_store
+        original_save_job = job_store.save_job
+
+        def save_job_then_fail(job_id: str, payload: object) -> None:
+            original_save_job(job_id, payload)
+            raise OSError("injected job save failure")
+
+        monkeypatch.setattr(job_store, "save_job", save_job_then_fail)
+        failed_job = _create_batch(client, [source])
+        assert failed_job["created_count"] == 0
+        assert failed_job["batch"] is None
+        assert client.get("/api/jobs").json() == []
+        assert not list((data_dir / "jobs").glob("*/job.json"))
+
+        monkeypatch.setattr(job_store, "save_job", original_save_job)
+        batch_store = app.state.batch_store
+        original_save_batch = batch_store.save
+        save_calls = 0
+
+        def save_batch_then_fail_association(batch: object) -> None:
+            nonlocal save_calls
+            save_calls += 1
+            original_save_batch(batch)
+            if save_calls == 2:
+                raise OSError("injected batch association failure")
+
+        monkeypatch.setattr(batch_store, "save", save_batch_then_fail_association)
+        failed_association = _create_batch(
+            client,
+            [_video(tmp_path / "association-failure.mp4")],
+        )
+        assert failed_association["created_count"] == 0
+        assert failed_association["batch"] is None
+        assert client.get("/api/jobs").json() == []
+
+    reloaded = create_app(data_dir=data_dir, pipeline=ImmediatePipeline())  # type: ignore[arg-type]
+    with TestClient(reloaded) as client:
+        assert client.get("/api/jobs").json() == []
+        assert client.get("/api/batches").json() == []
+
+
+def test_delete_failure_keeps_job_visible_and_restart_consistent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir = tmp_path / "data"
+    app = create_app(data_dir=data_dir, pipeline=ImmediatePipeline())  # type: ignore[arg-type]
+    with TestClient(app) as client:
+        created = _create_batch(client, [_video(tmp_path / "locked.mp4")])
+        batch = created["batch"]
+        job_id = batch["job_ids"][0]
+
+        def fail_delete(_job_id: str) -> None:
+            raise OSError("injected Windows directory lock")
+
+        monkeypatch.setattr(app.state.job_store, "delete_job", fail_delete)
+        deleted = client.post(
+            "/api/jobs/bulk-actions",
+            json={"action": "delete", "job_ids": [job_id]},
+        )
+        assert deleted.status_code == 200
+        assert deleted.json()["failed"] == 1
+        assert deleted.json()["results"][0]["job"]["id"] == job_id
+        assert client.get(f"/api/jobs/{job_id}").status_code == 200
+        batch_view = client.get(f"/api/batches/{batch['id']}").json()
+        assert batch_view["job_ids"] == [job_id]
+        assert batch_view["status_summary"]["total"] == 1
+
+    reloaded = create_app(data_dir=data_dir, pipeline=ImmediatePipeline())  # type: ignore[arg-type]
+    with TestClient(reloaded) as client:
+        assert client.get(f"/api/jobs/{job_id}").status_code == 200
+        assert client.get(f"/api/batches/{batch['id']}").json()["job_ids"] == [
+            job_id
+        ]
+
+
+def test_startup_reconciles_job_and_batch_membership_bidirectionally(
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "data"
+    app = create_app(data_dir=data_dir, pipeline=ImmediatePipeline())  # type: ignore[arg-type]
+    with TestClient(app) as client:
+        created = _create_batch(
+            client,
+            [
+                _video(tmp_path / "kept.mp4"),
+                _video(tmp_path / "orphaned.mp4"),
+            ],
+        )
+        batch = created["batch"]
+        kept_job, orphaned_job = batch["job_ids"]
+
+    batch_file = data_dir / "batches" / batch["id"] / "batch.json"
+    batch_payload = json.loads(batch_file.read_text(encoding="utf-8"))
+    batch_payload["job_ids"] = [orphaned_job]
+    batch_file.write_text(json.dumps(batch_payload), encoding="utf-8")
+
+    orphaned_file = data_dir / "jobs" / orphaned_job / "job.json"
+    orphaned_payload = json.loads(orphaned_file.read_text(encoding="utf-8"))
+    orphaned_payload["batch_id"] = "missing-batch"
+    orphaned_file.write_text(json.dumps(orphaned_payload), encoding="utf-8")
+
+    reloaded = create_app(data_dir=data_dir, pipeline=ImmediatePipeline())  # type: ignore[arg-type]
+    with TestClient(reloaded) as client:
+        repaired_batch = client.get(f"/api/batches/{batch['id']}").json()
+        assert repaired_batch["job_ids"] == [kept_job]
+        assert client.get(f"/api/jobs/{kept_job}").json()["batch_id"] == batch["id"]
+        assert client.get(f"/api/jobs/{orphaned_job}").json()["batch_id"] is None

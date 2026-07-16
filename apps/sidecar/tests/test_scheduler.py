@@ -165,8 +165,13 @@ async def test_scheduler_limits_cuda_and_preserves_fifo_without_duplicate_claims
     _, manager = _manager(tmp_path, pipeline, worker_concurrency=3)
     job_ids: list[str] = []
 
-    for _ in range(3):
-        created = manager.create(JobCreateRequest(video_path=str(video)))
+    for index in range(3):
+        created = manager.create(
+            JobCreateRequest(
+                video_path=str(video),
+                export={"output_directory": str(tmp_path / f"output-{index}")},
+            )
+        )
         record = manager._record(created.id)
         _mark_succeeded(record, JobStep.MEDIA)
         manager.run_step(
@@ -205,8 +210,18 @@ async def test_scheduler_cancels_queued_and_running_jobs_independently(
     video.write_bytes(b"video")
     pipeline = GateStepPipeline()
     _, manager = _manager(tmp_path, pipeline, worker_concurrency=1)
-    first = manager.create(JobCreateRequest(video_path=str(video)))
-    second = manager.create(JobCreateRequest(video_path=str(video)))
+    first = manager.create(
+        JobCreateRequest(
+            video_path=str(video),
+            export={"output_directory": str(tmp_path / "first-output")},
+        )
+    )
+    second = manager.create(
+        JobCreateRequest(
+            video_path=str(video),
+            export={"output_directory": str(tmp_path / "second-output")},
+        )
+    )
 
     manager.run_step(
         first.id,
@@ -305,7 +320,12 @@ async def test_summary_uses_actual_next_failed_and_interrupted_steps(
     pipeline = GateStepPipeline(block_all=False)
     _, manager = _manager(tmp_path, pipeline, worker_concurrency=1)
 
-    paused = manager.create(JobCreateRequest(video_path=str(video)))
+    paused = manager.create(
+        JobCreateRequest(
+            video_path=str(video),
+            export={"output_directory": str(tmp_path / "paused-output")},
+        )
+    )
     manager.run_step(
         paused.id,
         JobStep.MEDIA,
@@ -316,7 +336,12 @@ async def test_summary_uses_actual_next_failed_and_interrupted_steps(
     assert paused_summary.status == "draft"
     assert paused_summary.current_step == JobStep.TRANSCRIPTION
 
-    failed = manager.create(JobCreateRequest(video_path=str(video)))
+    failed = manager.create(
+        JobCreateRequest(
+            video_path=str(video),
+            export={"output_directory": str(tmp_path / "failed-output")},
+        )
+    )
     failed_record = manager._record(failed.id)
     _mark_succeeded(failed_record, JobStep.MEDIA, JobStep.TRANSCRIPTION)
     failed_record.queued_start_step = JobStep.MEDIA
@@ -324,7 +349,12 @@ async def test_summary_uses_actual_next_failed_and_interrupted_steps(
     failed_record.fail_current(RuntimeError("translation failed"))
     assert failed_record.to_summary().current_step == JobStep.TRANSLATION
 
-    interrupted = manager.create(JobCreateRequest(video_path=str(video)))
+    interrupted = manager.create(
+        JobCreateRequest(
+            video_path=str(video),
+            export={"output_directory": str(tmp_path / "interrupted-output")},
+        )
+    )
     interrupted_record = manager._record(interrupted.id)
     _mark_succeeded(interrupted_record, JobStep.MEDIA, JobStep.TRANSCRIPTION)
     interrupted_record.queued_start_step = JobStep.MEDIA
@@ -343,15 +373,31 @@ async def test_restart_recovers_fifo_and_requires_deepseek_runtime_key(
     video.write_bytes(b"video")
     blocking = GateStepPipeline(block_all=False)
     store, manager = _manager(tmp_path, blocking, worker_concurrency=1)
-    first = manager.create(JobCreateRequest(video_path=str(video)))
+    first = manager.create(
+        JobCreateRequest(
+            video_path=str(video),
+            export={"output_directory": str(tmp_path / "first-output")},
+        )
+    )
     deepseek = manager.create(
         JobCreateRequest(
             video_path=str(video),
             translation={"provider": "deepseek", "model": "deepseek-v4-flash"},
+            export={"output_directory": str(tmp_path / "deepseek-output")},
         )
     )
-    second = manager.create(JobCreateRequest(video_path=str(video)))
-    third = manager.create(JobCreateRequest(video_path=str(video)))
+    second = manager.create(
+        JobCreateRequest(
+            video_path=str(video),
+            export={"output_directory": str(tmp_path / "second-output")},
+        )
+    )
+    third = manager.create(
+        JobCreateRequest(
+            video_path=str(video),
+            export={"output_directory": str(tmp_path / "third-output")},
+        )
+    )
     blocking.block_job_id = first.id
 
     manager.run_step(

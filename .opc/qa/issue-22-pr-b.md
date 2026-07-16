@@ -13,7 +13,7 @@
 | 同批规范化路径去重 | PASS |
 | 统一目录同名 SRT 冲突 | PASS；创建前阻断，可用单项 export 覆盖改目录 |
 | Summary 与 Detail 分离 | PASS；分页项不含 logs、steps、attempts |
-| 分页与增量刷新 | PASS；不透明 keyset cursor + `updated_after` + `server_time` |
+| 分页与增量刷新 | PASS；固定快照 cursor 封装筛选条件，`created_at` 稳定排序，`updated_after` 使用首屏 `server_time` |
 | 旧列表和单文件 API | PASS；无查询参数仍返回完整数组，`POST /api/jobs` 不变 |
 | 批量动作部分失败隔离 | PASS；run/cancel/retry_failed/delete/update_config 逐 Job 返回 |
 | Batch 中单 Job 失败隔离 | PASS；其余 Job 继续完成 |
@@ -26,10 +26,10 @@
 
 | 检查 | 结果 |
 |---|---:|
-| Batch/API 定向测试 | 5 passed |
-| Sidecar 全量 | 192 passed，1 个既有 Starlette 弃用警告 |
+| Batch/API 定向测试 | 10 passed；含游标移动、跨筛选翻页、跨 Batch 输出占用及持久化故障注入 |
+| Sidecar 全量 | 197 passed，1 个既有 Starlette 弃用警告 |
 | Tooling | 25 passed |
-| 仓库 Python 总计 | 217 passed |
+| 仓库 Python 总计 | 222 passed |
 | Sidecar / Tooling Ruff | passed |
 | Web lint/build | passed |
 | Desktop fmt/check | passed |
@@ -43,20 +43,22 @@
 |---|---|
 | 旧单任务 UI 首次加载 | PASS；标题与工作台正常渲染 |
 | 旧 `GET /api/jobs` | PASS；创建前后均返回数组，旧前端无需改动 |
-| 浏览器内多源预检 | PASS；2 个源均有效 |
-| 浏览器内 Batch 创建 | PASS；创建 1 个 Batch + 2 个 Job |
-| Summary keyset 分页 | PASS；`limit=1` 两页 Job 不重复，总数为 2 |
+| 浏览器内 Batch 创建 | PASS；两个不同输出目录分别创建 1 个 Batch + 1 个 Job |
+| 跨 Batch 输出占用 | PASS；第二批同名源指向已占用目录时 `valid=0`，返回 `output_conflict` |
+| Summary keyset 分页 | PASS；`limit=1` 两页 Job 不重复、遗漏，第二页省略 `q` 仍继承筛选且 `server_time` 与首屏一致 |
 | Summary 轻量负载 | PASS；分页项不含 `logs` 或 `steps` |
 | 刷新后旧 UI 恢复任务 | PASS；显示批次中的源文件名 |
 | console warning/error/pageerror | 0 |
-| 临时进程与数据 | 已停止并删除 |
+| 临时进程与数据 | Edge、Vite、Sidecar 均已停止；临时数据文件已删除 |
 
 ## 删除与输出边界
 
 - 仅删除 Batch 时，所有仍存在的 Job 原子写回 `batch_id=null`。
 - `delete_jobs=true` 只调用既有 Job 删除语义；queued/running Job 删除失败后会解除分组并保留，响应明确标记失败。
 - Job Store 目录中的 `job.json` 与内部 Artifact 可删除；源视频旁或统一输出目录中的 SRT 不属于缓存，测试确认不会被删除。
-- 已存在输出且 `overwrite_existing=false` 会在预检中报错；同一 Batch 内两个 Job 指向同一输出路径时，无论覆盖设置如何都不允许并发竞争。
+- 已存在输出且 `overwrite_existing=false` 会在预检中报错；`.srt` 目标为目录或输出目录为文件时也会在创建前失败。
+- 所有未删除 Job 跨 Batch 共享规范化输出占用；预检、创建、配置修改和运行前均重验，`overwrite_existing=true` 不能静默覆盖另一个 Job 的 SRT。
+- Job 创建/删除与 Batch 关联均有失败补偿；启动时双向修复 `Batch.job_ids` 与 `Job.batch_id`，Windows 目录锁导致删除失败时 Job 仍保持可见且重启一致。
 
 ## 后续 PR 接口
 

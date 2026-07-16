@@ -5,6 +5,7 @@ import base64
 import binascii
 import hashlib
 import json
+import os
 import threading
 import time
 import uuid
@@ -131,15 +132,103 @@ def _fingerprint(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
-def _encode_summary_cursor(summary: JobSummaryView) -> str:
+def subtitle_output_path(source_path: Path, export: ExportSettings) -> Path:
+    try:
+        output_directory = (
+            Path(export.output_directory).expanduser().resolve()
+            if export.output_directory
+            else source_path.resolve().parent
+        )
+        return (output_directory / source_path.with_suffix(".srt").name).resolve()
+    except RuntimeError as exc:
+        raise ValueError("字幕输出路径无法解析") from exc
+
+
+def output_path_key(path: Path) -> str:
+    return os.path.normcase(str(path.resolve()))
+
+
+def validate_output_target(path: Path, *, overwrite_existing: bool) -> None:
+    """Reject targets that the atomic SRT writer cannot safely replace."""
+
+    resolved = path.resolve()
+    ancestor = resolved.parent
+    while not ancestor.exists() and ancestor != ancestor.parent:
+        ancestor = ancestor.parent
+    if ancestor.exists() and not ancestor.is_dir():
+        raise NotADirectoryError("字幕输出目录不是文件夹")
+    if not resolved.exists():
+        return
+    if not resolved.is_file():
+        raise IsADirectoryError("目标字幕路径不是可覆盖的普通文件")
+    if not overwrite_existing:
+        raise FileExistsError("目标字幕已存在，请允许覆盖或修改输出目录")
+
+
+@dataclass(frozen=True)
+class _SummaryCursor:
+    snapshot_time: datetime
+    position_created_at: datetime
+    position_job_id: str
+    statuses: tuple[JobStatus, ...] | None
+    batch_id: str | None
+    query: str | None
+    updated_after: datetime | None
+    total: int
+
+
+def _normalized_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _summary_filter_payload(
+    *,
+    statuses: tuple[JobStatus, ...] | None,
+    batch_id: str | None,
+    query: str | None,
+    updated_after: datetime | None,
+) -> dict[str, Any]:
+    return {
+        "statuses": [status.value for status in statuses] if statuses is not None else None,
+        "batch_id": batch_id,
+        "query": query,
+        "updated_after": updated_after.isoformat() if updated_after is not None else None,
+    }
+
+
+def _encode_summary_cursor(
+    summary: JobSummaryView,
+    *,
+    snapshot_time: datetime,
+    statuses: tuple[JobStatus, ...] | None,
+    batch_id: str | None,
+    query: str | None,
+    updated_after: datetime | None,
+    total: int,
+) -> str:
+    filters = _summary_filter_payload(
+        statuses=statuses,
+        batch_id=batch_id,
+        query=query,
+        updated_after=updated_after,
+    )
     payload = json.dumps(
-        [summary.updated_at.isoformat(), summary.id],
+        {
+            "v": 2,
+            "snapshot": snapshot_time.isoformat(),
+            "position": [summary.created_at.isoformat(), summary.id],
+            "filters": filters,
+            "filter_fingerprint": _fingerprint(filters),
+            "total": total,
+        },
         separators=(",", ":"),
     ).encode("utf-8")
     return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
 
 
-def _decode_summary_cursor(cursor: str) -> tuple[datetime, str]:
+def _decode_summary_cursor(cursor: str) -> _SummaryCursor:
     try:
         padding = "=" * (-len(cursor) % 4)
         decoded = base64.b64decode(
@@ -148,17 +237,70 @@ def _decode_summary_cursor(cursor: str) -> tuple[datetime, str]:
             validate=True,
         )
         payload = json.loads(decoded.decode("utf-8"))
-        if not isinstance(payload, list) or len(payload) != 2:
+        if not isinstance(payload, dict) or payload.get("v") != 2:
             raise ValueError
-        updated_at = datetime.fromisoformat(str(payload[0]))
-        if updated_at.tzinfo is None:
+        filters = payload["filters"]
+        position = payload["position"]
+        if (
+            not isinstance(filters, dict)
+            or not isinstance(position, list)
+            or len(position) != 2
+            or payload.get("filter_fingerprint") != _fingerprint(filters)
+        ):
             raise ValueError
-        job_id = str(payload[1]).strip()
+        snapshot_time = datetime.fromisoformat(str(payload["snapshot"]))
+        position_created_at = datetime.fromisoformat(str(position[0]))
+        if snapshot_time.tzinfo is None or position_created_at.tzinfo is None:
+            raise ValueError
+        job_id = str(position[1]).strip()
         if not job_id:
             raise ValueError
-        return updated_at, job_id
+        raw_statuses = filters.get("statuses")
+        if raw_statuses is None:
+            statuses = None
+        else:
+            if not isinstance(raw_statuses, list):
+                raise ValueError
+            statuses = tuple(
+                sorted(
+                    {JobStatus(str(status)) for status in raw_statuses},
+                    key=lambda status: status.value,
+                )
+            )
+        batch_id = filters.get("batch_id")
+        query = filters.get("query")
+        if batch_id is not None and not isinstance(batch_id, str):
+            raise ValueError
+        if query is not None and not isinstance(query, str):
+            raise ValueError
+        raw_updated_after = filters.get("updated_after")
+        updated_after = (
+            datetime.fromisoformat(raw_updated_after)
+            if isinstance(raw_updated_after, str)
+            else None
+        )
+        if raw_updated_after is not None and (
+            updated_after is None or updated_after.tzinfo is None
+        ):
+            raise ValueError
+        total = payload["total"]
+        if isinstance(total, bool) or not isinstance(total, int) or total < 0:
+            raise ValueError
+        return _SummaryCursor(
+            snapshot_time=_normalized_datetime(snapshot_time),
+            position_created_at=_normalized_datetime(position_created_at),
+            position_job_id=job_id,
+            statuses=statuses,
+            batch_id=batch_id,
+            query=query,
+            updated_after=(
+                _normalized_datetime(updated_after) if updated_after is not None else None
+            ),
+            total=total,
+        )
     except (
         binascii.Error,
+        KeyError,
         UnicodeDecodeError,
         json.JSONDecodeError,
         TypeError,
@@ -1171,14 +1313,11 @@ class ProcessingPipeline:
             for item in translation_payload.get("items", [])
         ]
 
-        output_directory = (
-            Path(record.export.output_directory).expanduser().resolve()
-            if record.export.output_directory
-            else record.source.path.parent
+        subtitle_path = subtitle_output_path(record.source.path, record.export)
+        validate_output_target(
+            subtitle_path,
+            overwrite_existing=record.export.overwrite_existing,
         )
-        subtitle_path = output_directory / record.source.path.with_suffix(".srt").name
-        if subtitle_path.exists() and not record.export.overwrite_existing:
-            raise FileExistsError("目标字幕已存在，请允许覆盖或修改输出目录")
         await _run_blocking_call(
             write_bilingual_srt,
             subtitle_path,
@@ -1213,6 +1352,7 @@ class JobManager:
         self.upload_store = upload_store
         self.pipeline = pipeline
         self.store = job_store or getattr(pipeline, "store", None)
+        self._mutation_lock = threading.RLock()
         self.repository = JobRepository(self.store, JobRecord.from_payload)
         self._jobs = self.repository.records
         self.scheduler = JobScheduler(
@@ -1276,6 +1416,16 @@ class JobManager:
             ):
                 record.mark_waiting_for_input(start_step)
                 continue
+            if JobStep.EXPORT in selected:
+                try:
+                    self.validate_output_claim(
+                        record.media,
+                        record.export,
+                        exclude_job_id=record.id,
+                    )
+                except (OSError, ValueError) as exc:
+                    record.fail_current(exc)
+                    continue
             self.scheduler.restore(
                 record.id,
                 start_step,
@@ -1304,12 +1454,60 @@ class JobManager:
             name=item.name,
         )
 
+    @staticmethod
+    def output_path(media: MediaStepSettings, export: ExportSettings) -> Path:
+        return subtitle_output_path(Path(media.path), export)
+
+    def output_claim_owner(
+        self,
+        path: Path,
+        *,
+        exclude_job_id: str | None = None,
+    ) -> str | None:
+        requested_key = output_path_key(path)
+        with self._mutation_lock:
+            for record in self.repository.list():
+                if record.id == exclude_job_id:
+                    continue
+                try:
+                    claimed_key = output_path_key(
+                        self.output_path(record.media, record.export)
+                    )
+                except (OSError, ValueError):
+                    continue
+                if claimed_key == requested_key:
+                    return record.id
+        return None
+
+    def validate_output_claim(
+        self,
+        media: MediaStepSettings,
+        export: ExportSettings,
+        *,
+        exclude_job_id: str | None = None,
+    ) -> Path:
+        path = self.output_path(media, export)
+        validate_output_target(path, overwrite_existing=export.overwrite_existing)
+        owner = self.output_claim_owner(path, exclude_job_id=exclude_job_id)
+        if owner is not None:
+            raise ValueError(f"目标字幕路径已由任务 {owner} 占用")
+        return path
+
     def create(
         self,
         request: JobCreateRequest,
         *,
         batch_id: str | None = None,
     ) -> JobView:
+        if (
+            request.auto_start
+            and request.translation.provider == TranslationProviderName.DEEPSEEK
+            and (
+                request.translation.api_key is None
+                or not request.translation.api_key.get_secret_value().strip()
+            )
+        ):
+            raise ValueError("DeepSeek 自动启动需要本次运行 API Key")
         media = self.resolve_source(request)
         translation = TranslationStepSettings(
             target_language=request.target_language,
@@ -1326,16 +1524,23 @@ class JobManager:
             translation=translation,
             export=request.export.model_copy(deep=True),
         )
-        self.repository.add(record)
         record.update(message="任务草稿已创建")
-        if request.auto_start:
-            self.run(
-                record.id,
-                JobRunRequest(
-                    api_key=request.translation.api_key,
-                    continue_pipeline=True,
-                ),
-            )
+        with self._mutation_lock:
+            self.validate_output_claim(record.media, record.export)
+            self.repository.add(record)
+            if request.auto_start:
+                try:
+                    self._schedule(
+                        record,
+                        JobStep.MEDIA,
+                        JobRunRequest(
+                            api_key=request.translation.api_key,
+                            continue_pipeline=True,
+                        ),
+                    )
+                except Exception:
+                    self.repository.delete(record.id)
+                    raise
         return record.to_view()
 
     def update_step_config(
@@ -1344,37 +1549,55 @@ class JobManager:
         step: JobStep,
         config: Mapping[str, Any],
     ) -> JobView:
-        record = self._record(job_id)
-        if record.status in {JobStatus.QUEUED, JobStatus.RUNNING}:
-            raise ValueError("任务运行中，不能修改步骤配置")
-        if step == JobStep.MEDIA:
-            requested = MediaStepSettings.model_validate(config)
-            path = ensure_supported_video(Path(requested.path)).resolve()
-            record.media = requested.model_copy(update={"path": str(path), "name": path.name})
-        elif step == JobStep.TRANSCRIPTION:
-            try:
-                record.asr = ASRSettings.model_validate(config)
-            except ValidationError as exc:
-                # A manual config update bypasses FastAPI's request-model handler.
-                # Never echo rejected prompt text from Pydantic's default repr.
-                raise ValueError(_safe_validation_message(exc)) from exc
-        elif step == JobStep.TRANSLATION:
-            if "api_key" in config:
-                raise ValueError("API Key 只能随单次运行请求提交，不能写入任务配置")
-            record.translation = TranslationStepSettings.model_validate(config)
-        else:
-            record.export = ExportSettings.model_validate(config)
-        record.steps[step].config_revision += 1
-        record.invalidate_from(step, message=f"{_step_label(step)}配置已更新")
-        return record.to_view()
+        with self._mutation_lock:
+            record = self._record(job_id)
+            if record.status in {JobStatus.QUEUED, JobStatus.RUNNING}:
+                raise ValueError("任务运行中，不能修改步骤配置")
+            if step == JobStep.MEDIA:
+                requested = MediaStepSettings.model_validate(config)
+                path = ensure_supported_video(Path(requested.path)).resolve()
+                media = requested.model_copy(update={"path": str(path), "name": path.name})
+                self.validate_output_claim(
+                    media,
+                    record.export,
+                    exclude_job_id=record.id,
+                )
+                record.media = media
+            elif step == JobStep.TRANSCRIPTION:
+                try:
+                    record.asr = ASRSettings.model_validate(config)
+                except ValidationError as exc:
+                    # A manual config update bypasses FastAPI's request-model handler.
+                    # Never echo rejected prompt text from Pydantic's default repr.
+                    raise ValueError(_safe_validation_message(exc)) from exc
+            elif step == JobStep.TRANSLATION:
+                if "api_key" in config:
+                    raise ValueError("API Key 只能随单次运行请求提交，不能写入任务配置")
+                record.translation = TranslationStepSettings.model_validate(config)
+            else:
+                export = ExportSettings.model_validate(config)
+                self.validate_output_claim(
+                    record.media,
+                    export,
+                    exclude_job_id=record.id,
+                )
+                record.export = export
+            record.steps[step].config_revision += 1
+            record.invalidate_from(step, message=f"{_step_label(step)}配置已更新")
+            return record.to_view()
 
     def run(self, job_id: str, request: JobRunRequest | None = None) -> JobView:
-        record = self._record(job_id)
-        start_step = next(
-            (step for step in STEP_ORDER if record.steps[step].status != StepStatus.SUCCEEDED),
-            JobStep.MEDIA,
-        )
-        return self._schedule(record, start_step, request or JobRunRequest())
+        with self._mutation_lock:
+            record = self._record(job_id)
+            start_step = next(
+                (
+                    step
+                    for step in STEP_ORDER
+                    if record.steps[step].status != StepStatus.SUCCEEDED
+                ),
+                JobStep.MEDIA,
+            )
+            return self._schedule(record, start_step, request or JobRunRequest())
 
     def run_step(
         self,
@@ -1382,10 +1605,20 @@ class JobManager:
         step: JobStep,
         request: JobRunRequest | None = None,
     ) -> JobView:
-        record = self._record(job_id)
-        return self._schedule(record, step, request or JobRunRequest())
+        with self._mutation_lock:
+            record = self._record(job_id)
+            return self._schedule(record, step, request or JobRunRequest())
 
     def _schedule(
+        self,
+        record: JobRecord,
+        start_step: JobStep,
+        request: JobRunRequest,
+    ) -> JobView:
+        with self._mutation_lock:
+            return self._schedule_locked(record, start_step, request)
+
+    def _schedule_locked(
         self,
         record: JobRecord,
         start_step: JobStep,
@@ -1424,6 +1657,13 @@ class JobManager:
         ):
             raise ValueError("DeepSeek 需要 API Key，请在本次运行前填写")
 
+        if JobStep.EXPORT in selected:
+            self.validate_output_claim(
+                record.media,
+                record.export,
+                exclude_job_id=record.id,
+            )
+
         record.invalidate_from(start_step)
         self.scheduler.enqueue(
             record,
@@ -1443,9 +1683,10 @@ class JobManager:
         return self._record(job_id).to_summary()
 
     def assign_batch(self, job_id: str, batch_id: str | None) -> JobSummaryView:
-        record = self._record(job_id)
-        record.assign_batch(batch_id)
-        return record.to_summary()
+        with self._mutation_lock:
+            record = self._record(job_id)
+            record.assign_batch(batch_id)
+            return record.to_summary()
 
     def list(self) -> list[JobView]:
         records = sorted(
@@ -1475,49 +1716,112 @@ class JobManager:
     ) -> JobSummaryPage:
         if not 1 <= limit <= 200:
             raise ValueError("limit 必须在 1 到 200 之间")
-        # Leave a one-microsecond overlap boundary so a write that receives the
-        # same clock tick as query start is deferred, never skipped between polls.
-        server_time = utc_now() - timedelta(microseconds=1)
-        if updated_after is not None and updated_after.tzinfo is None:
-            updated_after = updated_after.replace(tzinfo=UTC)
-        normalized_query = (query or "").strip().casefold()
-        summaries = [record.to_summary() for record in self.repository.list()]
-        filtered = [
-            summary
-            for summary in summaries
-            if summary.updated_at <= server_time
-            and (statuses is None or summary.status in statuses)
-            and (batch_id is None or summary.batch_id == batch_id)
-            and (
-                not normalized_query
-                or normalized_query in summary.source_name.casefold()
-            )
-            and (updated_after is None or summary.updated_at > updated_after)
-        ]
-        filtered.sort(
-            key=lambda summary: (summary.updated_at, summary.id),
-            reverse=True,
+        provided_statuses = (
+            tuple(sorted(statuses, key=lambda status: status.value))
+            if statuses is not None
+            else None
         )
-        total = len(filtered)
-        if cursor is not None:
-            cursor_key = _decode_summary_cursor(cursor)
+        provided_batch_id = (
+            (batch_id.strip() or None) if batch_id is not None else None
+        )
+        provided_query = (
+            (query.strip().casefold() or None) if query is not None else None
+        )
+        provided_updated_after = (
+            _normalized_datetime(updated_after) if updated_after is not None else None
+        )
+
+        with self._mutation_lock:
+            cursor_state = _decode_summary_cursor(cursor) if cursor is not None else None
+            if cursor_state is not None:
+                mismatched = (
+                    (statuses is not None and provided_statuses != cursor_state.statuses)
+                    or (
+                        batch_id is not None
+                        and provided_batch_id != cursor_state.batch_id
+                    )
+                    or (query is not None and provided_query != cursor_state.query)
+                    or (
+                        updated_after is not None
+                        and provided_updated_after != cursor_state.updated_after
+                    )
+                )
+                if mismatched:
+                    raise ValueError("分页 cursor 与筛选条件不匹配")
+                effective_statuses = cursor_state.statuses
+                effective_batch_id = cursor_state.batch_id
+                effective_query = cursor_state.query
+                effective_updated_after = cursor_state.updated_after
+                server_time = cursor_state.snapshot_time
+                cursor_key = (
+                    cursor_state.position_created_at,
+                    cursor_state.position_job_id,
+                )
+            else:
+                effective_statuses = provided_statuses
+                effective_batch_id = provided_batch_id
+                effective_query = provided_query
+                effective_updated_after = provided_updated_after
+                # The immutable created_at order plus a fixed creation watermark
+                # prevents updates from moving an unread Job across page bounds.
+                server_time = utc_now() - timedelta(microseconds=1)
+                cursor_key = None
+
+            summaries = [record.to_summary() for record in self.repository.list()]
             filtered = [
                 summary
-                for summary in filtered
-                if (summary.updated_at, summary.id) < cursor_key
+                for summary in summaries
+                if summary.created_at <= server_time
+                and (
+                    effective_statuses is None
+                    or summary.status in effective_statuses
+                )
+                and (
+                    effective_batch_id is None
+                    or summary.batch_id == effective_batch_id
+                )
+                and (
+                    effective_query is None
+                    or effective_query in summary.source_name.casefold()
+                )
+                and (
+                    effective_updated_after is None
+                    or summary.updated_at > effective_updated_after
+                )
             ]
-        selected = filtered[: limit + 1]
-        has_more = len(selected) > limit
-        items = selected[:limit]
-        return JobSummaryPage(
-            items=items,
-            next_cursor=(
-                _encode_summary_cursor(items[-1]) if has_more and items else None
-            ),
-            has_more=has_more,
-            total=total,
-            server_time=server_time,
-        )
+            filtered.sort(
+                key=lambda summary: (summary.created_at, summary.id),
+                reverse=True,
+            )
+            total = len(filtered) if cursor_state is None else cursor_state.total
+            if cursor_key is not None:
+                filtered = [
+                    summary
+                    for summary in filtered
+                    if (summary.created_at, summary.id) < cursor_key
+                ]
+            selected = filtered[: limit + 1]
+            has_more = len(selected) > limit
+            items = selected[:limit]
+            return JobSummaryPage(
+                items=items,
+                next_cursor=(
+                    _encode_summary_cursor(
+                        items[-1],
+                        snapshot_time=server_time,
+                        statuses=effective_statuses,
+                        batch_id=effective_batch_id,
+                        query=effective_query,
+                        updated_after=effective_updated_after,
+                        total=total,
+                    )
+                    if has_more and items
+                    else None
+                ),
+                has_more=has_more,
+                total=total,
+                server_time=server_time,
+            )
 
     def cancel(self, job_id: str) -> JobView:
         record = self._record(job_id)
@@ -1530,13 +1834,14 @@ class JobManager:
         await self.scheduler.wait(job_id)
 
     def delete(self, job_id: str) -> None:
-        record = self._record(job_id)
-        if self.scheduler.is_active(record.id) or record.status in {
-            JobStatus.QUEUED,
-            JobStatus.RUNNING,
-        }:
-            raise ValueError("任务运行中，不能删除")
-        self.repository.delete(job_id)
+        with self._mutation_lock:
+            record = self._record(job_id)
+            if self.scheduler.is_active(record.id) or record.status in {
+                JobStatus.QUEUED,
+                JobStatus.RUNNING,
+            }:
+                raise ValueError("任务运行中，不能删除")
+            self.repository.delete(job_id)
 
     async def shutdown(self) -> None:
         await self.scheduler.shutdown()

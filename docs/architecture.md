@@ -91,7 +91,11 @@ flowchart LR
 | `POST /api/uploads/bulk` | 浏览器多文件上传，逐文件返回成功或错误 |
 | `DELETE /api/batches/{id}` | 默认仅解除分组；`delete_jobs=true` 时删除可删除 Job 的内部记录/中间产物，导出的 SRT 永不随 Batch 删除 |
 
-Summary 分页使用 `(updated_at, job_id)` 的不透明 keyset cursor。响应中的 `server_time` 是下一次增量请求的水位；查询快照之后更新的 Job 会被留到下一轮，列表不会传输日志或全部 Attempt。统一输出目录下两个源若映射到同一 `<视频名>.srt`，预检会阻止创建；可以通过单项 `export` 覆盖修改其中一个 Job 的输出目录。Batch 请求中的 DeepSeek Key 只传给本次内存调度项，不进入 Batch 模板、Job JSON、响应或日志。
+Summary 分页使用固定快照水位与不可变 `(created_at, job_id)` 排序；不透明 cursor 同时封装首屏 `server_time`、筛选条件指纹和当前位置。后续页即使省略筛选参数也沿用首屏条件，显式传入不同条件会被拒绝；分页期间更新 Job 不会跨过未读边界，并会在基于首屏水位的 `updated_after` 增量查询中再次返回，前端按 ID 合并即可。列表不会传输日志或全部 Attempt。
+
+每个未删除 Job 都持有其规范化 `<输出目录>/<源文件名>.srt` 的输出占用，不只检查同一 Batch。预检、创建、配置更新和运行入队都会重验占用；输出目录必须是目录，已存在目标必须是可覆盖普通文件。`overwrite_existing=true` 只允许当前 Job 覆盖未被其他 Job 占用的普通文件，不能绕过跨 Batch 冲突。删除 Job 后才释放占用；可以通过单项 `export` 修改输出目录。Batch 请求中的 DeepSeek Key 只传给本次内存调度项，不进入 Batch 模板、Job JSON、响应或日志。
+
+Job 首次持久化只进行一次原子写入，失败会回滚内存索引并清理部分目录；磁盘删除成功后才从内存移除。Batch 关联写入失败会补偿删除新 Job。启动时以 `Job.batch_id` 为归属事实，双向修复 `Batch.job_ids`：补入缺失成员、移除失效或错属成员，并把指向不存在 Batch 的 Job 解除分组。
 
 ## 桌面进程生命周期
 

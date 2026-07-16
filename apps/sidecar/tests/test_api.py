@@ -175,6 +175,9 @@ def test_job_rejects_removed_or_unknown_asr_models(tmp_path: Path) -> None:
                 json={
                     "video_path": str(video),
                     "asr": {"provider": "faster_whisper", "model": model},
+                    "export": {
+                        "output_directory": str(tmp_path / f"output-{model}")
+                    },
                 },
             )
             assert response.status_code == 200

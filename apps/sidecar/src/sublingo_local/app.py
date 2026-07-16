@@ -283,7 +283,7 @@ def create_app(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     async def list_jobs_handler(
-        cursor: Annotated[str | None, Query(max_length=512)] = None,
+        cursor: Annotated[str | None, Query(max_length=2048)] = None,
         limit: Annotated[int | None, Query(ge=1, le=200)] = None,
         status_filter: Annotated[
             list[JobStatus] | None,
@@ -377,7 +377,7 @@ def create_app(
             manager.delete(job_id)
         except KeyError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-        except ValueError as exc:
+        except (OSError, ValueError) as exc:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         batch_manager.remove_job(job_id)
         return JobDeleteResult(deleted=True, job_id=job_id)

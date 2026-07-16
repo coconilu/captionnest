@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import threading
 import uuid
 from collections import defaultdict
@@ -9,7 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .batch_store import BatchStore
-from .jobs import JobManager
+from .jobs import (
+    JobManager,
+    output_path_key,
+    subtitle_output_path,
+    validate_output_target,
+)
 from .models import (
     BatchConfigSnapshot,
     BatchCreateRequest,
@@ -52,10 +56,6 @@ class _PreflightBundle:
     resolved: dict[int, _ResolvedBatchSource]
 
 
-def _path_key(path: Path) -> str:
-    return os.path.normcase(str(path.resolve()))
-
-
 class BatchManager:
     """Coordinate persisted Batch groups without coupling Job lifecycles together."""
 
@@ -64,22 +64,44 @@ class BatchManager:
         self.jobs = jobs
         self._lock = threading.RLock()
         self._batches = {batch.id: batch for batch in store.load()}
-        self._prune_missing_jobs()
+        self._reconcile_membership()
 
-    def _prune_missing_jobs(self) -> None:
+    def _reconcile_membership(self) -> None:
+        summaries = {summary.id: summary for summary in self.jobs.list_summaries()}
+        changed_batch_ids: set[str] = set()
         for batch in self._batches.values():
             existing: list[str] = []
+            seen: set[str] = set()
             for job_id in batch.job_ids:
-                try:
-                    self.jobs.get_summary(job_id)
-                except KeyError:
+                summary = summaries.get(job_id)
+                if (
+                    summary is None
+                    or summary.batch_id != batch.id
+                    or job_id in seen
+                ):
                     continue
+                seen.add(job_id)
                 existing.append(job_id)
             if existing != batch.job_ids:
                 batch.job_ids = existing
-                batch.updated_at = utc_now()
-                batch.status_summary = self._view(batch).status_summary
-                self.store.save(batch)
+                changed_batch_ids.add(batch.id)
+
+        for summary in summaries.values():
+            if summary.batch_id is None:
+                continue
+            batch = self._batches.get(summary.batch_id)
+            if batch is None:
+                self.jobs.assign_batch(summary.id, None)
+                continue
+            if summary.id not in batch.job_ids:
+                batch.job_ids.append(summary.id)
+                changed_batch_ids.add(batch.id)
+
+        for batch_id in changed_batch_ids:
+            batch = self._batches[batch_id]
+            batch.updated_at = utc_now()
+            batch.status_summary = self._view(batch).status_summary
+            self.store.save(batch)
 
     def _record(self, batch_id: str) -> BatchRecord:
         with self._lock:
@@ -177,31 +199,7 @@ class BatchManager:
                 job_request = self._job_request(source, request.config)
                 media = self.jobs.resolve_source(job_request)
                 path = Path(media.path).resolve(strict=True)
-                export = job_request.export
-                output_directory = (
-                    Path(export.output_directory).expanduser().resolve()
-                    if export.output_directory
-                    else path.parent
-                )
-                output_path = (output_directory / f"{path.stem}.srt").resolve()
-                view.source_name = media.name
-                view.normalized_path = str(path)
-                view.size = path.stat().st_size
-                view.output_path = str(output_path)
-                if output_path.exists() and not export.overwrite_existing:
-                    view.issues.append(
-                        BatchPreflightIssue(
-                            code="output_exists",
-                            message="目标字幕已存在且当前配置不允许覆盖",
-                        )
-                    )
-                resolved[index] = _ResolvedBatchSource(
-                    index=index,
-                    request=job_request,
-                    view=view,
-                    source_key=_path_key(path),
-                    output_key=_path_key(output_path),
-                )
+                size = path.stat().st_size
             except (KeyError, OSError, ValueError) as exc:
                 view.issues.append(
                     BatchPreflightIssue(
@@ -209,6 +207,51 @@ class BatchManager:
                         message=str(exc) or "源文件无效",
                     )
                 )
+                views.append(view)
+                continue
+
+            export = job_request.export
+            view.source_name = media.name
+            view.normalized_path = str(path)
+            view.size = size
+            try:
+                output_path = subtitle_output_path(path, export)
+            except (OSError, RuntimeError, ValueError) as exc:
+                view.issues.append(
+                    BatchPreflightIssue(code="invalid_output", message=str(exc))
+                )
+                views.append(view)
+                continue
+            view.output_path = str(output_path)
+            try:
+                validate_output_target(
+                    output_path,
+                    overwrite_existing=export.overwrite_existing,
+                )
+            except FileExistsError as exc:
+                view.issues.append(
+                    BatchPreflightIssue(code="output_exists", message=str(exc))
+                )
+            except (OSError, ValueError) as exc:
+                view.issues.append(
+                    BatchPreflightIssue(code="invalid_output", message=str(exc))
+                )
+
+            owner = self.jobs.output_claim_owner(output_path)
+            if owner is not None:
+                view.issues.append(
+                    BatchPreflightIssue(
+                        code="output_conflict",
+                        message=f"目标字幕路径已由任务 {owner} 占用",
+                    )
+                )
+            resolved[index] = _ResolvedBatchSource(
+                index=index,
+                request=job_request,
+                view=view,
+                source_key=output_path_key(path),
+                output_key=output_path_key(output_path),
+            )
             views.append(view)
 
         source_groups: dict[str, list[_ResolvedBatchSource]] = defaultdict(list)
@@ -308,37 +351,94 @@ class BatchManager:
             config_template=request.config.model_copy(deep=True),
         )
         with self._lock:
-            self._batches[batch.id] = batch
             self.store.save(batch)
+            self._batches[batch.id] = batch
         created_count = 0
         for item in valid:
+            created = None
             try:
                 translation = item.request.translation.model_copy(
-                    update={"api_key": request.api_key}
+                    update={"api_key": None}
                 )
                 job_request = item.request.model_copy(
                     deep=True,
                     update={
                         "translation": translation,
-                        "auto_start": request.auto_start,
+                        "auto_start": False,
                     },
                 )
                 created = self.jobs.create(job_request, batch_id=batch.id)
                 with self._lock:
+                    previous_updated_at = batch.updated_at
+                    previous_status_summary = batch.status_summary
                     batch.job_ids.append(created.id)
                     batch.updated_at = utc_now()
                     batch.status_summary = self._view(batch).status_summary
-                    self.store.save(batch)
-                created_count += 1
-                results.append(
-                    BatchJobCreateResult(
-                        index=item.index,
-                        source_name=item.view.source_name,
-                        ok=True,
-                        job=self.jobs.get_summary(created.id),
+                    try:
+                        self.store.save(batch)
+                    except Exception:
+                        batch.job_ids = [
+                            job_id for job_id in batch.job_ids if job_id != created.id
+                        ]
+                        batch.updated_at = previous_updated_at
+                        batch.status_summary = previous_status_summary
+                        raise
+                if request.auto_start:
+                    self.jobs.run(
+                        created.id,
+                        JobRunRequest(
+                            api_key=request.api_key,
+                            continue_pipeline=True,
+                        ),
                     )
+                result = BatchJobCreateResult(
+                    index=item.index,
+                    source_name=item.view.source_name,
+                    ok=True,
+                    job=self.jobs.get_summary(created.id),
                 )
+                created_count += 1
+                results.append(result)
             except (KeyError, OSError, ValueError) as exc:
+                if created is not None and created.id in batch.job_ids:
+                    # Association is durable, so an auto-start failure must not be
+                    # misreported as a failed creation or turned into an orphan.
+                    created_count += 1
+                    results.append(
+                        BatchJobCreateResult(
+                            index=item.index,
+                            source_name=item.view.source_name,
+                            ok=True,
+                            job=self.jobs.get_summary(created.id),
+                            error=f"任务已创建，但自动启动失败：{exc}",
+                        )
+                    )
+                    continue
+                if created is not None:
+                    try:
+                        self.jobs.delete(created.id)
+                    except (KeyError, OSError, ValueError):
+                        # If compensation itself cannot delete the Job, preserve a
+                        # visible, repairable association instead of hiding an orphan.
+                        with suppress(KeyError):
+                            surviving = self.jobs.get_summary(created.id)
+                            with self._lock:
+                                if surviving.id not in batch.job_ids:
+                                    batch.job_ids.append(surviving.id)
+                                    batch.updated_at = utc_now()
+                                    batch.status_summary = self._view(batch).status_summary
+                                    self.store.save(batch)
+                            created_count += 1
+                            results.append(
+                                BatchJobCreateResult(
+                                    index=item.index,
+                                    source_name=item.view.source_name,
+                                    ok=True,
+                                    job=surviving,
+                                    error=f"任务已创建，但关联写入曾失败：{exc}",
+                                )
+                            )
+                            continue
                 results.append(
                     BatchJobCreateResult(
                         index=item.index,
@@ -349,8 +449,8 @@ class BatchManager:
                 )
         if not batch.job_ids:
             with self._lock:
-                self._batches.pop(batch.id, None)
                 self.store.delete(batch.id)
+                self._batches.pop(batch.id, None)
             batch_view = None
         else:
             batch_view = self._view(batch)
@@ -455,10 +555,19 @@ class BatchManager:
             for batch in self._batches.values():
                 if job_id not in batch.job_ids:
                     continue
+                previous_job_ids = list(batch.job_ids)
+                previous_updated_at = batch.updated_at
+                previous_status_summary = batch.status_summary
                 batch.job_ids = [item for item in batch.job_ids if item != job_id]
                 batch.updated_at = utc_now()
                 batch.status_summary = self._view(batch).status_summary
-                self.store.save(batch)
+                try:
+                    self.store.save(batch)
+                except Exception:
+                    batch.job_ids = previous_job_ids
+                    batch.updated_at = previous_updated_at
+                    batch.status_summary = previous_status_summary
+                    raise
 
     def delete(self, batch_id: str, *, delete_jobs: bool) -> BatchDeleteResult:
         batch = self._record(batch_id)
@@ -492,8 +601,8 @@ class BatchManager:
             with suppress(KeyError):
                 result.job = self.jobs.assign_batch(result.job_id, None)
         with self._lock:
-            self._batches.pop(batch_id, None)
             self.store.delete(batch_id)
+            self._batches.pop(batch_id, None)
         return BatchDeleteResult(
             batch_id=batch_id,
             deleted=True,

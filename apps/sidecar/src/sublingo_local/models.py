@@ -635,6 +635,7 @@ class BatchPreflightIssue(BaseModel):
         "duplicate_source",
         "output_conflict",
         "output_exists",
+        "invalid_output",
     ]
     message: str
 
