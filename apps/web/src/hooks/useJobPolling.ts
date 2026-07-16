@@ -3,7 +3,14 @@ import { useEffect, useState } from 'react'
 import { getJob } from '../api/client'
 import type { JobView } from '../types/api'
 
-const TERMINAL_STATUSES = new Set(['draft', 'completed', 'failed', 'cancelled'])
+const TERMINAL_STATUSES = new Set([
+  'draft',
+  'waiting_for_input',
+  'completed',
+  'failed',
+  'cancelled',
+  'interrupted',
+])
 
 export function useJobPolling(initialJob: JobView | null) {
   const [job, setJob] = useState<JobView | null>(initialJob)

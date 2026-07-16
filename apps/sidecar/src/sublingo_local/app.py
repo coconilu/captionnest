@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
+from .batch_store import BatchStore
 from .environment import EnvironmentService, EnvironmentView
 from .job_store import JobStore
 from .jobs import JobManager, ProcessingPipeline
@@ -32,6 +33,7 @@ from .models import (
     OpenFolderRequest,
     OpenFolderResult,
     PickVideoResult,
+    SchedulerSettings,
     UploadView,
 )
 from .storage import UploadStore
@@ -49,11 +51,13 @@ def create_app(
     *,
     data_dir: Path | None = None,
     pipeline: ProcessingPipeline | None = None,
+    scheduler_settings: SchedulerSettings | None = None,
     static_dir: Path | None = None,
 ) -> FastAPI:
     resolved_data_dir = (data_dir or default_data_dir()).resolve()
     upload_store = UploadStore(resolved_data_dir / "uploads")
     job_store = JobStore(resolved_data_dir / "jobs")
+    batch_store = BatchStore(resolved_data_dir / "batches")
     model_manager = ModelManager(resolved_data_dir / "models")
     environment_service = EnvironmentService(model_manager)
     actual_pipeline = pipeline or ProcessingPipeline(
@@ -61,7 +65,12 @@ def create_app(
         model_manager=model_manager,
         job_store=job_store,
     )
-    manager = JobManager(upload_store, actual_pipeline, job_store=job_store)
+    manager = JobManager(
+        upload_store,
+        actual_pipeline,
+        job_store=job_store,
+        scheduler_settings=scheduler_settings,
+    )
     session_token = os.getenv("CAPTIONNEST_SESSION_TOKEN", "").strip()
 
     @asynccontextmanager
@@ -69,9 +78,11 @@ def create_app(
         app.state.data_dir = resolved_data_dir
         app.state.upload_store = upload_store
         app.state.job_store = job_store
+        app.state.batch_store = batch_store
         app.state.job_manager = manager
         app.state.model_manager = model_manager
         app.state.environment_service = environment_service
+        manager.start()
         yield
         await manager.shutdown()
 

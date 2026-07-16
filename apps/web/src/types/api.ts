@@ -7,9 +7,20 @@ export type JobAsrProvider = AsrProvider | LegacyAsrProvider
 export type JobAsrModel = AsrModel | LegacyAsrModel
 export type AsrOutputMode = 'chunk_segments' | 'word_resegmented'
 export type TranslationProvider = 'codex_spark' | 'lmstudio' | 'deepseek'
-export type JobStatus = 'draft' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
-export type JobStage =
+export type JobStatus =
+  | 'draft'
   | 'queued'
+  | 'running'
+  | 'waiting_for_input'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'interrupted'
+export type QueueStatus = JobStatus
+export type JobStage =
+  | 'draft'
+  | 'queued'
+  | 'waiting_for_input'
   | 'extracting'
   | 'transcribing'
   | 'translating'
@@ -17,8 +28,16 @@ export type JobStage =
   | 'completed'
   | 'failed'
   | 'cancelled'
+  | 'interrupted'
 export type JobStepId = 'media' | 'transcription' | 'translation' | 'export'
-export type StepStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'stale' | 'cancelled'
+export type StepStatus =
+  | 'pending'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'stale'
+  | 'cancelled'
+  | 'interrupted'
 
 export interface MediaStepConfig {
   source_kind: 'path' | 'upload'
@@ -127,9 +146,14 @@ export interface JobStepView {
 
 export interface JobView {
   id: string
+  batch_id: string | null
   status: JobStatus
+  queue_status: QueueStatus
+  queue_position: number | null
+  priority: number
   stage: JobStage
   progress: number
+  current_step: JobStepId | null
   source_name: string
   source_kind: 'path' | 'upload'
   detected_language: string | null
@@ -138,6 +162,7 @@ export interface JobView {
   translation_provider: TranslationProvider
   created_at: string
   updated_at: string
+  interrupted_at: string | null
   subtitle_path: string | null
   error: string | null
   logs: JobLog[]

@@ -16,6 +16,7 @@ from pydantic import BaseModel, SecretStr, ValidationError
 
 from .asr import ASRProvider, FasterWhisperProvider
 from .asr.base import TranscriptionResult
+from .job_repository import JobRepository
 from .job_store import JobStore
 from .media import ensure_supported_video
 from .model_manager import ModelManager
@@ -29,13 +30,16 @@ from .models import (
     JobStatus,
     JobStep,
     JobStepView,
+    JobSummaryView,
     JobView,
     LegacyASRSettings,
     LogEntry,
     LogLevel,
     MediaStepSettings,
     ModelUsageSummary,
+    QueueStatus,
     ResolvedSource,
+    SchedulerSettings,
     SourceKind,
     StepArtifactView,
     StepAttemptView,
@@ -47,6 +51,7 @@ from .models import (
     merge_model_usage,
     utc_now,
 )
+from .scheduler import JobScheduler
 from .storage import UploadStore
 from .subtitles import segments_to_translation_items, write_bilingual_srt
 from .translation import TranslationService, create_translation_provider
@@ -75,6 +80,10 @@ STEP_PROGRESS = {
 LEGACY_ASR_UNAVAILABLE_MESSAGE = (
     "Qwen3-ASR 已停用；历史任务仍可查看，请先在识别配置中改选 Faster-Whisper 模型"
 )
+
+
+class _BlockingCallCancelled(RuntimeError):
+    """Cooperatively stop a blocking provider after its asyncio owner is cancelled."""
 
 
 def _language_key(language: str | TargetLanguage) -> str:
@@ -119,6 +128,34 @@ def _fingerprint(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
+async def _run_blocking_call(
+    function: Callable[..., Any],
+    /,
+    *args: Any,
+    cancel_callback: Callable[[], None] | None = None,
+    **kwargs: Any,
+) -> Any:
+    """Keep a scheduler resource claimed until its worker thread really stops."""
+
+    worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        if cancel_callback is not None:
+            cancel_callback()
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                # Repeated cancellation must not detach a still-running thread.
+                continue
+            except Exception:
+                break
+        if worker.done() and not worker.cancelled():
+            worker.exception()
+        raise
+
+
 def _default_steps() -> dict[JobStep, JobStepView]:
     return {
         step: JobStepView(id=step, status=StepStatus.PENDING)
@@ -133,16 +170,23 @@ class JobRecord:
     asr: ASRSettings | LegacyASRSettings = field(default_factory=ASRSettings)
     translation: TranslationStepSettings = field(default_factory=TranslationStepSettings)
     export: ExportSettings = field(default_factory=ExportSettings)
+    batch_id: str | None = None
     status: JobStatus = JobStatus.DRAFT
+    queue_status: QueueStatus = QueueStatus.DRAFT
+    queue_position: int | None = None
+    priority: int = 0
     stage: JobStage = JobStage.DRAFT
     progress: int = 0
     detected_language: str | None = None
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
+    interrupted_at: datetime | None = None
     error: str | None = None
     logs: list[LogEntry] = field(default_factory=list)
     steps: dict[JobStep, JobStepView] = field(default_factory=_default_steps)
     current_step: JobStep | None = None
+    queued_start_step: JobStep | None = None
+    queued_continue_pipeline: bool = True
     _persist_callback: PersistCallback | None = field(default=None, repr=False)
     _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
     _attempt_started_monotonic: dict[JobStep, float] = field(
@@ -208,6 +252,7 @@ class JobRecord:
         with self._lock:
             if status is not None:
                 self.status = status
+                self.queue_status = QueueStatus(status.value)
             if stage is not None:
                 self.stage = stage
             if progress is not None:
@@ -240,6 +285,8 @@ class JobRecord:
             state.error = None
             self.current_step = step
             self.status = JobStatus.RUNNING
+            self.queue_status = QueueStatus.RUNNING
+            self.queue_position = None
             self.stage = STEP_STAGE[step]
             self.error = None
             self.progress = STEP_PROGRESS[step][0]
@@ -325,6 +372,8 @@ class JobRecord:
                 attempt.error = message
             self.current_step = None
             self.status = JobStatus.FAILED
+            self.queue_status = QueueStatus.FAILED
+            self.queue_position = None
             self.stage = STEP_STAGE[step]
             self.error = message
             self._append_log(message, level=LogLevel.ERROR)
@@ -345,6 +394,8 @@ class JobRecord:
                     attempt.error = "任务已取消"
             self.current_step = None
             self.status = JobStatus.CANCELLED
+            self.queue_status = QueueStatus.CANCELLED
+            self.queue_position = None
             self.stage = JobStage.CANCELLED
             self.error = "任务已取消"
             self._append_log("任务已取消", level=LogLevel.WARNING)
@@ -362,6 +413,8 @@ class JobRecord:
                 state.progress = 0
                 state.error = None
             self.status = JobStatus.DRAFT
+            self.queue_status = QueueStatus.DRAFT
+            self.queue_position = None
             self.stage = STEP_STAGE[step]
             self.progress = STEP_PROGRESS[step][0]
             self.error = None
@@ -371,9 +424,19 @@ class JobRecord:
             self.updated_at = utc_now()
             self._persist()
 
-    def mark_queued(self, step: JobStep) -> None:
+    def mark_queued(
+        self,
+        step: JobStep,
+        *,
+        continue_pipeline: bool,
+        queue_position: int,
+    ) -> None:
         with self._lock:
             self.status = JobStatus.QUEUED
+            self.queue_status = QueueStatus.QUEUED
+            self.queue_position = queue_position
+            self.queued_start_step = step
+            self.queued_continue_pipeline = continue_pipeline
             self.stage = STEP_STAGE[step]
             self.progress = STEP_PROGRESS[step][0]
             self.error = None
@@ -381,9 +444,68 @@ class JobRecord:
             self.updated_at = utc_now()
             self._persist()
 
+    def set_queue_position(self, position: int) -> None:
+        with self._lock:
+            if self.queue_status != QueueStatus.QUEUED:
+                return
+            normalized = max(1, position)
+            if self.queue_position == normalized:
+                return
+            self.queue_position = normalized
+            self.updated_at = utc_now()
+            self._persist()
+
+    def mark_scheduler_running(self) -> None:
+        with self._lock:
+            self.queue_status = QueueStatus.RUNNING
+            self.queue_position = None
+            self.updated_at = utc_now()
+            self._persist()
+
+    def mark_waiting_for_input(self, step: JobStep) -> None:
+        with self._lock:
+            self.status = JobStatus.WAITING_FOR_INPUT
+            self.queue_status = QueueStatus.WAITING_FOR_INPUT
+            self.queue_position = None
+            self.stage = JobStage.WAITING_FOR_INPUT
+            self.current_step = None
+            self.queued_start_step = step
+            self.error = "运行时 API Key 已丢失，请重新输入后继续"
+            self._append_log(self.error, level=LogLevel.WARNING)
+            self.updated_at = utc_now()
+            self._persist()
+
+    def mark_interrupted(self) -> None:
+        with self._lock:
+            now = utc_now()
+            step = self.current_step or self.queued_start_step
+            if step is not None:
+                state = self.steps[step]
+                if state.status == StepStatus.RUNNING:
+                    state.status = StepStatus.INTERRUPTED
+                    state.error = "任务执行被应用退出中断"
+                if state.attempts and state.attempts[-1].status == StepStatus.RUNNING:
+                    attempt = state.attempts[-1]
+                    attempt.status = StepStatus.INTERRUPTED
+                    attempt.finished_at = now
+                    attempt.error = "任务执行被应用退出中断"
+            self.current_step = None
+            self.queued_start_step = step
+            self.status = JobStatus.INTERRUPTED
+            self.queue_status = QueueStatus.INTERRUPTED
+            self.queue_position = None
+            self.stage = JobStage.INTERRUPTED
+            self.interrupted_at = now
+            self.error = "任务执行被应用退出中断，请从中断步骤重试"
+            self._append_log(self.error, level=LogLevel.WARNING)
+            self.updated_at = now
+            self._persist()
+
     def mark_complete(self) -> None:
         with self._lock:
             self.status = JobStatus.COMPLETED
+            self.queue_status = QueueStatus.COMPLETED
+            self.queue_position = None
             self.stage = JobStage.COMPLETED
             self.progress = 100
             self.error = None
@@ -402,6 +524,8 @@ class JobRecord:
                 self.mark_complete()
                 return
             self.status = JobStatus.DRAFT
+            self.queue_status = QueueStatus.DRAFT
+            self.queue_position = None
             self.stage = STEP_STAGE[next_step]
             self.progress = STEP_PROGRESS[next_step][0]
             self.current_step = None
@@ -440,9 +564,14 @@ class JobRecord:
             attempts = [attempt for state in views for attempt in state.attempts]
             return JobView(
                 id=self.id,
+                batch_id=self.batch_id,
                 status=self.status,
+                queue_status=self.queue_status,
+                queue_position=self.queue_position,
+                priority=self.priority,
                 stage=self.stage,
                 progress=self.progress,
+                current_step=self.current_step,
                 source_name=self.media.name,
                 source_kind=self.media.source_kind,
                 detected_language=self.detected_language,
@@ -451,6 +580,7 @@ class JobRecord:
                 translation_provider=self.translation.provider,
                 created_at=self.created_at,
                 updated_at=self.updated_at,
+                interrupted_at=self.interrupted_at,
                 subtitle_path=self.subtitle_path,
                 error=self.error,
                 logs=list(self.logs),
@@ -470,21 +600,84 @@ class JobRecord:
                 ),
             )
 
+    def to_summary(self) -> JobSummaryView:
+        with self._lock:
+            attempts = [
+                attempt
+                for step in STEP_ORDER
+                for attempt in self.steps[step].attempts
+            ]
+            summary_step = self.current_step
+            if summary_step is None and self.status in {
+                JobStatus.QUEUED,
+                JobStatus.RUNNING,
+                JobStatus.WAITING_FOR_INPUT,
+                JobStatus.INTERRUPTED,
+            }:
+                summary_step = self.queued_start_step
+            if summary_step is None and self.status != JobStatus.COMPLETED:
+                summary_step = next(
+                    (
+                        step
+                        for step in STEP_ORDER
+                        if self.steps[step].status != StepStatus.SUCCEEDED
+                    ),
+                    None,
+                )
+            return JobSummaryView(
+                id=self.id,
+                batch_id=self.batch_id,
+                source_name=self.media.name,
+                source_kind=self.media.source_kind,
+                status=self.status,
+                queue_status=self.queue_status,
+                current_step=summary_step,
+                stage=self.stage,
+                progress=self.progress,
+                queue_position=self.queue_position,
+                priority=self.priority,
+                created_at=self.created_at,
+                updated_at=self.updated_at,
+                interrupted_at=self.interrupted_at,
+                error=(self.error[:240] if self.error else None),
+                subtitle_path=self.subtitle_path,
+                wall_duration_ms=_wall_duration_ms(
+                    attempts,
+                    status=self.status,
+                    updated_at=self.updated_at,
+                ),
+                cumulative_attempt_duration_ms=_total_attempt_duration(attempts),
+                total_model_usage=merge_model_usage(
+                    [
+                        attempt.model_usage
+                        for attempt in attempts
+                        if attempt.model_usage is not None
+                    ]
+                ),
+            )
+
     def to_payload(self) -> dict[str, Any]:
         with self._lock:
             return {
-                "schema_version": 2,
+                "schema_version": 3,
                 "id": self.id,
+                "batch_id": self.batch_id,
                 "media": self.media.model_dump(mode="json"),
                 "asr": self.asr.model_dump(mode="json"),
                 "translation": self.translation.model_dump(mode="json"),
                 "export": self.export.model_dump(mode="json"),
                 "status": self.status.value,
+                "queue_status": self.queue_status.value,
+                "queue_position": self.queue_position,
+                "priority": self.priority,
                 "stage": self.stage.value,
                 "progress": self.progress,
                 "detected_language": self.detected_language,
                 "created_at": self.created_at.isoformat(),
                 "updated_at": self.updated_at.isoformat(),
+                "interrupted_at": (
+                    self.interrupted_at.isoformat() if self.interrupted_at else None
+                ),
                 "error": self.error,
                 "logs": [item.model_dump(mode="json") for item in self.logs],
                 "steps": [
@@ -501,6 +694,10 @@ class JobRecord:
                     for step in STEP_ORDER
                 ],
                 "current_step": self.current_step.value if self.current_step else None,
+                "queued_start_step": (
+                    self.queued_start_step.value if self.queued_start_step else None
+                ),
+                "queued_continue_pipeline": self.queued_continue_pipeline,
             }
 
     @classmethod
@@ -523,6 +720,7 @@ class JobRecord:
                 raw_asr = {**raw_asr, **compatibility_defaults}
         record = cls(
             id=str(payload["id"]),
+            batch_id=(str(payload["batch_id"]) if payload.get("batch_id") else None),
             media=MediaStepSettings.model_validate(payload["media"]),
             asr=(
                 LegacyASRSettings.model_validate(raw_asr)
@@ -532,17 +730,39 @@ class JobRecord:
             translation=TranslationStepSettings.model_validate(payload["translation"]),
             export=ExportSettings.model_validate(payload.get("export", {})),
             status=JobStatus(payload.get("status", JobStatus.DRAFT)),
+            queue_status=QueueStatus(
+                payload.get("queue_status", payload.get("status", QueueStatus.DRAFT))
+            ),
+            queue_position=(
+                int(payload["queue_position"])
+                if payload.get("queue_position") is not None
+                else None
+            ),
+            priority=int(payload.get("priority", 0)),
             stage=JobStage(payload.get("stage", JobStage.DRAFT)),
             progress=int(payload.get("progress", 0)),
             detected_language=payload.get("detected_language"),
             created_at=datetime.fromisoformat(str(payload["created_at"])),
             updated_at=datetime.fromisoformat(str(payload["updated_at"])),
+            interrupted_at=(
+                datetime.fromisoformat(str(payload["interrupted_at"]))
+                if payload.get("interrupted_at")
+                else None
+            ),
             error=payload.get("error"),
             logs=[LogEntry.model_validate(item) for item in payload.get("logs", [])],
             current_step=(
                 JobStep(payload["current_step"])
                 if payload.get("current_step")
                 else None
+            ),
+            queued_start_step=(
+                JobStep(payload["queued_start_step"])
+                if payload.get("queued_start_step")
+                else None
+            ),
+            queued_continue_pipeline=bool(
+                payload.get("queued_continue_pipeline", True)
             ),
         )
         loaded_steps = {
@@ -578,7 +798,13 @@ def _wall_duration_ms(
     started_at = min(attempt.started_at for attempt in attempts)
     if status in {JobStatus.QUEUED, JobStatus.RUNNING}:
         finished_at = utc_now()
-    elif status in {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED}:
+    elif status in {
+        JobStatus.COMPLETED,
+        JobStatus.FAILED,
+        JobStatus.CANCELLED,
+        JobStatus.INTERRUPTED,
+        JobStatus.WAITING_FOR_INPUT,
+    }:
         finished_at = updated_at
     else:
         finished = [attempt.finished_at for attempt in attempts if attempt.finished_at]
@@ -624,18 +850,7 @@ class ProcessingPipeline:
         start_index = STEP_ORDER.index(start_step)
         selected = STEP_ORDER[start_index:] if continue_pipeline else (start_step,)
         for step in selected:
-            self._require_prerequisites(record, step)
-            artifact = await self._run_step(record, step, api_key=api_key)
-            completion_message = f"{_step_label(step)}完成"
-            if (
-                step == JobStep.TRANSCRIPTION
-                and isinstance(record.asr, ASRSettings)
-                and record.asr.hotwords
-            ):
-                completion_message += (
-                    f"，已使用 {len(record.asr.hotwords)} 个提示词"
-                )
-            record.complete_step(step, artifact, completion_message)
+            await self.run_step(record, step, api_key=api_key)
         if all(
             record.steps[step].status == StepStatus.SUCCEEDED
             for step in STEP_ORDER
@@ -643,6 +858,24 @@ class ProcessingPipeline:
             record.mark_complete()
         else:
             record.mark_paused()
+
+    async def run_step(
+        self,
+        record: JobRecord,
+        step: JobStep,
+        *,
+        api_key: str | None = None,
+    ) -> None:
+        self._require_prerequisites(record, step)
+        artifact = await self._run_step(record, step, api_key=api_key)
+        completion_message = f"{_step_label(step)}完成"
+        if (
+            step == JobStep.TRANSCRIPTION
+            and isinstance(record.asr, ASRSettings)
+            and record.asr.hotwords
+        ):
+            completion_message += f"，已使用 {len(record.asr.hotwords)} 个提示词"
+        record.complete_step(step, artifact, completion_message)
 
     def _require_prerequisites(self, record: JobRecord, step: JobStep) -> None:
         index = STEP_ORDER.index(step)
@@ -698,8 +931,11 @@ class ProcessingPipeline:
 
     async def _prepare_media(self, record: JobRecord) -> StepArtifactView:
         record.begin_step(JobStep.MEDIA, "正在验证媒体文件")
-        path = await asyncio.to_thread(ensure_supported_video, Path(record.media.path))
-        stat = await asyncio.to_thread(path.stat)
+        path = await _run_blocking_call(
+            ensure_supported_video,
+            Path(record.media.path),
+        )
+        stat = await _run_blocking_call(path.stat)
         payload = {
             "path": str(path),
             "name": path.name,
@@ -707,7 +943,7 @@ class ProcessingPipeline:
             "size": stat.st_size,
             "modified_ns": stat.st_mtime_ns,
         }
-        artifact_path, fingerprint = await asyncio.to_thread(
+        artifact_path, fingerprint = await _run_blocking_call(
             self.store.write_artifact,
             record.id,
             "media.json",
@@ -754,19 +990,23 @@ class ProcessingPipeline:
         )
         record.begin_step(JobStep.TRANSCRIPTION, message)
         asr = self._create_asr()
+        cancel_requested = threading.Event()
 
         def on_progress(value: float) -> None:
+            if cancel_requested.is_set():
+                raise _BlockingCallCancelled
             record.update_step_progress(JobStep.TRANSCRIPTION, value)
 
-        transcription = await asyncio.to_thread(
+        transcription = await _run_blocking_call(
             asr.transcribe,
             record.source.path,
             language="auto",
             settings=record.asr,
             on_progress=on_progress,
+            cancel_callback=cancel_requested.set,
         )
         payload = transcription.model_dump(mode="json")
-        artifact_path, fingerprint = await asyncio.to_thread(
+        artifact_path, fingerprint = await _run_blocking_call(
             self.store.write_artifact,
             record.id,
             "transcription.json",
@@ -851,7 +1091,7 @@ class ProcessingPipeline:
             "target_language": record.translation.target_language.value,
             "items": [item.model_dump(mode="json") for item in translated],
         }
-        artifact_path, fingerprint = await asyncio.to_thread(
+        artifact_path, fingerprint = await _run_blocking_call(
             self.store.write_artifact,
             record.id,
             "translation.json",
@@ -892,13 +1132,13 @@ class ProcessingPipeline:
         subtitle_path = output_directory / record.source.path.with_suffix(".srt").name
         if subtitle_path.exists() and not record.export.overwrite_existing:
             raise FileExistsError("目标字幕已存在，请允许覆盖或修改输出目录")
-        await asyncio.to_thread(
+        await _run_blocking_call(
             write_bilingual_srt,
             subtitle_path,
             transcription.segments,
             translated,
         )
-        content = await asyncio.to_thread(subtitle_path.read_bytes)
+        content = await _run_blocking_call(subtitle_path.read_bytes)
         fingerprint = hashlib.sha256(content).hexdigest()
         record.update_step_progress(JobStep.EXPORT, 1.0)
         return self._artifact(
@@ -921,34 +1161,82 @@ class JobManager:
         pipeline: ProcessingPipeline,
         *,
         job_store: JobStore | None = None,
+        scheduler_settings: SchedulerSettings | None = None,
     ) -> None:
         self.upload_store = upload_store
         self.pipeline = pipeline
         self.store = job_store or getattr(pipeline, "store", None)
-        self._jobs: dict[str, JobRecord] = {}
-        self._tasks: dict[str, asyncio.Task[None]] = {}
-        self._load_jobs()
-
-    def _load_jobs(self) -> None:
-        if self.store is None:
-            return
-        for payload in self.store.load_jobs():
-            try:
-                record = JobRecord.from_payload(payload)
-            except (KeyError, TypeError, ValueError):
-                continue
-            self._attach(record)
-            self._jobs[record.id] = record
-            if record.status in {JobStatus.QUEUED, JobStatus.RUNNING}:
-                record.fail_current(RuntimeError("应用在任务运行期间退出，请从当前步骤重试"))
-
-    def _attach(self, record: JobRecord) -> None:
-        if self.store is None:
-            record.attach_persistence(None)
-            return
-        record.attach_persistence(
-            lambda payload, job_id=record.id: self.store.save_job(job_id, payload)
+        self.repository = JobRepository(self.store, JobRecord.from_payload)
+        self._jobs = self.repository.records
+        self.scheduler = JobScheduler(
+            pipeline,
+            self._record,
+            step_order=STEP_ORDER,
+            settings=scheduler_settings,
         )
+        # Backward-compatible awaitable map for integrations that waited on `_tasks`.
+        # Values are completion Futures, not one unbounded asyncio.Task per queued job.
+        self._tasks = self.scheduler.completions
+        self._recover_jobs()
+
+    def _recover_jobs(self) -> None:
+        def recovery_request(
+            record: JobRecord,
+        ) -> tuple[JobStep, tuple[JobStep, ...]]:
+            start_step = record.current_step or record.queued_start_step or next(
+                (
+                    step
+                    for step in STEP_ORDER
+                    if record.steps[step].status != StepStatus.SUCCEEDED
+                ),
+                JobStep.MEDIA,
+            )
+            start_index = STEP_ORDER.index(start_step)
+            selected = (
+                STEP_ORDER[start_index:]
+                if record.queued_continue_pipeline
+                else (start_step,)
+            )
+            return start_step, tuple(selected)
+
+        queued: list[JobRecord] = []
+        for record in self.repository.list():
+            if record.queue_status == QueueStatus.RUNNING or record.status == JobStatus.RUNNING:
+                start_step, selected = recovery_request(record)
+                record.mark_interrupted()
+                if (
+                    JobStep.TRANSLATION in selected
+                    and record.translation.provider
+                    == TranslationProviderName.DEEPSEEK
+                ):
+                    record.mark_waiting_for_input(start_step)
+                continue
+            if record.queue_status == QueueStatus.QUEUED or record.status == JobStatus.QUEUED:
+                queued.append(record)
+
+        queued.sort(
+            key=lambda item: (
+                item.queue_position if item.queue_position is not None else 2**31,
+                -item.priority,
+                item.created_at,
+            )
+        )
+        for record in queued:
+            start_step, selected = recovery_request(record)
+            if (
+                JobStep.TRANSLATION in selected
+                and record.translation.provider == TranslationProviderName.DEEPSEEK
+            ):
+                record.mark_waiting_for_input(start_step)
+                continue
+            self.scheduler.restore(
+                record.id,
+                start_step,
+                continue_pipeline=record.queued_continue_pipeline,
+            )
+
+    def start(self) -> None:
+        self.scheduler.start()
 
     def resolve_source(self, request: JobCreateRequest) -> MediaStepSettings:
         if request.video_path:
@@ -985,10 +1273,8 @@ class JobManager:
             translation=translation,
             export=request.export.model_copy(deep=True),
         )
+        self.repository.add(record)
         record.update(message="任务草稿已创建")
-        self._attach(record)
-        self._jobs[record.id] = record
-        record.update()
         if request.auto_start:
             self.run(
                 record.id,
@@ -1052,7 +1338,10 @@ class JobManager:
         start_step: JobStep,
         request: JobRunRequest,
     ) -> JobView:
-        if record.id in self._tasks or record.status in {JobStatus.QUEUED, JobStatus.RUNNING}:
+        if self.scheduler.is_active(record.id) or record.status in {
+            JobStatus.QUEUED,
+            JobStatus.RUNNING,
+        }:
             raise ValueError("任务正在运行")
         start_index = STEP_ORDER.index(start_step)
         selected = (
@@ -1074,7 +1363,6 @@ class JobManager:
             labels = "、".join(_step_label(step) for step in missing)
             raise ValueError(f"请先完成上游步骤：{labels}")
 
-        record.invalidate_from(start_step)
         api_key = request.api_key.get_secret_value().strip() if request.api_key else None
         if (
             JobStep.TRANSLATION in selected
@@ -1083,71 +1371,55 @@ class JobManager:
         ):
             raise ValueError("DeepSeek 需要 API Key，请在本次运行前填写")
 
-        record.mark_queued(start_step)
-        task = asyncio.create_task(
-            self._run(
-                record,
-                start_step,
-                api_key=api_key,
-                continue_pipeline=request.continue_pipeline,
-            ),
-            name=f"captionnest-job-{record.id}",
-        )
-        self._tasks[record.id] = task
-        task.add_done_callback(
-            lambda completed, job_id=record.id: self._task_done(job_id, completed)
+        record.invalidate_from(start_step)
+        self.scheduler.enqueue(
+            record,
+            start_step,
+            api_key=api_key,
+            continue_pipeline=request.continue_pipeline,
         )
         return record.to_view()
 
-    def _task_done(self, job_id: str, task: asyncio.Task[None]) -> None:
-        if self._tasks.get(job_id) is task:
-            self._tasks.pop(job_id, None)
-
-    async def _run(
-        self,
-        record: JobRecord,
-        start_step: JobStep,
-        *,
-        api_key: str | None,
-        continue_pipeline: bool,
-    ) -> None:
-        try:
-            await self.pipeline.run_from(
-                record,
-                start_step,
-                api_key=api_key,
-                continue_pipeline=continue_pipeline,
-            )
-        except asyncio.CancelledError:
-            record.cancel_current()
-            raise
-        except Exception as exc:
-            record.fail_current(exc, secrets=(api_key or "",))
-
     def _record(self, job_id: str) -> JobRecord:
-        try:
-            return self._jobs[job_id]
-        except KeyError as exc:
-            raise KeyError("任务不存在") from exc
+        return self.repository.get(job_id)
 
     def get(self, job_id: str) -> JobView:
         return self._record(job_id).to_view()
 
     def list(self) -> list[JobView]:
-        records = sorted(self._jobs.values(), key=lambda item: item.created_at, reverse=True)
+        records = sorted(
+            self.repository.list(),
+            key=lambda item: item.created_at,
+            reverse=True,
+        )
         return [record.to_view() for record in records]
+
+    def list_summaries(self) -> list[JobSummaryView]:
+        records = sorted(
+            self.repository.list(),
+            key=lambda item: item.created_at,
+            reverse=True,
+        )
+        return [record.to_summary() for record in records]
+
+    def cancel(self, job_id: str) -> JobView:
+        record = self._record(job_id)
+        if not self.scheduler.cancel(job_id):
+            raise ValueError("任务不在队列或运行中")
+        return record.to_view()
+
+    async def wait(self, job_id: str) -> None:
+        self._record(job_id)
+        await self.scheduler.wait(job_id)
 
     def delete(self, job_id: str) -> None:
         record = self._record(job_id)
-        if record.id in self._tasks or record.status in {JobStatus.QUEUED, JobStatus.RUNNING}:
+        if self.scheduler.is_active(record.id) or record.status in {
+            JobStatus.QUEUED,
+            JobStatus.RUNNING,
+        }:
             raise ValueError("任务运行中，不能删除")
-        self._jobs.pop(job_id, None)
-        if self.store is not None:
-            self.store.delete_job(job_id)
+        self.repository.delete(job_id)
 
     async def shutdown(self) -> None:
-        tasks = list(self._tasks.values())
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        await self.scheduler.shutdown()

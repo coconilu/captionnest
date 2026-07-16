@@ -12,7 +12,10 @@ flowchart LR
     subgraph Python["Python onedir sidecar"]
         API["FastAPI"]
         JOB["Job Manager"]
+        SCHED["Job Scheduler\n持久 FIFO / 资源上限"]
+        REPO["Job Repository\nSummary / Detail 索引"]
         STORE["Job Store\n配置 / 尝试 / 产物索引"]
+        BATCH["Batch Store\n分组 / 配置模板"]
         AV["PyAV"]
         ASR["ASR Provider\nFaster-Whisper 分片识别"]
         ROUTER{"Translator Provider"}
@@ -22,8 +25,10 @@ flowchart LR
     WEB --> BRIDGE -->|"127.0.0.1:随机端口\nX-CaptionNest-Session"| API
     LIFE -->|"启动 / 退出时终止"| API
     API --> JOB
-    JOB <--> STORE
-    JOB --> AV --> ASR --> ROUTER --> VALIDATE --> SRT
+    JOB --> SCHED
+    JOB <--> REPO <--> STORE
+    JOB <--> BATCH
+    SCHED --> AV --> ASR --> ROUTER --> VALIDATE --> SRT
     ROUTER --> CODEX["codex exec"]
     ROUTER --> LM["LM Studio"]
     ROUTER --> DS["DeepSeek-compatible"]
@@ -40,7 +45,10 @@ flowchart LR
 | ASR Provider | 自动语言检测、分段文本和时间戳 | 翻译 |
 | Translator Provider | 稳定 ID 到目标语言文本 | 修改时间轴 |
 | Pipeline | 步骤调度、失效传播、执行记录和可复用产物 | 持久化 API Key |
+| Job Scheduler | 持久 FIFO、原子 claim、有限 Job worker 与分步骤资源令牌 | 为每个排队任务创建无限后台 Task |
+| Job Repository | 旧 JSON 兼容、Job 内存索引以及轻量 Summary 构造 | 承担识别或翻译业务 |
 | Job Store | 原子保存任务配置、步骤状态、尝试记录和产物索引 | 保存运行时密钥 |
+| Batch Store | 原子保存批次分组、Job ID 和创建时配置模板 | 把多个媒体时间轴合成一个 Job |
 | SRT Writer | 原文在上、译文在下的单文件输出 | 再次切分时间轴 |
 
 ## 任务流水线与失效规则
@@ -64,7 +72,9 @@ flowchart LR
 | 翻译配置或翻译失败 | 媒体与识别产物 | 翻译、导出 |
 | 导出配置或导出失败 | 媒体、识别与翻译产物 | 仅导出 |
 
-任务创建后先成为草稿，正常“开始生成字幕”会从媒体步骤连续执行到导出；步骤级运行接口则可从指定位置继续。应用异常退出时，正在运行的步骤会在下次加载时标为失败，用户可从该步骤重试。删除任务会清理 `job.json` 和内部中间产物，不会把已经写到用户目录的 SRT 当作缓存删除。
+任务创建后先成为草稿，正常“开始生成字幕”会从媒体步骤连续执行到导出；步骤级运行接口则可从指定位置继续。开始请求只把 Job 原子加入持久 FIFO，调度器最多创建配置数量的运行 Task；媒体/导出、CPU ASR、CUDA/auto ASR 和各翻译 Provider 分别受独立 Semaphore 约束，CUDA/auto 默认同时 1 个。应用退出时，尚未 claim 的 `queued` Job 保留顺序；已经运行的 Attempt 标为 `interrupted` 并保留成功上游产物。重启后普通 queued Job 自动恢复，需要 DeepSeek API Key 的 Job 因密钥从不落盘而进入 `waiting_for_input`，等待用户重新输入。删除任务会清理 `job.json` 和内部中间产物，不会把已经写到用户目录的 SRT 当作缓存删除。
+
+队列状态与业务步骤状态分开保存：`queue_status` 表示 draft/queued/running/waiting/completed/failed/cancelled/interrupted，`status` 和每个 Step/Attempt 继续描述任务与流水线结果。旧任务没有 Batch 或队列字段时按 `batch_id=null` 和原 `status` 推导加载，不要求迁移文件。
 
 旧版本写入的 Qwen3-ASR 任务只通过独立的历史配置模型加载，用于保留任务、执行记录和已有产物；新建与更新接口只接受 Faster-Whisper。历史任务重新执行识别前必须先迁移到当前支持的模型，不会重新加载已移除的 Qwen 运行时。
 
