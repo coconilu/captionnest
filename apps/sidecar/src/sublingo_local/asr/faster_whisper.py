@@ -1077,7 +1077,9 @@ def _word_resegmented_subtitles(
 
     raw_segments = [
         _subtitle_segment(index, start=start, end=end, text=text)
-        for index, (start, end, text) in enumerate(sorted(cues), start=1)
+        # Cue insertion order comes from the pre-normalization grouping snapshot.
+        # Sorting equal normalized intervals would otherwise fall through to text.
+        for index, (start, end, text) in enumerate(cues, start=1)
     ]
     readable: list[SubtitleSegment] = []
     duration_ms = max(1, round(duration_seconds * 1_000))

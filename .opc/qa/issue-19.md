@@ -91,7 +91,7 @@
 
 | 检查 | 结果 |
 |---|---:|
-| Sidecar `uv run --project apps/sidecar --extra asr --extra dev pytest -q` | 196 passed，1 个 Starlette 弃用警告 |
+| Sidecar `uv run --project apps/sidecar --extra asr --extra dev pytest -q` | 197 passed，1 个 Starlette 弃用警告 |
 | Sidecar `uv run --project apps/sidecar --extra dev ruff check apps/sidecar` | passed |
 | Tooling `uv run --project apps/sidecar --extra dev pytest tooling/tests -q` | 25 passed |
 | Tooling Ruff | passed |
@@ -120,4 +120,8 @@
 
 ## 独立 Reviewer
 
-待实现提交后，由同一只读 Reviewer 对精确 HEAD 审查；任何 P0–P3 问题均由原 Developer 修复并重新送审，直至 `PASS`。
+| 轮次 | 精确 HEAD | Verdict | 处理结果 |
+|---|---|---|---|
+| 第 1 次 | `83c9da755260002aa15a43a80192ae2da673286e` | `CHANGES_REQUIRED` | 修复两个不同文本 cue 被规范化到相同区间后，`sorted(cues)` 以文本作为平局键而重排 `(id, text)` 的 P1 |
+
+修复改为严格保留校时前分组产生的 cue 插入序号，不再按规范化后的 `(start, end, text)` 重新排序；新增 Reviewer 原始数据的双输出模式回归。修复提交将重新送交同一只读 Reviewer，直至精确 HEAD 获得 `PASS`。

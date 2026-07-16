@@ -4,7 +4,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from sublingo_local.asr.diagnostics import AudioInterval
+from sublingo_local.asr.diagnostics import ASRAudioAnalysis, AudioInterval
 from sublingo_local.asr.faster_whisper import (
     FasterWhisperProvider,
     _analyze_vad,
@@ -13,6 +13,7 @@ from sublingo_local.asr.faster_whisper import (
     _ChunkSegment,
     _deduplicate_boundary_segments,
     _dynamic_chunk_windows,
+    _normalize_chunk_segment_timestamps,
     _optional_finite_float,
     _optional_non_negative_float,
     _optional_probability,
@@ -256,6 +257,65 @@ def test_word_resegmentation_freezes_grouping_before_timestamp_normalization() -
         (item.id, item.text) for item in baseline
     ]
     assert [(item.start_ms, item.end_ms) for item in adjusted] == [(0, 2_210)]
+
+
+def test_normalized_equal_intervals_preserve_text_and_ids_in_both_modes() -> None:
+    original = [
+        _ChunkSegment(
+            text="z-first",
+            start=0.1,
+            end=1.0,
+            words=(),
+            chunk_index=0,
+            avg_logprob=-0.1,
+        ),
+        _ChunkSegment(
+            text="a-second",
+            start=0.15,
+            end=1.05,
+            words=(),
+            chunk_index=0,
+            avg_logprob=-0.1,
+        ),
+    ]
+    analysis = ASRAudioAnalysis(
+        sample_rate=16_000,
+        total_samples=32_000,
+        vad_source="test_vad",
+        vad_status="available",
+        speech_intervals=(
+            AudioInterval(start_sample=3_200, end_sample=14_400),
+        ),
+    )
+
+    normalized, _, _ = _normalize_chunk_segment_timestamps(
+        original,
+        audio_analysis=analysis,
+    )
+    word_baseline = _word_resegmented_subtitles(
+        original,
+        language="en",
+        duration_seconds=2.0,
+    )
+    word_candidate = _word_resegmented_subtitles(
+        normalized,
+        language="en",
+        duration_seconds=2.0,
+        grouping_items=original,
+    )
+    chunk_baseline = _chunk_segments_to_subtitles(original)
+    chunk_candidate = _chunk_segments_to_subtitles(normalized)
+
+    assert [(item.start, item.end) for item in normalized] == [
+        (0.2, 0.9),
+        (0.2, 0.9),
+    ]
+    assert [(item.id, item.text) for item in word_candidate] == [
+        (item.id, item.text) for item in word_baseline
+    ]
+    assert [(item.id, item.text) for item in chunk_candidate] == [
+        (item.id, item.text) for item in chunk_baseline
+    ]
 
 
 def test_readability_silence_cap_respects_timestamp_shift_limit() -> None:
