@@ -44,6 +44,10 @@ def _atomic_write(path: Path, content: bytes) -> None:
             Path(temporary_name).unlink(missing_ok=True)
 
 
+def atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
+    _atomic_write(path, _json_bytes(payload))
+
+
 class JobStore:
     """Persist task metadata and reusable step artifacts without runtime secrets."""
 
@@ -74,7 +78,7 @@ class JobStore:
 
     def save_job(self, job_id: str, payload: Mapping[str, Any]) -> None:
         with self._lock:
-            _atomic_write(self.job_file(job_id), _json_bytes(payload))
+            atomic_write_json(self.job_file(job_id), payload)
 
     def load_jobs(self) -> list[dict[str, Any]]:
         jobs: list[dict[str, Any]] = []

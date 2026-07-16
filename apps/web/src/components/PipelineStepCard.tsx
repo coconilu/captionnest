@@ -23,6 +23,7 @@ const STATUS_LABELS = {
   failed: '执行失败',
   stale: '配置已变更',
   cancelled: '已取消',
+  interrupted: '已中断',
 } as const
 
 function StatusIcon({ status }: { status: JobStepView['status'] }) {

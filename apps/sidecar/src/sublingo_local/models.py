@@ -54,14 +54,28 @@ class JobStatus(StrEnum):
     DRAFT = "draft"
     QUEUED = "queued"
     RUNNING = "running"
+    WAITING_FOR_INPUT = "waiting_for_input"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    INTERRUPTED = "interrupted"
+
+
+class QueueStatus(StrEnum):
+    DRAFT = "draft"
+    QUEUED = "queued"
+    RUNNING = "running"
+    WAITING_FOR_INPUT = "waiting_for_input"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    INTERRUPTED = "interrupted"
 
 
 class JobStage(StrEnum):
     DRAFT = "draft"
     QUEUED = "queued"
+    WAITING_FOR_INPUT = "waiting_for_input"
     EXTRACTING = "extracting"
     TRANSCRIBING = "transcribing"
     TRANSLATING = "translating"
@@ -69,6 +83,7 @@ class JobStage(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    INTERRUPTED = "interrupted"
 
 
 class JobStep(StrEnum):
@@ -85,6 +100,7 @@ class StepStatus(StrEnum):
     FAILED = "failed"
     STALE = "stale"
     CANCELLED = "cancelled"
+    INTERRUPTED = "interrupted"
 
 
 class LogLevel(StrEnum):
@@ -270,6 +286,59 @@ class ExportSettings(BaseModel):
         return value
 
 
+class SchedulerSettings(BaseModel):
+    worker_concurrency: int = Field(default=2, ge=1, le=16)
+    cuda_asr_concurrency: int = Field(default=1, ge=1, le=4)
+    cpu_asr_concurrency: int = Field(default=1, ge=1, le=16)
+    translation_concurrency: int = Field(default=2, ge=1, le=32)
+    io_concurrency: int = Field(default=2, ge=1, le=16)
+
+
+class BatchConfigSnapshot(BaseModel):
+    target_language: TargetLanguage = TargetLanguage.ZH_CN
+    asr: ASRSettings = Field(default_factory=ASRSettings)
+    translation: TranslationStepSettings = Field(default_factory=TranslationStepSettings)
+    export: ExportSettings = Field(default_factory=ExportSettings)
+
+
+class BatchStatusSummary(BaseModel):
+    total: int = Field(default=0, ge=0)
+    draft: int = Field(default=0, ge=0)
+    queued: int = Field(default=0, ge=0)
+    running: int = Field(default=0, ge=0)
+    waiting_for_input: int = Field(default=0, ge=0)
+    completed: int = Field(default=0, ge=0)
+    failed: int = Field(default=0, ge=0)
+    cancelled: int = Field(default=0, ge=0)
+    interrupted: int = Field(default=0, ge=0)
+    progress: int = Field(default=0, ge=0, le=100)
+
+
+class BatchRecord(BaseModel):
+    id: str
+    name: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    job_ids: list[str] = Field(default_factory=list)
+    config_template: BatchConfigSnapshot = Field(default_factory=BatchConfigSnapshot)
+    status_summary: BatchStatusSummary = Field(default_factory=BatchStatusSummary)
+
+    @field_validator("id")
+    @classmethod
+    def non_empty_id(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("批次 ID 不能为空")
+        return value
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def strip_optional_name(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
+
 class JobCreateRequest(BaseModel):
     video_path: str | None = None
     upload_id: str | None = None
@@ -426,9 +495,14 @@ class JobView(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
     id: str
+    batch_id: str | None = None
     status: JobStatus
+    queue_status: QueueStatus = QueueStatus.DRAFT
+    queue_position: int | None = Field(default=None, ge=1)
+    priority: int = 0
     stage: JobStage
     progress: int = Field(ge=0, le=100)
+    current_step: JobStep | None = None
     source_name: str
     source_kind: SourceKind
     detected_language: str | None = None
@@ -437,10 +511,35 @@ class JobView(BaseModel):
     translation_provider: TranslationProviderName
     created_at: datetime
     updated_at: datetime
+    interrupted_at: datetime | None = None
     subtitle_path: str | None = None
     error: str | None = None
     logs: list[LogEntry] = Field(default_factory=list)
     steps: list[JobStepView] = Field(default_factory=list)
+    wall_duration_ms: int | None = Field(default=None, ge=0)
+    cumulative_attempt_duration_ms: int | None = Field(default=None, ge=0)
+    total_model_usage: ModelUsageSummary | None = None
+
+
+class JobSummaryView(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
+    id: str
+    batch_id: str | None = None
+    source_name: str
+    source_kind: SourceKind
+    status: JobStatus
+    queue_status: QueueStatus
+    current_step: JobStep | None = None
+    stage: JobStage
+    progress: int = Field(ge=0, le=100)
+    queue_position: int | None = Field(default=None, ge=1)
+    priority: int = 0
+    created_at: datetime
+    updated_at: datetime
+    interrupted_at: datetime | None = None
+    error: str | None = None
+    subtitle_path: str | None = None
     wall_duration_ms: int | None = Field(default=None, ge=0)
     cumulative_attempt_duration_ms: int | None = Field(default=None, ge=0)
     total_model_usage: ModelUsageSummary | None = None
