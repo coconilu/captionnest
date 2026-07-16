@@ -103,6 +103,14 @@ class StepStatus(StrEnum):
     INTERRUPTED = "interrupted"
 
 
+class JobBulkAction(StrEnum):
+    RUN = "run"
+    CANCEL = "cancel"
+    RETRY_FAILED = "retry_failed"
+    DELETE = "delete"
+    UPDATE_CONFIG = "update_config"
+
+
 class LogLevel(StrEnum):
     INFO = "info"
     WARNING = "warning"
@@ -300,6 +308,14 @@ class BatchConfigSnapshot(BaseModel):
     translation: TranslationStepSettings = Field(default_factory=TranslationStepSettings)
     export: ExportSettings = Field(default_factory=ExportSettings)
 
+    @model_validator(mode="after")
+    def synchronize_target_language(self) -> BatchConfigSnapshot:
+        if self.translation.target_language != self.target_language:
+            self.translation = self.translation.model_copy(
+                update={"target_language": self.target_language}
+            )
+        return self
+
 
 class BatchStatusSummary(BaseModel):
     total: int = Field(default=0, ge=0)
@@ -337,6 +353,66 @@ class BatchRecord(BaseModel):
         if isinstance(value, str):
             return value.strip() or None
         return value
+
+
+class BatchSourceRequest(BaseModel):
+    video_path: str | None = None
+    upload_id: str | None = None
+    export: ExportSettings | None = None
+
+    @field_validator("video_path", "upload_id", mode="before")
+    @classmethod
+    def strip_optional_source(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
+
+class BatchPreflightRequest(BaseModel):
+    sources: list[BatchSourceRequest] = Field(min_length=1, max_length=500)
+    config: BatchConfigSnapshot = Field(default_factory=BatchConfigSnapshot)
+
+
+class BatchCreateRequest(BatchPreflightRequest):
+    name: str | None = Field(default=None, max_length=160)
+    auto_start: bool = False
+    api_key: SecretStr | None = Field(default=None, repr=False)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def strip_optional_batch_name(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
+
+class BatchRunRequest(BaseModel):
+    api_key: SecretStr | None = Field(default=None, repr=False)
+
+
+class JobBulkActionRequest(BaseModel):
+    action: JobBulkAction
+    job_ids: list[str] = Field(min_length=1, max_length=500)
+    api_key: SecretStr | None = Field(default=None, repr=False)
+    continue_pipeline: bool = True
+    step: JobStep | None = None
+    config: dict[str, Any] | None = None
+
+    @field_validator("job_ids")
+    @classmethod
+    def normalize_job_ids(cls, value: list[str]) -> list[str]:
+        normalized = [item.strip() for item in value if item.strip()]
+        if not normalized:
+            raise ValueError("job_ids 不能为空")
+        return list(dict.fromkeys(normalized))
+
+    @model_validator(mode="after")
+    def update_config_requirements(self) -> JobBulkActionRequest:
+        if self.action == JobBulkAction.UPDATE_CONFIG and (
+            self.step is None or self.config is None
+        ):
+            raise ValueError("update_config 需要 step 和 config")
+        return self
 
 
 class JobCreateRequest(BaseModel):
@@ -545,6 +621,80 @@ class JobSummaryView(BaseModel):
     total_model_usage: ModelUsageSummary | None = None
 
 
+class JobSummaryPage(BaseModel):
+    items: list[JobSummaryView]
+    next_cursor: str | None = None
+    has_more: bool = False
+    total: int = Field(ge=0)
+    server_time: datetime = Field(default_factory=utc_now)
+
+
+class BatchPreflightIssue(BaseModel):
+    code: Literal[
+        "invalid_source",
+        "duplicate_source",
+        "output_conflict",
+        "output_exists",
+    ]
+    message: str
+
+
+class BatchSourcePreflightView(BaseModel):
+    index: int = Field(ge=0)
+    video_path: str | None = None
+    upload_id: str | None = None
+    source_name: str | None = None
+    normalized_path: str | None = None
+    size: int | None = Field(default=None, ge=0)
+    output_path: str | None = None
+    valid: bool
+    issues: list[BatchPreflightIssue] = Field(default_factory=list)
+
+
+class BatchPreflightResult(BaseModel):
+    items: list[BatchSourcePreflightView]
+    valid_count: int = Field(ge=0)
+    invalid_count: int = Field(ge=0)
+    has_output_conflicts: bool = False
+
+
+class BatchJobCreateResult(BaseModel):
+    index: int = Field(ge=0)
+    source_name: str | None = None
+    ok: bool
+    job: JobSummaryView | None = None
+    error: str | None = None
+
+
+class BatchCreateResult(BaseModel):
+    batch: BatchRecord | None = None
+    preflight: BatchPreflightResult
+    results: list[BatchJobCreateResult]
+    created_count: int = Field(ge=0)
+    failed_count: int = Field(ge=0)
+
+
+class JobBulkActionResult(BaseModel):
+    job_id: str
+    ok: bool
+    job: JobSummaryView | None = None
+    error: str | None = None
+
+
+class JobBulkActionResponse(BaseModel):
+    action: JobBulkAction
+    results: list[JobBulkActionResult]
+    succeeded: int = Field(ge=0)
+    failed: int = Field(ge=0)
+
+
+class BatchDeleteResult(BaseModel):
+    batch_id: str
+    deleted: bool
+    delete_jobs: bool
+    results: list[JobBulkActionResult] = Field(default_factory=list)
+
+
 class JobRunRequest(BaseModel):
     api_key: SecretStr | None = Field(default=None, repr=False)
     continue_pipeline: bool = True
@@ -564,6 +714,20 @@ class UploadView(BaseModel):
     name: str
     path: str
     size: int
+
+
+class BulkUploadItemResult(BaseModel):
+    index: int = Field(ge=0)
+    name: str
+    ok: bool
+    upload: UploadView | None = None
+    error: str | None = None
+
+
+class BulkUploadResponse(BaseModel):
+    results: list[BulkUploadItemResult]
+    succeeded: int = Field(ge=0)
+    failed: int = Field(ge=0)
 
 
 class PickVideoResult(BaseModel):

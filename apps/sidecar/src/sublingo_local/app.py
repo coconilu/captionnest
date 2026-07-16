@@ -7,10 +7,11 @@ import secrets
 import shutil
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, FastAPI, File, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, FastAPI, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -18,17 +19,32 @@ from fastapi.staticfiles import StaticFiles
 
 from . import __version__
 from .batch_store import BatchStore
+from .batches import BatchManager
 from .environment import EnvironmentService, EnvironmentView
 from .job_store import JobStore
 from .jobs import JobManager, ProcessingPipeline
 from .media import SUPPORTED_VIDEO_EXTENSIONS
 from .model_manager import ModelListView, ModelManager, ModelView
 from .models import (
+    BatchCreateRequest,
+    BatchCreateResult,
+    BatchDeleteResult,
+    BatchPreflightRequest,
+    BatchPreflightResult,
+    BatchRecord,
+    BatchRunRequest,
+    BulkUploadItemResult,
+    BulkUploadResponse,
+    JobBulkAction,
+    JobBulkActionRequest,
+    JobBulkActionResponse,
     JobCreateRequest,
     JobDeleteResult,
     JobRunRequest,
+    JobStatus,
     JobStep,
     JobStepConfigUpdate,
+    JobSummaryPage,
     JobView,
     OpenFolderRequest,
     OpenFolderResult,
@@ -40,6 +56,7 @@ from .storage import UploadStore
 from .system import SystemIntegrationUnavailable, open_folder, pick_video
 
 UPLOAD_FILE = File(...)
+UPLOAD_FILES = File(...)
 
 
 def default_data_dir() -> Path:
@@ -71,6 +88,7 @@ def create_app(
         job_store=job_store,
         scheduler_settings=scheduler_settings,
     )
+    batch_manager = BatchManager(batch_store, manager)
     session_token = os.getenv("CAPTIONNEST_SESSION_TOKEN", "").strip()
 
     @asynccontextmanager
@@ -79,6 +97,7 @@ def create_app(
         app.state.upload_store = upload_store
         app.state.job_store = job_store
         app.state.batch_store = batch_store
+        app.state.batch_manager = batch_manager
         app.state.job_manager = manager
         app.state.model_manager = model_manager
         app.state.environment_service = environment_service
@@ -225,14 +244,82 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
+    async def bulk_upload_handler(
+        files: list[UploadFile] = UPLOAD_FILES,
+    ) -> BulkUploadResponse:
+        results: list[BulkUploadItemResult] = []
+        for index, file in enumerate(files):
+            name = file.filename or "video.mp4"
+            try:
+                upload = await upload_store.save(file)
+                results.append(
+                    BulkUploadItemResult(
+                        index=index,
+                        name=upload.name,
+                        ok=True,
+                        upload=upload,
+                    )
+                )
+            except (OSError, ValueError) as exc:
+                results.append(
+                    BulkUploadItemResult(
+                        index=index,
+                        name=name,
+                        ok=False,
+                        error=str(exc),
+                    )
+                )
+        succeeded = sum(result.ok for result in results)
+        return BulkUploadResponse(
+            results=results,
+            succeeded=succeeded,
+            failed=len(results) - succeeded,
+        )
+
     async def create_job_handler(request: JobCreateRequest) -> JobView:
         try:
             return manager.create(request)
         except (ValueError, KeyError, OSError) as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
-    async def list_jobs_handler() -> list[JobView]:
-        return manager.list()
+    async def list_jobs_handler(
+        cursor: Annotated[str | None, Query(max_length=512)] = None,
+        limit: Annotated[int | None, Query(ge=1, le=200)] = None,
+        status_filter: Annotated[
+            list[JobStatus] | None,
+            Query(alias="status"),
+        ] = None,
+        batch_id: Annotated[str | None, Query(max_length=96)] = None,
+        q: Annotated[str | None, Query(max_length=200)] = None,
+        updated_after: datetime | None = None,
+    ) -> list[JobView] | JobSummaryPage:
+        summary_requested = any(
+            value is not None
+            for value in (
+                cursor,
+                limit,
+                status_filter,
+                batch_id,
+                q,
+                updated_after,
+            )
+        )
+        if not summary_requested:
+            return manager.list()
+        try:
+            return manager.list_summary_page(
+                cursor=cursor,
+                limit=limit or 50,
+                statuses=set(status_filter) if status_filter is not None else None,
+                batch_id=batch_id,
+                query=q,
+                updated_after=updated_after,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
 
     async def get_job_handler(job_id: str) -> JobView:
         try:
@@ -247,6 +334,19 @@ def create_app(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
         except (ValueError, OSError) as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    async def cancel_job_handler(job_id: str) -> JobView:
+        try:
+            return manager.cancel(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    async def bulk_job_action_handler(
+        request: JobBulkActionRequest,
+    ) -> JobBulkActionResponse:
+        return batch_manager.bulk_action(request)
 
     async def update_job_step_handler(
         job_id: str,
@@ -279,7 +379,62 @@ def create_app(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        batch_manager.remove_job(job_id)
         return JobDeleteResult(deleted=True, job_id=job_id)
+
+    async def preflight_batch_handler(
+        request: BatchPreflightRequest,
+    ) -> BatchPreflightResult:
+        return batch_manager.preflight(request)
+
+    async def create_batch_handler(request: BatchCreateRequest) -> BatchCreateResult:
+        return batch_manager.create(request)
+
+    async def list_batches_handler() -> list[BatchRecord]:
+        return batch_manager.list()
+
+    async def get_batch_handler(batch_id: str) -> BatchRecord:
+        try:
+            return batch_manager.get(batch_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    async def run_batch_handler(
+        batch_id: str,
+        request: BatchRunRequest | None = None,
+    ) -> JobBulkActionResponse:
+        try:
+            return batch_manager.batch_action(batch_id, JobBulkAction.RUN, request)
+        except KeyError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    async def retry_batch_handler(
+        batch_id: str,
+        request: BatchRunRequest | None = None,
+    ) -> JobBulkActionResponse:
+        try:
+            return batch_manager.batch_action(
+                batch_id,
+                JobBulkAction.RETRY_FAILED,
+                request,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    async def cancel_batch_handler(batch_id: str) -> JobBulkActionResponse:
+        try:
+            return batch_manager.batch_action(batch_id, JobBulkAction.CANCEL)
+        except KeyError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    async def delete_batch_handler(
+        batch_id: str,
+        delete_jobs: bool = False,
+    ) -> BatchDeleteResult:
+        try:
+            return batch_manager.delete(batch_id, delete_jobs=delete_jobs)
+        except KeyError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
     async def pick_video_handler() -> PickVideoResult:
         try:
@@ -328,10 +483,28 @@ def create_app(
         "/uploads", upload_handler, methods=["POST"], response_model=UploadView, tags=["uploads"]
     )
     api.add_api_route(
+        "/uploads/bulk",
+        bulk_upload_handler,
+        methods=["POST"],
+        response_model=BulkUploadResponse,
+        tags=["uploads"],
+    )
+    api.add_api_route(
         "/jobs", create_job_handler, methods=["POST"], response_model=JobView, tags=["jobs"]
     )
     api.add_api_route(
-        "/jobs", list_jobs_handler, methods=["GET"], response_model=list[JobView], tags=["jobs"]
+        "/jobs",
+        list_jobs_handler,
+        methods=["GET"],
+        response_model=list[JobView] | JobSummaryPage,
+        tags=["jobs"],
+    )
+    api.add_api_route(
+        "/jobs/bulk-actions",
+        bulk_job_action_handler,
+        methods=["POST"],
+        response_model=JobBulkActionResponse,
+        tags=["jobs"],
     )
     api.add_api_route(
         "/jobs/{job_id}", get_job_handler, methods=["GET"], response_model=JobView, tags=["jobs"]
@@ -339,6 +512,13 @@ def create_app(
     api.add_api_route(
         "/jobs/{job_id}/run",
         run_job_handler,
+        methods=["POST"],
+        response_model=JobView,
+        tags=["jobs"],
+    )
+    api.add_api_route(
+        "/jobs/{job_id}/cancel",
+        cancel_job_handler,
         methods=["POST"],
         response_model=JobView,
         tags=["jobs"],
@@ -363,6 +543,62 @@ def create_app(
         methods=["DELETE"],
         response_model=JobDeleteResult,
         tags=["jobs"],
+    )
+    api.add_api_route(
+        "/batches/preflight",
+        preflight_batch_handler,
+        methods=["POST"],
+        response_model=BatchPreflightResult,
+        tags=["batches"],
+    )
+    api.add_api_route(
+        "/batches",
+        create_batch_handler,
+        methods=["POST"],
+        response_model=BatchCreateResult,
+        tags=["batches"],
+    )
+    api.add_api_route(
+        "/batches",
+        list_batches_handler,
+        methods=["GET"],
+        response_model=list[BatchRecord],
+        tags=["batches"],
+    )
+    api.add_api_route(
+        "/batches/{batch_id}",
+        get_batch_handler,
+        methods=["GET"],
+        response_model=BatchRecord,
+        tags=["batches"],
+    )
+    api.add_api_route(
+        "/batches/{batch_id}/run",
+        run_batch_handler,
+        methods=["POST"],
+        response_model=JobBulkActionResponse,
+        tags=["batches"],
+    )
+    api.add_api_route(
+        "/batches/{batch_id}/retry-failed",
+        retry_batch_handler,
+        methods=["POST"],
+        response_model=JobBulkActionResponse,
+        tags=["batches"],
+    )
+    api.add_api_route(
+        "/batches/{batch_id}/cancel",
+        cancel_batch_handler,
+        methods=["POST"],
+        response_model=JobBulkActionResponse,
+        tags=["batches"],
+    )
+    api.add_api_route(
+        "/batches/{batch_id}",
+        delete_batch_handler,
+        methods=["DELETE"],
+        response_model=BatchDeleteResult,
+        tags=["batches"],
     )
     api.add_api_route(
         "/system/pick-video",

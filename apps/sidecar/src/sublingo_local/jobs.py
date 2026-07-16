@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import hashlib
 import json
 import threading
@@ -8,7 +10,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +32,7 @@ from .models import (
     JobStatus,
     JobStep,
     JobStepView,
+    JobSummaryPage,
     JobSummaryView,
     JobView,
     LegacyASRSettings,
@@ -128,6 +131,42 @@ def _fingerprint(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
+def _encode_summary_cursor(summary: JobSummaryView) -> str:
+    payload = json.dumps(
+        [summary.updated_at.isoformat(), summary.id],
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _decode_summary_cursor(cursor: str) -> tuple[datetime, str]:
+    try:
+        padding = "=" * (-len(cursor) % 4)
+        decoded = base64.b64decode(
+            f"{cursor}{padding}",
+            altchars=b"-_",
+            validate=True,
+        )
+        payload = json.loads(decoded.decode("utf-8"))
+        if not isinstance(payload, list) or len(payload) != 2:
+            raise ValueError
+        updated_at = datetime.fromisoformat(str(payload[0]))
+        if updated_at.tzinfo is None:
+            raise ValueError
+        job_id = str(payload[1]).strip()
+        if not job_id:
+            raise ValueError
+        return updated_at, job_id
+    except (
+        binascii.Error,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise ValueError("分页 cursor 无效") from exc
+
+
 async def _run_blocking_call(
     function: Callable[..., Any],
     /,
@@ -212,6 +251,14 @@ class JobRecord:
     def attach_persistence(self, callback: PersistCallback | None) -> None:
         with self._lock:
             self._persist_callback = callback
+
+    def assign_batch(self, batch_id: str | None) -> None:
+        with self._lock:
+            if self.batch_id == batch_id:
+                return
+            self.batch_id = batch_id
+            self.updated_at = utc_now()
+            self._persist()
 
     def config_model(self, step: JobStep) -> BaseModel:
         return {
@@ -1257,7 +1304,12 @@ class JobManager:
             name=item.name,
         )
 
-    def create(self, request: JobCreateRequest) -> JobView:
+    def create(
+        self,
+        request: JobCreateRequest,
+        *,
+        batch_id: str | None = None,
+    ) -> JobView:
         media = self.resolve_source(request)
         translation = TranslationStepSettings(
             target_language=request.target_language,
@@ -1268,6 +1320,7 @@ class JobManager:
         )
         record = JobRecord(
             id=uuid.uuid4().hex,
+            batch_id=batch_id,
             media=media,
             asr=request.asr.model_copy(deep=True),
             translation=translation,
@@ -1386,6 +1439,14 @@ class JobManager:
     def get(self, job_id: str) -> JobView:
         return self._record(job_id).to_view()
 
+    def get_summary(self, job_id: str) -> JobSummaryView:
+        return self._record(job_id).to_summary()
+
+    def assign_batch(self, job_id: str, batch_id: str | None) -> JobSummaryView:
+        record = self._record(job_id)
+        record.assign_batch(batch_id)
+        return record.to_summary()
+
     def list(self) -> list[JobView]:
         records = sorted(
             self.repository.list(),
@@ -1401,6 +1462,62 @@ class JobManager:
             reverse=True,
         )
         return [record.to_summary() for record in records]
+
+    def list_summary_page(
+        self,
+        *,
+        cursor: str | None = None,
+        limit: int = 50,
+        statuses: set[JobStatus] | None = None,
+        batch_id: str | None = None,
+        query: str | None = None,
+        updated_after: datetime | None = None,
+    ) -> JobSummaryPage:
+        if not 1 <= limit <= 200:
+            raise ValueError("limit 必须在 1 到 200 之间")
+        # Leave a one-microsecond overlap boundary so a write that receives the
+        # same clock tick as query start is deferred, never skipped between polls.
+        server_time = utc_now() - timedelta(microseconds=1)
+        if updated_after is not None and updated_after.tzinfo is None:
+            updated_after = updated_after.replace(tzinfo=UTC)
+        normalized_query = (query or "").strip().casefold()
+        summaries = [record.to_summary() for record in self.repository.list()]
+        filtered = [
+            summary
+            for summary in summaries
+            if summary.updated_at <= server_time
+            and (statuses is None or summary.status in statuses)
+            and (batch_id is None or summary.batch_id == batch_id)
+            and (
+                not normalized_query
+                or normalized_query in summary.source_name.casefold()
+            )
+            and (updated_after is None or summary.updated_at > updated_after)
+        ]
+        filtered.sort(
+            key=lambda summary: (summary.updated_at, summary.id),
+            reverse=True,
+        )
+        total = len(filtered)
+        if cursor is not None:
+            cursor_key = _decode_summary_cursor(cursor)
+            filtered = [
+                summary
+                for summary in filtered
+                if (summary.updated_at, summary.id) < cursor_key
+            ]
+        selected = filtered[: limit + 1]
+        has_more = len(selected) > limit
+        items = selected[:limit]
+        return JobSummaryPage(
+            items=items,
+            next_cursor=(
+                _encode_summary_cursor(items[-1]) if has_more and items else None
+            ),
+            has_more=has_more,
+            total=total,
+            server_time=server_time,
+        )
 
     def cancel(self, job_id: str) -> JobView:
         record = self._record(job_id)

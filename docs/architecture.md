@@ -78,6 +78,21 @@ flowchart LR
 
 旧版本写入的 Qwen3-ASR 任务只通过独立的历史配置模型加载，用于保留任务、执行记录和已有产物；新建与更新接口只接受 Faster-Whisper。历史任务重新执行识别前必须先迁移到当前支持的模型，不会重新加载已移除的 Qwen 运行时。
 
+## 多任务查询与批次 API
+
+一个源文件仍对应一个 Job；`BatchManager` 只负责一次多文件提交的分组、公共配置快照、预检和逐 Job 批量动作。Batch 状态在读取时由轻量 Job Summary 聚合，Job 的步骤、Attempt、Artifact、日志和失败仍彼此独立。
+
+| 接口 | 语义 |
+|---|---|
+| `GET /api/jobs` | 无查询参数时保留旧版完整数组；带 `limit/cursor/status/batch_id/q/updated_after` 时返回轻量 `JobSummaryPage` |
+| `POST /api/batches/preflight` | 逐文件验证格式、路径、大小、同批重复项、已存在输出和同名 SRT 冲突，不因单项失败丢失其他结果 |
+| `POST /api/batches` | 复制公共配置到每个有效源并创建独立 Job；返回 Batch 与逐项创建结果 |
+| `POST /api/jobs/bulk-actions` | 逐 Job 执行 run、cancel、retry_failed、delete 或 update_config，部分失败不回滚其他项 |
+| `POST /api/uploads/bulk` | 浏览器多文件上传，逐文件返回成功或错误 |
+| `DELETE /api/batches/{id}` | 默认仅解除分组；`delete_jobs=true` 时删除可删除 Job 的内部记录/中间产物，导出的 SRT 永不随 Batch 删除 |
+
+Summary 分页使用 `(updated_at, job_id)` 的不透明 keyset cursor。响应中的 `server_time` 是下一次增量请求的水位；查询快照之后更新的 Job 会被留到下一轮，列表不会传输日志或全部 Attempt。统一输出目录下两个源若映射到同一 `<视频名>.srt`，预检会阻止创建；可以通过单项 `export` 覆盖修改其中一个 Job 的输出目录。Batch 请求中的 DeepSeek Key 只传给本次内存调度项，不进入 Batch 模板、Job JSON、响应或日志。
+
 ## 桌面进程生命周期
 
 ```mermaid
