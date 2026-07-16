@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import threading
 import time
@@ -729,6 +730,7 @@ def test_summary_snapshot_cursor_expires_and_obeys_memory_bounds(
         for name in (
             "group-a-one.mp4",
             "group-a-two.mp4",
+            "group-a-three.mp4",
             "group-b-one.mp4",
             "group-b-two.mp4",
         ):
@@ -750,6 +752,40 @@ def test_summary_snapshot_cursor_expires_and_obeys_memory_bounds(
             {"logs", "steps", "api_key"}.isdisjoint(item.model_dump())
             for item in snapshot.items
         )
+
+        valid_once = client.get(
+            "/api/jobs",
+            params={"limit": 1, "cursor": first["next_cursor"]},
+        )
+        valid_twice = client.get(
+            "/api/jobs",
+            params={"limit": 1, "cursor": first["next_cursor"]},
+        )
+        assert valid_once.status_code == valid_twice.status_code == 200
+        assert valid_once.json()["items"] == valid_twice.json()["items"]
+        larger_page = client.get(
+            "/api/jobs",
+            params={"limit": 2, "cursor": first["next_cursor"]},
+        )
+        assert larger_page.status_code == 200
+        assert len(larger_page.json()["items"]) == 2
+
+        cursor = first["next_cursor"]
+        padding = "=" * (-len(cursor) % 4)
+        cursor_payload = json.loads(
+            base64.urlsafe_b64decode(f"{cursor}{padding}").decode("utf-8")
+        )
+        assert cursor_payload["offset"] == 1
+        cursor_payload["offset"] = 2
+        tampered_cursor = base64.urlsafe_b64encode(
+            json.dumps(cursor_payload, separators=(",", ":")).encode("utf-8")
+        ).decode("ascii").rstrip("=")
+        tampered = client.get(
+            "/api/jobs",
+            params={"limit": 1, "cursor": tampered_cursor},
+        )
+        assert tampered.status_code == 400
+        assert "cursor 无效" in tampered.json()["detail"]
 
         manager._summary_snapshot_clock = (
             lambda: snapshot.expires_at_monotonic + 0.001

@@ -13,7 +13,7 @@
 | 同批规范化路径去重 | PASS |
 | 统一目录同名 SRT 冲突 | PASS；创建前阻断，可用单项 export 覆盖改目录 |
 | Summary 与 Detail 分离 | PASS；分页项不含 logs、steps、attempts |
-| 分页与增量刷新 | PASS；首屏冻结轻量 Summary 副本，cursor 使用随机快照 ID、筛选指纹与偏移，增量窗口固定为 `updated_after < updated_at <= server_time` |
+| 分页与增量刷新 | PASS；首屏冻结轻量 Summary 副本，cursor 使用随机快照 ID、筛选指纹与偏移并以进程级 HMAC-SHA256 签名，增量窗口固定为 `updated_after < updated_at <= server_time` |
 | 旧列表和单文件 API | PASS；无查询参数仍返回完整数组，`POST /api/jobs` 不变 |
 | 批量动作部分失败隔离 | PASS；run/cancel/retry_failed/delete/update_config 逐 Job 返回 |
 | Batch 中单 Job 失败隔离 | PASS；其余 Job 继续完成 |
@@ -26,7 +26,7 @@
 
 | 检查 | 结果 |
 |---|---:|
-| Batch/API 定向测试 | 15 passed；含未读成员再次更新、快照 TTL/淘汰/容量、跨 Batch 输出占用及入队写前/写后故障注入 |
+| Batch/API 定向测试 | 15 passed；含未读成员再次更新、cursor 篡改、快照 TTL/淘汰/容量及入队写前/写后故障注入 |
 | Sidecar 全量 | 202 passed，1 个既有 Starlette 弃用警告 |
 | Tooling | 25 passed |
 | 仓库 Python 总计 | 227 passed |
@@ -63,6 +63,7 @@
 - Job 创建/删除与 Batch 关联均有失败补偿；启动时双向修复 `Batch.job_ids` 与 `Job.batch_id`，Windows 目录锁导致删除失败时 Job 仍保持可见且重启一致。
 - 入队时步骤失效和 queued 状态只持久化一次；写前失败恢复为可重试的非活跃状态且不创建 completion，写入成功后才报错则用磁盘精确回读确认提交并继续进入真实 active queue。
 - 分页快照不含日志、步骤或 API Key；采用 5 分钟 TTL、64 个快照与合计 20,000 个 Summary 的 LRU 上限，过期或淘汰 cursor 明确拒绝。
+- cursor 完整 payload 使用进程级 256-bit 随机密钥做 HMAC-SHA256；合法 cursor 可幂等复用并改变本页 limit，offset/fingerprint/snapshot ID 的任何篡改均返回 400。
 
 ## 后续 PR 接口
 

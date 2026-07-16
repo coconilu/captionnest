@@ -91,7 +91,7 @@ flowchart LR
 | `POST /api/uploads/bulk` | 浏览器多文件上传，逐文件返回成功或错误 |
 | `DELETE /api/batches/{id}` | 默认仅解除分组；`delete_jobs=true` 时删除可删除 Job 的内部记录/中间产物，导出的 SRT 永不随 Batch 删除 |
 
-Summary 分页使用固定快照水位与不可变 `(created_at, job_id)` 排序。首屏冻结有序 `JobSummaryView` 副本；不透明 cursor 只携带随机 `snapshot_id`、筛选指纹和偏移，后续页不再用 Job 当前版本重算成员。因而首屏后出现的新成员不会混入本轮，已计入的未读成员即使再次更新也不会丢失；增量窗口固定为 `updated_after < updated_at <= server_time`，新版本只在下一轮返回一次。快照仅驻留当前 Sidecar 进程，TTL 为 5 分钟，最多 64 个快照且合计最多 20,000 个 Summary；过期、重启失效或被 LRU 淘汰的 cursor 明确返回 400。后续页省略筛选参数时沿用首屏条件，显式不匹配会被拒绝。Summary 不含日志、步骤、API Key 或其他运行时秘密。
+Summary 分页使用固定快照水位与不可变 `(created_at, job_id)` 排序。首屏冻结有序 `JobSummaryView` 副本；不透明 cursor 只携带随机 `snapshot_id`、筛选指纹和偏移，并由当前进程的 256-bit 随机密钥对完整 payload 做 HMAC-SHA256 签名，任何字段篡改都会被拒绝。后续页不再用 Job 当前版本重算成员，因而首屏后出现的新成员不会混入本轮，已计入的未读成员即使再次更新也不会丢失；增量窗口固定为 `updated_after < updated_at <= server_time`，新版本只在下一轮返回一次。快照仅驻留当前 Sidecar 进程，TTL 为 5 分钟，最多 64 个快照且合计最多 20,000 个 Summary；过期、重启失效或被 LRU 淘汰的 cursor 明确返回 400。后续页省略筛选参数时沿用首屏条件，显式不匹配会被拒绝。Summary 不含日志、步骤、API Key 或其他运行时秘密。
 
 每个未删除 Job 都持有其规范化 `<输出目录>/<源文件名>.srt` 的输出占用，不只检查同一 Batch。预检、创建、配置更新和运行入队都会重验占用；输出目录必须是目录，已存在目标必须是可覆盖普通文件。`overwrite_existing=true` 只允许当前 Job 覆盖未被其他 Job 占用的普通文件，不能绕过跨 Batch 冲突。删除 Job 后才释放占用；可以通过单项 `export` 修改输出目录。Batch 请求中的 DeepSeek Key 只传给本次内存调度项，不进入 Batch 模板、Job JSON、响应或日志。
 

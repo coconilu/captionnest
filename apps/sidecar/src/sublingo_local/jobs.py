@@ -4,8 +4,10 @@ import asyncio
 import base64
 import binascii
 import hashlib
+import hmac
 import json
 import os
+import secrets
 import threading
 import time
 import uuid
@@ -213,20 +215,39 @@ def _summary_filter_payload(
 def _encode_summary_cursor(
     snapshot: _SummarySnapshot,
     offset: int,
+    secret: bytes,
 ) -> str:
+    signature = _summary_cursor_signature(
+        secret,
+        snapshot_id=snapshot.snapshot_id,
+        offset=offset,
+        filter_fingerprint=snapshot.filter_fingerprint,
+    )
     payload = json.dumps(
         {
             "v": 3,
             "snapshot_id": snapshot.snapshot_id,
             "offset": offset,
             "filter_fingerprint": snapshot.filter_fingerprint,
+            "signature": signature,
         },
         separators=(",", ":"),
     ).encode("utf-8")
     return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
 
 
-def _decode_summary_cursor(cursor: str) -> _SummaryCursor:
+def _summary_cursor_signature(
+    secret: bytes,
+    *,
+    snapshot_id: str,
+    offset: int,
+    filter_fingerprint: str,
+) -> str:
+    message = f"3:{snapshot_id}:{offset}:{filter_fingerprint}".encode("ascii")
+    return hmac.new(secret, message, hashlib.sha256).hexdigest()
+
+
+def _decode_summary_cursor(cursor: str, secret: bytes) -> _SummaryCursor:
     try:
         padding = "=" * (-len(cursor) % 4)
         decoded = base64.b64decode(
@@ -240,6 +261,7 @@ def _decode_summary_cursor(cursor: str) -> _SummaryCursor:
         snapshot_id = payload["snapshot_id"]
         offset = payload["offset"]
         filter_fingerprint = payload["filter_fingerprint"]
+        signature = payload["signature"]
         if not isinstance(snapshot_id, str) or len(snapshot_id) != 32:
             raise ValueError
         if any(character not in "0123456789abcdef" for character in snapshot_id):
@@ -254,6 +276,20 @@ def _decode_summary_cursor(cursor: str) -> _SummaryCursor:
                 for character in filter_fingerprint
             )
         ):
+            raise ValueError
+        if (
+            not isinstance(signature, str)
+            or len(signature) != 64
+            or any(character not in "0123456789abcdef" for character in signature)
+        ):
+            raise ValueError
+        expected_signature = _summary_cursor_signature(
+            secret,
+            snapshot_id=snapshot_id,
+            offset=offset,
+            filter_fingerprint=filter_fingerprint,
+        )
+        if not hmac.compare_digest(signature, expected_signature):
             raise ValueError
         return _SummaryCursor(
             snapshot_id=snapshot_id,
@@ -1398,6 +1434,7 @@ class JobManager:
         self.store = job_store or getattr(pipeline, "store", None)
         self._mutation_lock = threading.RLock()
         self._summary_snapshots: OrderedDict[str, _SummarySnapshot] = OrderedDict()
+        self._summary_cursor_secret = secrets.token_bytes(32)
         self._summary_snapshot_item_count = 0
         self._summary_snapshot_clock: Callable[[], float] = time.monotonic
         self._summary_snapshot_ttl_seconds = SUMMARY_SNAPSHOT_TTL_SECONDS
@@ -1859,7 +1896,11 @@ class JobManager:
         )
 
         with self._mutation_lock:
-            cursor_state = _decode_summary_cursor(cursor) if cursor is not None else None
+            cursor_state = (
+                _decode_summary_cursor(cursor, self._summary_cursor_secret)
+                if cursor is not None
+                else None
+            )
             if cursor_state is not None:
                 snapshot = self._get_summary_snapshot_locked(cursor_state)
                 mismatched = (
@@ -1885,7 +1926,13 @@ class JobManager:
                 return JobSummaryPage(
                     items=items,
                     next_cursor=(
-                        _encode_summary_cursor(snapshot, end) if has_more else None
+                        _encode_summary_cursor(
+                            snapshot,
+                            end,
+                            self._summary_cursor_secret,
+                        )
+                        if has_more
+                        else None
                     ),
                     has_more=has_more,
                     total=len(snapshot.items),
@@ -1945,7 +1992,11 @@ class JobManager:
             return JobSummaryPage(
                 items=items,
                 next_cursor=(
-                    _encode_summary_cursor(snapshot, len(items))
+                    _encode_summary_cursor(
+                        snapshot,
+                        len(items),
+                        self._summary_cursor_secret,
+                    )
                     if snapshot is not None
                     else None
                 ),
