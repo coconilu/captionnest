@@ -4719,6 +4719,42 @@ textarea {
   color: var(--text);
 }
 
+/* Readability floor for higher-specificity legacy selectors. */
+.bulk-action-bar > span,
+.console-header > div span,
+.running-label,
+.inline-error,
+.progress-row strong,
+.batch-source-copy em,
+.batch-source-empty,
+.batch-create-success,
+.job-list-message,
+.environment-section-heading span,
+.provider-note strong,
+.provider-note span,
+.environment-item small,
+.model-status-heading > div > span,
+.codex-status-heading > div > span,
+.model-status-card > p,
+.codex-status-card > p,
+.codex-status-card code,
+.model-path,
+.model-progress > small,
+.environment-error {
+  font-size: var(--text-xs);
+  line-height: var(--line-xs);
+}
+
+.bulk-action-bar button,
+.environment-item strong,
+.model-status-heading strong,
+.codex-status-heading strong,
+.environment-actions button,
+.environment-actions a {
+  font-size: var(--text-sm);
+  line-height: var(--line-sm);
+}
+
 .provider-tabs {
   border-color: var(--border);
   background: #121417;

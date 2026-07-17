@@ -75,6 +75,29 @@ def test_figma_palette_and_desktop_geometry_are_explicit() -> None:
     assert re.search(r"\.batch-creator > footer > p strong\s*\{[^}]*font-size: var\(--text-sm\);", styles, re.S)
 
 
+def test_legacy_visible_text_selectors_are_overridden_by_readability_tokens() -> None:
+    styles = source("styles.css")
+    marker = "/* Readability floor for higher-specificity legacy selectors. */"
+    floor = styles.split(marker, 1)[1].split(".provider-tabs", 1)[0]
+
+    assert styles.rindex(marker) > styles.rindex("font-size: 7px;")
+    assert all(
+        selector in floor
+        for selector in (
+            ".bulk-action-bar > span",
+            ".bulk-action-bar button",
+            ".console-header > div span",
+            ".progress-row strong",
+            ".batch-source-empty",
+            ".inline-error",
+            ".model-status-card > p",
+            ".environment-actions button",
+        )
+    )
+    assert "font-size: var(--text-xs);" in floor
+    assert "font-size: var(--text-sm);" in floor
+
+
 def test_figma_modal_and_responsive_breakpoints_keep_actions_reachable() -> None:
     styles = source("styles.css")
 
