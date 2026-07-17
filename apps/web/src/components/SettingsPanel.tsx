@@ -17,6 +17,7 @@ interface SettingsPanelProps {
   canStart: boolean
   startHint: string
   showStartAction?: boolean
+  initiallyOpen?: boolean
   children?: ReactNode
   onChange: (next: SettingsValue) => void
   onStart: () => void
@@ -67,12 +68,13 @@ export function SettingsPanel({
   canStart,
   startHint,
   showStartAction = true,
+  initiallyOpen = false,
   children,
   onChange,
   onStart,
 }: SettingsPanelProps) {
   const [showKey, setShowKey] = useState(false)
-  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(initiallyOpen)
   const patch = <K extends keyof SettingsValue>(key: K, next: SettingsValue[K]) =>
     onChange({ ...value, [key]: next })
   const targetLanguage = TARGET_LANGUAGES.find((item) => item.value === value.targetLanguage)?.label ?? value.targetLanguage
@@ -83,11 +85,10 @@ export function SettingsPanel({
   return (
     <aside className="settings-sidebar" aria-label="新任务默认设置">
       <section className="task-summary" aria-labelledby="task-summary-title">
-        <span className="panel-step-label">默认配置</span>
         <div className="task-summary-heading">
           <div>
-            <h2 id="task-summary-title">新任务默认配置</h2>
-            <p>创建任务时复制，任务内修改不会反向覆盖</p>
+            <h2 id="task-summary-title">处理配置</h2>
+            <p>配置将应用到本批次的全部视频</p>
           </div>
           <button
             type="button"
@@ -97,19 +98,17 @@ export function SettingsPanel({
             aria-controls="task-settings-panel"
           >
             <SlidersHorizontal size={18} aria-hidden="true" />
-            <span className="sr-only">{settingsOpen ? '收起任务设置' : '调整任务设置'}</span>
+            <span>{settingsOpen ? '收起' : '调整'}</span>
           </button>
         </div>
-        <div className="summary-chips" aria-label="当前任务设置">
-          <span>目标 · {targetLanguage}</span>
-          <span>模型 · {MODEL_LABELS[value.asrModel]}</span>
-          <span>切分 · {outputMode}</span>
-          <span>边界 · {value.asrDynamicChunking ? '动态' : '固定'}</span>
-          <span>重识别 · {value.asrSelectiveRetry ? '有界开启' : '关闭'}</span>
-          <span>校时 · {value.asrTimestampNormalization ? '实验开启' : '关闭'}</span>
-          <span>提示词 · {hotwordValidation.hotwords.length} 个</span>
-          <span className="is-provider"><i aria-hidden="true" />{provider}</span>
+        <div className="summary-config-list" aria-label="当前任务设置">
+          <span><small>目标语言</small><strong>{targetLanguage}</strong></span>
+          <span><small>识别模型</small><strong>{MODEL_LABELS[value.asrModel]}</strong></span>
+          <span><small>翻译服务</small><strong>{provider}</strong></span>
+          <span><small>字幕切分</small><strong>{outputMode}</strong></span>
+          <span><small>输出位置</small><strong>{value.exportOutputDirectory.trim() ? '自定义目录' : '源视频目录'}</strong></span>
         </div>
+        <p className="task-summary-note">动态边界 {value.asrDynamicChunking ? '已开启' : '已关闭'} · 提示词 {hotwordValidation.hotwords.length} 个</p>
       </section>
 
       {settingsOpen ? (

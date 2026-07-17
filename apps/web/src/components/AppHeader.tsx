@@ -1,4 +1,4 @@
-import { Cpu, RefreshCw } from 'lucide-react'
+import { RefreshCw } from 'lucide-react'
 
 interface AppHeaderProps {
   connected: boolean
@@ -13,11 +13,8 @@ export function AppHeader({ connected, checking, cudaAvailable, onRefresh }: App
   return (
     <header className="app-header">
       <div className="brand-lockup">
-        <img className="brand-mark" src="/favicon.svg" alt="" width={32} height={32} />
-        <div>
-          <h1>CaptionNest</h1>
-          <span>本地双语字幕工作台</span>
-        </div>
+        <img className="brand-mark" src="/captionnest-logo.svg" alt="" width={32} height={32} />
+        <h1>CaptionNest</h1>
       </div>
 
       <div className="header-status" aria-label="运行环境状态">
@@ -33,9 +30,8 @@ export function AppHeader({ connected, checking, cudaAvailable, onRefresh }: App
           <RefreshCw className={checking ? 'is-spinning' : ''} size={13} aria-hidden="true" />
           <span className="sr-only">：{statusLabel}，点击重新检查</span>
         </button>
-        <span className="status-divider" aria-hidden="true" />
         <span className={`status-item ${cudaAvailable ? 'is-cuda' : ''}`}>
-          <Cpu size={16} aria-hidden="true" />
+          <span className="status-dot" aria-hidden="true" />
           {cudaAvailable ? 'CUDA 可用' : 'CPU 模式'}
         </span>
       </div>

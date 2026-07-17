@@ -4,6 +4,7 @@ import {
   ChevronRight,
   Clock3,
   FilePlus2,
+  Plus,
   Files,
   ListFilter,
   LoaderCircle,
@@ -12,7 +13,7 @@ import {
 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
-import { formatDuration, formatTokenCount } from '../lib/format'
+import { formatDateTime } from '../lib/format'
 import type {
   BatchRecord,
   JobBulkAction,
@@ -55,7 +56,7 @@ interface JobListPanelProps {
   error: string | null
   mutationNotice: { message: string; tone: 'success' | 'warning' | 'error' } | null
   bulkBusy: boolean
-  onAddFiles: () => void
+  onCreateTask: () => void
   onRefresh: () => void
   onSelectJob: (jobId: string) => void
   onToggleJob: (jobId: string, checked: boolean) => void
@@ -105,15 +106,7 @@ function JobRow({
   onToggle: (checked: boolean) => void
 }) {
   const step = item.current_step ? STEP_LABELS[item.current_step] : null
-  const duration = item.wall_duration_ms === null ? null : formatDuration(item.wall_duration_ms)
-  const tokens = item.total_model_usage
-    ? formatTokenCount(item.total_model_usage.total_tokens)
-    : null
-  const summaries = [
-    duration ? `耗时 ${duration}` : null,
-    tokens ? `Token ${tokens}` : null,
-    item.subtitle_path ? '已有输出' : null,
-  ].filter((summary): summary is string => Boolean(summary))
+  const progress = Math.max(0, Math.min(100, item.progress))
 
   return (
     <article className={`job-list-row ${selected ? 'is-selected' : ''}`}>
@@ -132,23 +125,28 @@ function JobRow({
         aria-current={selected ? 'true' : undefined}
         onClick={onSelect}
       >
-        <span className={`job-status-dot is-${item.status}`} aria-hidden="true" />
         <span className="job-row-copy">
           <strong title={item.source_name}>{item.source_name}</strong>
           <small>
-            {STATUS_LABELS[item.status]}
-            {step ? ` · ${step}` : ''}
+            {item.source_kind === 'path' ? '本机视频' : '浏览器上传'}
             {item.queue_position ? ` · 队列 #${item.queue_position}` : ''}
           </small>
           {item.error ? <em title={item.error}>{item.error}</em> : null}
         </span>
-        <span className="job-row-side">
-          <b>{Math.round(item.progress)}%</b>
-          <small>{summaries.length ? summaries.join(' · ') : '—'}</small>
-          <ChevronRight size={15} aria-hidden="true" />
+        <span className="job-row-progress-cell">
+          <b>{Math.round(progress)}%</b>
+          <i aria-hidden="true"><span style={{ width: `${progress}%` }} /></i>
         </span>
-        <span className="job-row-progress" aria-hidden="true">
-          <i style={{ width: `${Math.max(0, Math.min(100, item.progress))}%` }} />
+        <span className={`job-row-step ${item.status === 'running' ? 'is-active' : ''}`}>
+          {step ?? '等待开始'}
+        </span>
+        <span className={`job-row-status is-${item.status}`}>
+          <i className={`job-status-dot is-${item.status}`} aria-hidden="true" />
+          {STATUS_LABELS[item.status]}
+        </span>
+        <span className="job-row-updated">
+          {formatDateTime(item.updated_at)}
+          <ChevronRight size={14} aria-hidden="true" />
         </span>
       </button>
     </article>
@@ -164,7 +162,7 @@ export function JobListPanel({
   error,
   mutationNotice,
   bulkBusy,
-  onAddFiles,
+  onCreateTask,
   onRefresh,
   onSelectJob,
   onToggleJob,
@@ -187,21 +185,27 @@ export function JobListPanel({
     <aside className="job-list-panel" aria-labelledby="job-list-title">
       <header className="job-list-heading">
         <div>
-          <span className="panel-step-label">多任务队列</span>
-          <h2 id="job-list-title">{items.length} 个任务</h2>
+          <h2 id="job-list-title">字幕任务</h2>
+          <p>管理识别、翻译与字幕导出 · {items.length} 个任务</p>
         </div>
         <div>
-          <button type="button" className="icon-button" onClick={onRefresh} aria-label="刷新任务列表">
+          <button type="button" className="icon-button job-refresh-button" onClick={onRefresh} aria-label="刷新任务列表">
             <RefreshCw size={17} className={loading ? 'is-spinning' : undefined} />
           </button>
-          <button type="button" className="button button-secondary add-batch-button" onClick={onAddFiles}>
-            <FilePlus2 size={16} aria-hidden="true" />
-            添加文件
+          <button
+            type="button"
+            className="button button-secondary add-batch-button"
+            data-create-task-trigger="toolbar"
+            onClick={onCreateTask}
+          >
+            <Plus size={17} aria-hidden="true" />
+            新建任务
           </button>
         </div>
       </header>
 
-      <div className="job-list-filters">
+      <div className="job-list-controls">
+        <div className="job-list-filters">
         <label>
           <Search size={15} aria-hidden="true" />
           <input
@@ -224,19 +228,20 @@ export function JobListPanel({
             ))}
           </select>
         </label>
-      </div>
+        </div>
 
-      <div className="job-selection-row">
-        <label>
-          <input
-            type="checkbox"
-            checked={allVisibleChecked}
-            onChange={(event) => onToggleVisible(visibleIds, event.target.checked)}
-            disabled={!visibleIds.length}
-          />
-          <span>选择当前 {visibleIds.length} 项</span>
-        </label>
-        {loading ? <span><LoaderCircle size={13} className="is-spinning" />同步中</span> : null}
+        <div className="job-selection-row">
+          <label>
+            <input
+              type="checkbox"
+              checked={allVisibleChecked}
+              onChange={(event) => onToggleVisible(visibleIds, event.target.checked)}
+              disabled={!visibleIds.length}
+            />
+            <span>选择当前 {visibleIds.length} 项</span>
+          </label>
+          {loading ? <span><LoaderCircle size={13} className="is-spinning" />同步中</span> : null}
+        </div>
       </div>
 
       <BulkActionBar
@@ -260,13 +265,21 @@ export function JobListPanel({
         </div>
       ) : null}
 
-      <div className="job-groups">
-        {groups.map((group) => {
+      <div className="job-table">
+        <div className="job-table-header" aria-hidden="true">
+          <span>任务名称</span>
+          <span>进度</span>
+          <span>当前阶段</span>
+          <span>状态</span>
+          <span>更新时间</span>
+        </div>
+        <div className="job-groups">
+          {groups.map((group) => {
           const progress = groupProgress(group)
           const name = group.batch?.name
             ?? (group.key === 'independent' ? '独立任务' : `批次 ${group.key.slice(0, 8)}`)
-          return (
-            <details key={group.key} className="job-batch-group" open>
+            return (
+              <details key={group.key} className="job-batch-group" open>
               <summary>
                 <span className="job-batch-icon"><Files size={15} /></span>
                 <span>
@@ -287,17 +300,24 @@ export function JobListPanel({
                   />
                 ))}
               </div>
-            </details>
-          )
-        })}
+              </details>
+            )
+          })}
 
-        {!groups.length && !loading ? (
-          <div className="job-list-empty">
-            {items.length ? <Search size={22} /> : <Clock3 size={22} />}
-            <strong>{items.length ? '没有匹配的任务' : '还没有任务'}</strong>
-            <span>{items.length ? '调整搜索或状态筛选' : '添加多个视频来创建第一个批次'}</span>
-          </div>
-        ) : null}
+          {!groups.length && !loading ? (
+            <div className="job-list-empty">
+              {items.length ? <Search size={22} /> : <Clock3 size={22} />}
+              <strong>{items.length ? '没有匹配的任务' : '还没有任务'}</strong>
+              <span>{items.length ? '调整搜索或状态筛选' : '添加视频来创建第一个任务'}</span>
+              {!items.length ? (
+                <button type="button" className="button button-secondary empty-create-task-button" onClick={onCreateTask}>
+                  <FilePlus2 size={16} aria-hidden="true" />
+                  新建任务
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
       </div>
     </aside>
   )

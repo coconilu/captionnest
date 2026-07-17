@@ -12,7 +12,7 @@ export function BulkActionBar({ selectedCount, busy, onAction }: BulkActionBarPr
   const disabled = busy || selectedCount === 0
 
   return (
-    <div className="bulk-action-bar" aria-label="批量任务操作">
+    <div className={`bulk-action-bar ${selectedCount ? 'is-active' : ''}`} aria-label="批量任务操作">
       <span>已选 {selectedCount} 项</span>
       <div>
         <button type="button" disabled={disabled} onClick={() => onAction('run')}>

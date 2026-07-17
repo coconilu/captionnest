@@ -9,12 +9,14 @@ import {
   updateJobStepConfig,
 } from './api/client'
 import { AppHeader } from './components/AppHeader'
+import { AppSidebar, type AppView } from './components/AppSidebar'
 import { BatchCreator } from './components/BatchCreator'
+import { CreateTaskDialog } from './components/CreateTaskDialog'
 import { EnvironmentPanel } from './components/EnvironmentPanel'
-import { HeroIntro } from './components/HeroIntro'
 import { JobListPanel } from './components/JobListPanel'
 import { SettingsPanel } from './components/SettingsPanel'
 import { TaskConsole } from './components/TaskConsole'
+import { TaskInspectorHeader } from './components/TaskInspectorHeader'
 import { WorkflowPipeline } from './components/WorkflowPipeline'
 import { useBackendStatus } from './hooks/useBackendStatus'
 import { useEnvironmentStatus } from './hooks/useEnvironmentStatus'
@@ -62,7 +64,8 @@ export function App() {
   } = useModelCatalog()
   const [settings, setSettings] = usePersistedSettings()
   const summaryStore = useJobSummaries(connected)
-  const [creatorOpen, setCreatorOpen] = useState(true)
+  const [activeView, setActiveView] = useState<AppView>('tasks')
+  const [creatorOpen, setCreatorOpen] = useState(false)
   const [batchBusy, setBatchBusy] = useState(false)
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null)
   const [checkedJobIds, setCheckedJobIds] = useState<Set<string>>(new Set())
@@ -472,113 +475,170 @@ export function App() {
         cudaAvailable={cudaAvailable}
         onRefresh={() => void handleFullRefresh()}
       />
-      <HeroIntro />
-      <main className="multi-task-workbench">
-        {creatorOpen ? (
-          <section className="batch-creator-layout" aria-label="创建新批次">
-            <BatchCreator
-              connected={connected}
-              config={batchConfig}
-              configError={configValidationError}
-              startError={startValidationError}
-              runtimeApiKey={settings.deepseekApiKey}
-              onBusyChange={setBatchBusy}
-              onCreated={handleBatchCreated}
-              onClose={() => setCreatorOpen(false)}
-            />
-            <SettingsPanel
-              value={settings}
-              cudaAvailable={cudaAvailable}
-              disabled={batchBusy}
-              canStart={!configValidationError}
-              startHint={configValidationError ?? '批次配置可用'}
-              showStartAction={false}
-              onChange={setSettings}
-              onStart={() => undefined}
-            >
-              <EnvironmentPanel
-                environment={environment}
-                checking={environmentChecking}
-                error={environmentError}
-                selectedModel={settings.asrModel}
-                models={models}
-                modelRoot={modelRoot}
-                modelsChecking={modelsChecking}
-                modelsError={modelsError}
-                downloadingModelId={downloadingId}
-                disabled={batchBusy}
-                onRefresh={() => void handleEnvironmentRefresh()}
-                onDownloadModel={(id) => void startDownload(id)}
+      <div className="app-layout">
+        <AppSidebar activeView={activeView} onSelect={setActiveView} />
+        <main className="app-workspace">
+          {activeView === 'tasks' ? (
+            <section className="master-detail-layout" aria-label="任务列表与详情">
+              <JobListPanel
+                items={summaryStore.items}
+                batches={summaryStore.batches}
+                selectedJobId={selectedJobId}
+                checkedJobIds={checkedJobIds}
+                loading={summaryStore.loading}
+                error={summaryStore.error ?? backendError}
+                mutationNotice={mutationNotice}
+                bulkBusy={bulkBusy || checkedMutationBusy}
+                onCreateTask={() => setCreatorOpen(true)}
+                onRefresh={summaryStore.refresh}
+                onSelectJob={setSelectedJobId}
+                onToggleJob={handleToggleJob}
+                onToggleVisible={handleToggleVisible}
+                onBulkAction={(action) => void handleBulkAction(action)}
               />
-            </SettingsPanel>
-          </section>
-        ) : null}
 
-        <section className="master-detail-layout" aria-label="任务列表与详情">
-          <JobListPanel
-            items={summaryStore.items}
-            batches={summaryStore.batches}
-            selectedJobId={selectedJobId}
-            checkedJobIds={checkedJobIds}
-            loading={summaryStore.loading}
-            error={summaryStore.error ?? backendError}
-            mutationNotice={mutationNotice}
-            bulkBusy={bulkBusy || checkedMutationBusy}
-            onAddFiles={() => setCreatorOpen(true)}
-            onRefresh={summaryStore.refresh}
-            onSelectJob={setSelectedJobId}
-            onToggleJob={handleToggleJob}
-            onToggleVisible={handleToggleVisible}
-            onBulkAction={(action) => void handleBulkAction(action)}
-          />
-
-          <section className="job-detail-panel" aria-label="当前任务详情">
-            {selectedJob.loading && !detailJob ? (
-              <div className="job-detail-state" role="status">
-                <LoaderCircle size={24} className="is-spinning" />
-                <strong>正在加载任务详情</strong>
+              <section className="job-detail-panel" aria-label="当前任务详情">
+                {selectedJob.loading && !detailJob ? (
+                  <div className="job-detail-state" role="status">
+                    <LoaderCircle size={24} className="is-spinning" />
+                    <strong>正在加载任务详情</strong>
+                  </div>
+                ) : selectedJob.error && !detailJob ? (
+                  <div className="job-detail-state is-error" role="alert">
+                    <AlertCircle size={24} />
+                    <strong>无法加载任务详情</strong>
+                    <span>{selectedJob.error}</span>
+                    <button type="button" className="button button-ghost" onClick={selectedJob.refresh}>重试</button>
+                  </div>
+                ) : detailJob ? (
+                  <>
+                    <TaskInspectorHeader job={detailJob} />
+                    <WorkflowPipeline
+                      key={detailJob.id}
+                      job={detailJob}
+                      disabled={selectedActive || selectedMutationBusy}
+                      cudaAvailable={cudaAvailable}
+                      apiKey={detailApiKey}
+                      onApiKeyChange={(value) => {
+                        setRuntimeKeys((current) => ({ ...current, [detailJob.id]: value }))
+                      }}
+                      onUpdateStep={handleUpdateJobStep}
+                      onRunStep={handleRunJobStep}
+                      onReplaceMedia={handleReplaceTaskMedia}
+                    />
+                    <TaskConsole
+                      job={detailJob}
+                      pollError={selectedJob.error}
+                      actionError={detailError}
+                      onActionError={(message) => setDetailError(detailJob.id, message)}
+                      onDeleteJob={() => void handleDeleteJob()}
+                      disabled={selectedMutationBusy}
+                    />
+                  </>
+                ) : (
+                  <div className="job-detail-state">
+                    <MousePointerClick size={26} />
+                    <strong>选择一个任务查看详情</strong>
+                    <span>任务在后台继续执行，切换详情不会中断队列。</span>
+                  </div>
+                )}
+              </section>
+            </section>
+          ) : activeView === 'services' ? (
+            <section className="utility-workspace" aria-labelledby="services-page-title">
+              <header className="utility-workspace-header">
+                <div>
+                  <h2 id="services-page-title">模型与服务</h2>
+                  <p>检查本机运行环境、识别模型与翻译服务。</p>
+                </div>
+                <button type="button" className="button button-secondary" onClick={() => void handleEnvironmentRefresh()}>
+                  刷新检测
+                </button>
+              </header>
+              <div className="utility-workspace-content">
+                <EnvironmentPanel
+                  environment={environment}
+                  checking={environmentChecking}
+                  error={environmentError}
+                  selectedModel={settings.asrModel}
+                  models={models}
+                  modelRoot={modelRoot}
+                  modelsChecking={modelsChecking}
+                  modelsError={modelsError}
+                  downloadingModelId={downloadingId}
+                  disabled={false}
+                  onRefresh={() => void handleEnvironmentRefresh()}
+                  onDownloadModel={(id) => void startDownload(id)}
+                />
               </div>
-            ) : selectedJob.error && !detailJob ? (
-              <div className="job-detail-state is-error" role="alert">
-                <AlertCircle size={24} />
-                <strong>无法加载任务详情</strong>
-                <span>{selectedJob.error}</span>
-                <button type="button" className="button button-ghost" onClick={selectedJob.refresh}>重试</button>
-              </div>
-            ) : detailJob ? (
-              <>
-                <WorkflowPipeline
-                  key={detailJob.id}
-                  job={detailJob}
-                  disabled={selectedActive || selectedMutationBusy}
+            </section>
+          ) : (
+            <section className="utility-workspace" aria-labelledby="settings-page-title">
+              <header className="utility-workspace-header">
+                <div>
+                  <h2 id="settings-page-title">设置</h2>
+                  <p>管理新任务默认识别、翻译与导出配置。</p>
+                </div>
+              </header>
+              <div className="utility-workspace-content settings-page-content">
+                <SettingsPanel
+                  value={settings}
                   cudaAvailable={cudaAvailable}
-                  apiKey={detailApiKey}
-                  onApiKeyChange={(value) => {
-                    setRuntimeKeys((current) => ({ ...current, [detailJob.id]: value }))
-                  }}
-                  onUpdateStep={handleUpdateJobStep}
-                  onRunStep={handleRunJobStep}
-                  onReplaceMedia={handleReplaceTaskMedia}
+                  disabled={false}
+                  canStart={!configValidationError}
+                  startHint={configValidationError ?? '配置可用'}
+                  showStartAction={false}
+                  initiallyOpen
+                  onChange={setSettings}
+                  onStart={() => undefined}
                 />
-                <TaskConsole
-                  job={detailJob}
-                  pollError={selectedJob.error}
-                  actionError={detailError}
-                  onActionError={(message) => setDetailError(detailJob.id, message)}
-                  onDeleteJob={() => void handleDeleteJob()}
-                  disabled={selectedMutationBusy}
-                />
-              </>
-            ) : (
-              <div className="job-detail-state">
-                <MousePointerClick size={26} />
-                <strong>选择一个任务查看详情</strong>
-                <span>任务在后台继续执行，切换详情不会中断队列。</span>
               </div>
-            )}
-          </section>
-        </section>
-      </main>
+            </section>
+          )}
+        </main>
+      </div>
+      <CreateTaskDialog
+        open={creatorOpen}
+        busy={batchBusy}
+        onRequestClose={() => setCreatorOpen(false)}
+      >
+        <BatchCreator
+          connected={connected}
+          config={batchConfig}
+          configError={configValidationError}
+          startError={startValidationError}
+          runtimeApiKey={settings.deepseekApiKey}
+          onBusyChange={setBatchBusy}
+          onCreated={handleBatchCreated}
+          onClose={() => setCreatorOpen(false)}
+        >
+          <SettingsPanel
+            value={settings}
+            cudaAvailable={cudaAvailable}
+            disabled={batchBusy}
+            canStart={!configValidationError}
+            startHint={configValidationError ?? '批次配置可用'}
+            showStartAction={false}
+            onChange={setSettings}
+            onStart={() => undefined}
+          >
+            <EnvironmentPanel
+              environment={environment}
+              checking={environmentChecking}
+              error={environmentError}
+              selectedModel={settings.asrModel}
+              models={models}
+              modelRoot={modelRoot}
+              modelsChecking={modelsChecking}
+              modelsError={modelsError}
+              downloadingModelId={downloadingId}
+              disabled={batchBusy}
+              onRefresh={() => void handleEnvironmentRefresh()}
+              onDownloadModel={(id) => void startDownload(id)}
+            />
+          </SettingsPanel>
+        </BatchCreator>
+      </CreateTaskDialog>
     </div>
   )
 }
