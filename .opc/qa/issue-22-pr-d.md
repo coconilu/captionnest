@@ -25,15 +25,16 @@
 
 | 验收 | 结果 |
 |---|---|
-| 真实进程恢复 | PASS；`test_issue22_process_acceptance.py` 启动独立 Sidecar，强制终止实际服务 PID，并确认父进程退出、监听端口释放；最终复跑 `1 passed in 8.16s` |
+| 真实进程恢复 | PASS；`test_issue22_process_acceptance.py` 启动独立 Sidecar，强制终止实际服务 PID，并确认父进程退出、监听端口释放；无宿主 Token 与注入宿主 Token 的最终并行复跑分别为 `1 passed in 12.10s`、`1 passed in 12.09s` |
 | running / queued | PASS；运行中的 Translation Job/Step/Attempt 重启后均为 `interrupted`，Media/Transcription Artifact 保留；两个普通 queued Job 在新进程按原 FIFO 顺序执行且无重复 claim |
 | DeepSeek 运行时 Key | PASS；排队任务重启后为 `waiting_for_input`，无 Key 请求返回 400，补交替换 Key 后继续完成；两个哨兵 Key 均未出现在响应、Sidecar 日志或全部持久化 JSON |
+| 桌面会话 Token 隔离 | PASS；两次 Sidecar 启动分别覆盖宿主环境为不同测试 Token，所有授权请求显式带头；缺少会话头和重用旧 Token 均返回 401，两个 Token 均未进入响应、日志或持久化 JSON；注入宿主 `CAPTIONNEST_SESSION_TOKEN` 后目标测试仍通过 |
 | 100 Job API 基线 | PASS；一次 Batch 创建 100/100 个 draft Job，按 37 条分页读回恰好 100 个唯一 Summary，`stress-099` 搜索精确命中；创建、分页耗时和响应体大小均在硬契约阈值内 |
 | Edge 恢复与规模 UI | PASS；Microsoft Edge `150.0.4078.65` 加载 106 个真实持久化任务，搜索命中 1 项、等待输入 1 项、已中断 2 项，任务切换后恰好一个 `aria-current=true`，运行时 Key 不在页面中 |
 | Edge 响应式与运行质量 | PASS；390×844 下 document/body 的 `scrollWidth=clientWidth=390`，无横向溢出；console warning/error 与 pageerror 均为 0 |
 | PR-C 交互回归继承 | [PR-C 验收](issue-22-pr-c.md) 已在同一系统 Edge 覆盖三文件多文件上传/预检/创建、活动任务期间继续添加、批量部分失败、208 行 Summary 分页与慢网络竞态；PR-D 不重复伪造第二套产品逻辑 |
-| 安全源码审计 | PASS；分页签名密钥由进程内 `secrets.token_bytes(32)` 生成且不持久化，cursor 仅携带签名结果并校验篡改；桌面会话 Token 仅通过子进程环境和 WebView 初始化桥传递，Sidecar 输出被丢弃且不持久化 |
-| 全量回归 | PASS；Python `228 passed`（13.64 秒，仅第三方 Starlette/httpx2 弃用提示）、Sidecar/Tooling Ruff、Web lint/build、Desktop fmt/check 与 `git diff --check` 均通过 |
+| 安全源码审计 | PASS；分页签名密钥由进程内 `secrets.token_bytes(32)` 生成且不持久化，cursor 仅携带签名结果并校验篡改；桌面会话 Token 仅通过子进程环境和 WebView 初始化桥传递，Sidecar 输出被丢弃且不持久化；进程验收同时覆盖 Token 轮换与旧 Token 拒绝 |
+| 全量回归 | PASS；Python `228 passed`（15.63 秒，仅第三方 Starlette/httpx2 弃用提示）、Sidecar/Tooling Ruff、Web lint/build、Desktop fmt/check 与 `git diff --check` 均通过 |
 | 清理 | PASS；Edge、Vite、两个 Sidecar 进程均已停止，端口 5175/8765 无监听，浏览器验收临时目录已删除 |
 
 ## 合并门禁

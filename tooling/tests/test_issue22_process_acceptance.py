@@ -27,6 +27,7 @@ class SidecarProcess:
     log_path: Path
     base_url: str
     run_id: str
+    session_token: str
     server_pid: int
     stopped: bool = False
 
@@ -74,6 +75,7 @@ def _start_sidecar(
     *,
     block_translation: bool,
     name: str,
+    session_token: str,
 ) -> SidecarProcess:
     port = _free_port()
     run_id = name
@@ -81,6 +83,7 @@ def _start_sidecar(
     log_path = tmp_path / f"{name}.log"
     log_handle = log_path.open("w", encoding="utf-8")
     environment = os.environ.copy()
+    environment["CAPTIONNEST_SESSION_TOKEN"] = session_token
     environment["PYTHONPATH"] = os.pathsep.join(
         [str(SIDECAR_SOURCE), environment.get("PYTHONPATH", "")]
     ).rstrip(os.pathsep)
@@ -109,7 +112,10 @@ def _start_sidecar(
     )
     base_url = f"http://127.0.0.1:{port}"
     deadline = time.monotonic() + 15
-    with httpx.Client(trust_env=False) as health_client:
+    with httpx.Client(
+        trust_env=False,
+        headers={"X-CaptionNest-Session": session_token},
+    ) as health_client:
         while time.monotonic() < deadline:
             if process.poll() is not None:
                 break
@@ -122,6 +128,7 @@ def _start_sidecar(
                         log_path=log_path,
                         base_url=base_url,
                         run_id=run_id,
+                        session_token=session_token,
                         server_pid=int(pid_path.read_text(encoding="ascii")),
                     )
             except httpx.HTTPError:
@@ -218,6 +225,8 @@ def test_issue22_real_process_recovery_secret_boundary_and_100_job_baseline(
 
     first_secret = "issue22-first-runtime-secret-must-never-persist"
     replacement_secret = "issue22-replacement-secret-must-never-persist"
+    first_session_token = "issue22-first-session-token-must-never-persist"
+    second_session_token = "issue22-second-session-token-must-never-persist"
     first: SidecarProcess | None = None
     second: SidecarProcess | None = None
     try:
@@ -227,12 +236,18 @@ def test_issue22_real_process_recovery_secret_boundary_and_100_job_baseline(
             marker_dir,
             block_translation=True,
             name="sidecar-before-crash",
+            session_token=first_session_token,
         )
         with httpx.Client(
             base_url=first.base_url,
             timeout=15,
             trust_env=False,
+            headers={"X-CaptionNest-Session": first.session_token},
         ) as client:
+            first_health = client.get("/api/health")
+            _assert_response(first_health)
+            assert first_session_token not in first_health.text
+            assert second_session_token not in first_health.text
 
             def create_job(name: str, *, deepseek: bool = False) -> dict[str, Any]:
                 payload: dict[str, Any] = {
@@ -288,10 +303,12 @@ def test_issue22_real_process_recovery_secret_boundary_and_100_job_baseline(
             ]
             assert positions == [1, 2, 3]
             assert first_secret not in _persisted_text(data_dir)
+            assert first_session_token not in _persisted_text(data_dir)
 
         first.stop(force=True)
         _assert_sidecar_stopped(first)
         assert first_secret not in first.log_text()
+        assert first_session_token not in first.log_text()
 
         second = _start_sidecar(
             tmp_path,
@@ -299,12 +316,33 @@ def test_issue22_real_process_recovery_secret_boundary_and_100_job_baseline(
             marker_dir,
             block_translation=False,
             name="sidecar-after-crash",
+            session_token=second_session_token,
         )
+        with httpx.Client(
+            base_url=second.base_url,
+            timeout=5,
+            trust_env=False,
+        ) as unauthorized_client:
+            missing_session = unauthorized_client.get("/api/health")
+            assert missing_session.status_code == 401
+            stale_session = unauthorized_client.get(
+                "/api/health",
+                headers={"X-CaptionNest-Session": first_session_token},
+            )
+            assert stale_session.status_code == 401
+            for token in (first_session_token, second_session_token):
+                assert token not in missing_session.text
+                assert token not in stale_session.text
         with httpx.Client(
             base_url=second.base_url,
             timeout=30,
             trust_env=False,
+            headers={"X-CaptionNest-Session": second.session_token},
         ) as client:
+            second_health = client.get("/api/health")
+            _assert_response(second_health)
+            assert first_session_token not in second_health.text
+            assert second_session_token not in second_health.text
             interrupted = _wait_job(
                 client,
                 running["id"],
@@ -428,6 +466,8 @@ def test_issue22_real_process_recovery_secret_boundary_and_100_job_baseline(
             persisted = _persisted_text(data_dir)
             assert first_secret not in persisted
             assert replacement_secret not in persisted
+            assert first_session_token not in persisted
+            assert second_session_token not in persisted
             assert len(list((data_dir / "jobs").glob("*/job.json"))) == 104
     finally:
         if first is not None:
@@ -439,3 +479,5 @@ def test_issue22_real_process_recovery_secret_boundary_and_100_job_baseline(
     _assert_sidecar_stopped(second)
     assert first_secret not in second.log_text()
     assert replacement_secret not in second.log_text()
+    assert first_session_token not in second.log_text()
+    assert second_session_token not in second.log_text()
