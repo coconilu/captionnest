@@ -71,3 +71,28 @@ def test_dialog_has_required_responsive_shell_and_fixed_action_area() -> None:
     assert "height: calc(100dvh - 16px);" in styles
     assert "position: sticky;" in styles
     assert "overflow-y: auto;" in styles
+
+
+def test_900_by_500_dialog_constrains_height_and_keeps_footer_actions() -> None:
+    styles = source("styles.css")
+    creator = source("components/BatchCreator.tsx")
+    narrow_styles = styles.split("@media (max-width: 920px)", maxsplit=1)[1]
+    viewport_height = 500
+    dialog_height = viewport_height - 32
+    constrained_min_height = min(540, viewport_height - 48)
+    resolved_dialog_height = max(dialog_height, constrained_min_height)
+    dialog_top = (viewport_height - resolved_dialog_height) / 2
+    dialog_bottom = dialog_top + resolved_dialog_height
+    footer_bottom = dialog_bottom
+
+    assert "min-height: min(540px, calc(100dvh - 48px));" in styles
+    assert "height: calc(100dvh - 32px);" in narrow_styles
+    assert "overflow-y: auto;" in narrow_styles
+    assert "position: sticky;" in narrow_styles
+    assert dialog_top >= 0
+    assert dialog_bottom <= viewport_height
+    assert footer_bottom <= viewport_height
+    assert 'onClick={onClose}' in creator
+    assert 'onClick={() => void create(false)}' in creator
+    assert 'onClick={() => void create(true)}' in creator
+    assert all(label in creator for label in ("取消", "仅创建", "创建并启动"))

@@ -2419,7 +2419,7 @@ textarea:disabled {
   width: min(1120px, calc(100vw - 48px));
   height: min(820px, calc(100vh - 48px));
   max-height: calc(100dvh - 48px);
-  min-height: 540px;
+  min-height: min(540px, calc(100dvh - 48px));
   overflow: hidden;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
