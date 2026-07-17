@@ -55,7 +55,7 @@ interface JobListPanelProps {
   error: string | null
   mutationNotice: { message: string; tone: 'success' | 'warning' | 'error' } | null
   bulkBusy: boolean
-  onAddFiles: () => void
+  onCreateTask: () => void
   onRefresh: () => void
   onSelectJob: (jobId: string) => void
   onToggleJob: (jobId: string, checked: boolean) => void
@@ -164,7 +164,7 @@ export function JobListPanel({
   error,
   mutationNotice,
   bulkBusy,
-  onAddFiles,
+  onCreateTask,
   onRefresh,
   onSelectJob,
   onToggleJob,
@@ -194,9 +194,14 @@ export function JobListPanel({
           <button type="button" className="icon-button" onClick={onRefresh} aria-label="刷新任务列表">
             <RefreshCw size={17} className={loading ? 'is-spinning' : undefined} />
           </button>
-          <button type="button" className="button button-secondary add-batch-button" onClick={onAddFiles}>
+          <button
+            type="button"
+            className="button button-secondary add-batch-button"
+            data-create-task-trigger="toolbar"
+            onClick={onCreateTask}
+          >
             <FilePlus2 size={16} aria-hidden="true" />
-            添加文件
+            新建任务
           </button>
         </div>
       </header>
@@ -295,7 +300,13 @@ export function JobListPanel({
           <div className="job-list-empty">
             {items.length ? <Search size={22} /> : <Clock3 size={22} />}
             <strong>{items.length ? '没有匹配的任务' : '还没有任务'}</strong>
-            <span>{items.length ? '调整搜索或状态筛选' : '添加多个视频来创建第一个批次'}</span>
+            <span>{items.length ? '调整搜索或状态筛选' : '添加视频来创建第一个任务'}</span>
+            {!items.length ? (
+              <button type="button" className="button button-secondary empty-create-task-button" onClick={onCreateTask}>
+                <FilePlus2 size={16} aria-hidden="true" />
+                新建任务
+              </button>
+            ) : null}
           </div>
         ) : null}
       </div>

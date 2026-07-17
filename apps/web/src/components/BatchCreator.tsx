@@ -8,7 +8,7 @@ import {
   Upload,
   X,
 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 
 import {
   createBatch,
@@ -38,6 +38,7 @@ interface BatchCreatorProps {
   configError: string | null
   startError: string | null
   runtimeApiKey: string
+  children?: ReactNode
   onBusyChange: (busy: boolean) => void
   onCreated: (result: BatchCreateResult, runtimeApiKey: string) => void
   onClose: () => void
@@ -55,6 +56,7 @@ export function BatchCreator({
   configError,
   startError,
   runtimeApiKey,
+  children,
   onBusyChange,
   onCreated,
   onClose,
@@ -232,128 +234,135 @@ export function BatchCreator({
     || validCount === 0
 
   return (
-    <section className="batch-creator" aria-labelledby="batch-creator-title">
-      <header>
-        <div>
-          <span className="panel-step-label">新批次</span>
-          <h2 id="batch-creator-title">一次添加多个视频</h2>
-          <p>每个文件会创建独立任务，公共配置只在创建时复制。</p>
-        </div>
-        <button type="button" className="icon-button" onClick={onClose} disabled={busy} aria-label="关闭新批次面板">
-          <X size={18} />
-        </button>
-      </header>
+    <section className="batch-creator" aria-labelledby="batch-files-title">
+      <div className="batch-creator-main">
+        <header>
+          <div>
+            <span className="panel-step-label">文件与批次</span>
+            <h3 id="batch-files-title">添加视频</h3>
+            <p>每个文件会创建独立任务，公共配置只在创建时复制。</p>
+          </div>
+        </header>
 
-      <label className="field batch-name-field">
-        <span>批次名称（可选）</span>
-        <input
-          value={batchName}
-          onChange={(event) => setBatchName(event.target.value)}
-          maxLength={160}
-          placeholder="例如：课程第 3 章"
-          disabled={busy}
-        />
-      </label>
-
-      <div
-        className={`batch-drop-zone ${dragging ? 'is-dragging' : ''}`}
-        onDragEnter={(event) => {
-          event.preventDefault()
-          if (!busy) setDragging(true)
-        }}
-        onDragOver={(event) => event.preventDefault()}
-        onDragLeave={() => setDragging(false)}
-        onDrop={(event) => {
-          event.preventDefault()
-          setDragging(false)
-          if (!busy) void addBrowserFiles([...event.dataTransfer.files])
-        }}
-      >
-        {uploading || picking ? <LoaderCircle className="is-spinning" /> : <Upload />}
-        <strong>{dragging ? '松开即可上传' : '拖入多个视频，或选择来源'}</strong>
-        <span>支持 MP4、MKV、MOV、AVI、WEBM、M4V、TS、MTS、M2TS</span>
-        <div>
-          <button type="button" className="button button-secondary" onClick={() => void addPathSources()} disabled={busy || !connected}>
-            <FolderOpen size={16} />
-            本机路径
-          </button>
-          <button type="button" className="button button-ghost" onClick={() => fileInputRef.current?.click()} disabled={busy || !connected}>
-            <Upload size={16} />
-            浏览器上传
-          </button>
+        <label className="field batch-name-field">
+          <span>批次名称（可选）</span>
           <input
-            ref={fileInputRef}
-            className="sr-only"
-            type="file"
-            multiple
-            accept="video/*,.mkv,.m4v,.ts,.mts,.m2ts"
-            onChange={(event) => {
-              void addBrowserFiles([...(event.target.files ?? [])])
-              event.target.value = ''
-            }}
+            value={batchName}
+            onChange={(event) => setBatchName(event.target.value)}
+            maxLength={160}
+            placeholder="例如：课程第 3 章"
+            disabled={busy}
           />
+        </label>
+
+        <div
+          className={`batch-drop-zone ${dragging ? 'is-dragging' : ''}`}
+          onDragEnter={(event) => {
+            event.preventDefault()
+            if (!busy) setDragging(true)
+          }}
+          onDragOver={(event) => event.preventDefault()}
+          onDragLeave={() => setDragging(false)}
+          onDrop={(event) => {
+            event.preventDefault()
+            setDragging(false)
+            if (!busy) void addBrowserFiles([...event.dataTransfer.files])
+          }}
+        >
+          {uploading || picking ? <LoaderCircle className="is-spinning" /> : <Upload />}
+          <strong>{dragging ? '松开即可上传' : '拖入多个视频，或选择来源'}</strong>
+          <span>支持 MP4、MKV、MOV、AVI、WEBM、M4V、TS、MTS、M2TS</span>
+          <div>
+            <button type="button" className="button button-secondary" onClick={() => void addPathSources()} disabled={busy || !connected}>
+              <FolderOpen size={16} />
+              本机路径
+            </button>
+            <button type="button" className="button button-ghost" onClick={() => fileInputRef.current?.click()} disabled={busy || !connected}>
+              <Upload size={16} />
+              浏览器上传
+            </button>
+            <input
+              ref={fileInputRef}
+              className="sr-only"
+              type="file"
+              multiple
+              accept="video/*,.mkv,.m4v,.ts,.mts,.m2ts"
+              onChange={(event) => {
+                void addBrowserFiles([...(event.target.files ?? [])])
+                event.target.value = ''
+              }}
+            />
+          </div>
         </div>
+
+        <div className="batch-source-summary" aria-live="polite">
+          <span>{sources.length} 个文件</span>
+          <span className="is-valid">{validCount} 个有效</span>
+          {invalidCount ? <span className="is-invalid">{invalidCount} 个待处理</span> : null}
+          {preflightBusy ? <span><LoaderCircle size={12} className="is-spinning" />预检中</span> : null}
+        </div>
+
+        <div className="batch-source-list">
+          {sources.map((source) => {
+            const item = preflightById.get(source.id)
+            const issues = source.error
+              ? [source.error]
+              : item?.issues.map((issue) => issue.message) ?? []
+            const valid = Boolean(item?.valid) && !source.error
+            return (
+              <article key={source.id} className={`batch-source-row ${issues.length ? 'is-invalid' : valid ? 'is-valid' : ''}`}>
+                <span className="batch-source-icon"><FileVideo2 size={18} /></span>
+                <span className="batch-source-copy">
+                  <strong title={source.name}>{source.name}</strong>
+                  <small>
+                    {formatBytes(source.size)}
+                    {item?.output_path ? ` · 输出 ${item.output_path}` : ''}
+                  </small>
+                  {issues.map((issue, index) => <em key={`${index}-${issue}`}>{issue}</em>)}
+                </span>
+                <span className="batch-source-state" aria-label={valid ? '预检通过' : issues.length ? '预检失败' : '等待预检'}>
+                  {valid ? <CheckCircle2 size={17} /> : issues.length ? <AlertCircle size={17} /> : <LoaderCircle size={17} className="is-spinning" />}
+                </span>
+                <button
+                  type="button"
+                  className="icon-button"
+                  disabled={busy}
+                  onClick={() => setSources((current) => current.filter((itemSource) => itemSource.id !== source.id))}
+                  aria-label={`移除 ${source.name}`}
+                >
+                  <X size={16} />
+                </button>
+              </article>
+            )
+          })}
+          {!sources.length ? <p className="batch-source-empty">尚未添加文件</p> : null}
+        </div>
+
+        {configError || actionError ? (
+          <div className="inline-error" role="alert">
+            <AlertCircle size={17} />
+            <span>{actionError ?? configError}</span>
+          </div>
+        ) : null}
+        {resultMessage ? (
+          <div className="batch-create-success" role="status">
+            <CheckCircle2 size={17} />
+            <span>{resultMessage}</span>
+          </div>
+        ) : null}
       </div>
 
-      <div className="batch-source-summary" aria-live="polite">
-        <span>{sources.length} 个文件</span>
-        <span className="is-valid">{validCount} 个有效</span>
-        {invalidCount ? <span className="is-invalid">{invalidCount} 个待处理</span> : null}
-        {preflightBusy ? <span><LoaderCircle size={12} className="is-spinning" />预检中</span> : null}
-      </div>
-
-      <div className="batch-source-list">
-        {sources.map((source) => {
-          const item = preflightById.get(source.id)
-          const issues = source.error
-            ? [source.error]
-            : item?.issues.map((issue) => issue.message) ?? []
-          const valid = Boolean(item?.valid) && !source.error
-          return (
-            <article key={source.id} className={`batch-source-row ${issues.length ? 'is-invalid' : valid ? 'is-valid' : ''}`}>
-              <span className="batch-source-icon"><FileVideo2 size={18} /></span>
-              <span className="batch-source-copy">
-                <strong title={source.name}>{source.name}</strong>
-                <small>
-                  {formatBytes(source.size)}
-                  {item?.output_path ? ` · 输出 ${item.output_path}` : ''}
-                </small>
-                {issues.map((issue, index) => <em key={`${index}-${issue}`}>{issue}</em>)}
-              </span>
-              <span className="batch-source-state" aria-label={valid ? '预检通过' : issues.length ? '预检失败' : '等待预检'}>
-                {valid ? <CheckCircle2 size={17} /> : issues.length ? <AlertCircle size={17} /> : <LoaderCircle size={17} className="is-spinning" />}
-              </span>
-              <button
-                type="button"
-                className="icon-button"
-                disabled={busy}
-                onClick={() => setSources((current) => current.filter((itemSource) => itemSource.id !== source.id))}
-                aria-label={`移除 ${source.name}`}
-              >
-                <X size={16} />
-              </button>
-            </article>
-          )
-        })}
-        {!sources.length ? <p className="batch-source-empty">尚未添加文件</p> : null}
-      </div>
-
-      {configError || actionError ? (
-        <div className="inline-error" role="alert">
-          <AlertCircle size={17} />
-          <span>{actionError ?? configError}</span>
-        </div>
-      ) : null}
-      {resultMessage ? (
-        <div className="batch-create-success" role="status">
-          <CheckCircle2 size={17} />
-          <span>{resultMessage}</span>
-        </div>
-      ) : null}
+      {children ? <div className="batch-creator-settings">{children}</div> : null}
 
       <footer>
-        <p>无效项不会阻止其余有效任务创建；错误会逐文件保留。</p>
+        <p>
+          <strong>准备创建 {validCount} 个任务</strong>
+          <span>无效项不会阻止其余任务创建，错误会逐文件保留。</span>
+        </p>
         <div>
+          <button type="button" className="button button-ghost" disabled={busy} onClick={onClose}>
+            取消
+          </button>
           <button type="button" className="button button-ghost" disabled={createDisabled} onClick={() => void create(false)}>
             仅创建
           </button>

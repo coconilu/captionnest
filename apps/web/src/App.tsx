@@ -10,6 +10,7 @@ import {
 } from './api/client'
 import { AppHeader } from './components/AppHeader'
 import { BatchCreator } from './components/BatchCreator'
+import { CreateTaskDialog } from './components/CreateTaskDialog'
 import { EnvironmentPanel } from './components/EnvironmentPanel'
 import { HeroIntro } from './components/HeroIntro'
 import { JobListPanel } from './components/JobListPanel'
@@ -62,7 +63,7 @@ export function App() {
   } = useModelCatalog()
   const [settings, setSettings] = usePersistedSettings()
   const summaryStore = useJobSummaries(connected)
-  const [creatorOpen, setCreatorOpen] = useState(true)
+  const [creatorOpen, setCreatorOpen] = useState(false)
   const [batchBusy, setBatchBusy] = useState(false)
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null)
   const [checkedJobIds, setCheckedJobIds] = useState<Set<string>>(new Set())
@@ -474,46 +475,6 @@ export function App() {
       />
       <HeroIntro />
       <main className="multi-task-workbench">
-        {creatorOpen ? (
-          <section className="batch-creator-layout" aria-label="创建新批次">
-            <BatchCreator
-              connected={connected}
-              config={batchConfig}
-              configError={configValidationError}
-              startError={startValidationError}
-              runtimeApiKey={settings.deepseekApiKey}
-              onBusyChange={setBatchBusy}
-              onCreated={handleBatchCreated}
-              onClose={() => setCreatorOpen(false)}
-            />
-            <SettingsPanel
-              value={settings}
-              cudaAvailable={cudaAvailable}
-              disabled={batchBusy}
-              canStart={!configValidationError}
-              startHint={configValidationError ?? '批次配置可用'}
-              showStartAction={false}
-              onChange={setSettings}
-              onStart={() => undefined}
-            >
-              <EnvironmentPanel
-                environment={environment}
-                checking={environmentChecking}
-                error={environmentError}
-                selectedModel={settings.asrModel}
-                models={models}
-                modelRoot={modelRoot}
-                modelsChecking={modelsChecking}
-                modelsError={modelsError}
-                downloadingModelId={downloadingId}
-                disabled={batchBusy}
-                onRefresh={() => void handleEnvironmentRefresh()}
-                onDownloadModel={(id) => void startDownload(id)}
-              />
-            </SettingsPanel>
-          </section>
-        ) : null}
-
         <section className="master-detail-layout" aria-label="任务列表与详情">
           <JobListPanel
             items={summaryStore.items}
@@ -524,7 +485,7 @@ export function App() {
             error={summaryStore.error ?? backendError}
             mutationNotice={mutationNotice}
             bulkBusy={bulkBusy || checkedMutationBusy}
-            onAddFiles={() => setCreatorOpen(true)}
+            onCreateTask={() => setCreatorOpen(true)}
             onRefresh={summaryStore.refresh}
             onSelectJob={setSelectedJobId}
             onToggleJob={handleToggleJob}
@@ -579,6 +540,48 @@ export function App() {
           </section>
         </section>
       </main>
+      <CreateTaskDialog
+        open={creatorOpen}
+        busy={batchBusy}
+        onRequestClose={() => setCreatorOpen(false)}
+      >
+        <BatchCreator
+          connected={connected}
+          config={batchConfig}
+          configError={configValidationError}
+          startError={startValidationError}
+          runtimeApiKey={settings.deepseekApiKey}
+          onBusyChange={setBatchBusy}
+          onCreated={handleBatchCreated}
+          onClose={() => setCreatorOpen(false)}
+        >
+          <SettingsPanel
+            value={settings}
+            cudaAvailable={cudaAvailable}
+            disabled={batchBusy}
+            canStart={!configValidationError}
+            startHint={configValidationError ?? '批次配置可用'}
+            showStartAction={false}
+            onChange={setSettings}
+            onStart={() => undefined}
+          >
+            <EnvironmentPanel
+              environment={environment}
+              checking={environmentChecking}
+              error={environmentError}
+              selectedModel={settings.asrModel}
+              models={models}
+              modelRoot={modelRoot}
+              modelsChecking={modelsChecking}
+              modelsError={modelsError}
+              downloadingModelId={downloadingId}
+              disabled={batchBusy}
+              onRefresh={() => void handleEnvironmentRefresh()}
+              onDownloadModel={(id) => void startDownload(id)}
+            />
+          </SettingsPanel>
+        </BatchCreator>
+      </CreateTaskDialog>
     </div>
   )
 }
