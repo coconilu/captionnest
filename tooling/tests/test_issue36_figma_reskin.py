@@ -69,10 +69,22 @@ def test_figma_palette_and_desktop_geometry_are_explicit() -> None:
     assert re.search(r"\.app-sidebar button\s*\{[^}]*font-size: var\(--text-sm\);", styles, re.S)
     assert re.search(r"\.job-table-header\s*\{[^}]*font-size: var\(--text-xs\);", styles, re.S)
     assert re.search(r"\.job-row-copy strong\s*\{[^}]*font-size: var\(--text-sm\);", styles, re.S)
-    assert re.search(r"\.task-inspector-title h2\s*\{[^}]*font-size: var\(--text-md\);", styles, re.S)
-    assert re.search(r"\.pipeline-step-header h3\s*\{[^}]*font-size: var\(--text-sm\);", styles, re.S)
-    assert re.search(r"\.create-task-dialog-header h2\s*\{[^}]*font-size: var\(--text-md\);", styles, re.S)
-    assert re.search(r"\.batch-creator > footer > p strong\s*\{[^}]*font-size: var\(--text-sm\);", styles, re.S)
+    assert re.search(
+        r"\.task-inspector-title h2\s*\{[^}]*font-size: var\(--text-md\);", styles, re.S
+    )
+    assert re.search(
+        r"\.pipeline-step-header h3\s*\{[^}]*font-size: var\(--text-sm\);", styles, re.S
+    )
+    assert re.search(
+        r"\.create-task-dialog-header h2\s*\{[^}]*font-size: var\(--text-md\);",
+        styles,
+        re.S,
+    )
+    assert re.search(
+        r"\.batch-creator > footer > p strong\s*\{[^}]*font-size: var\(--text-sm\);",
+        styles,
+        re.S,
+    )
 
 
 def test_legacy_visible_text_selectors_are_overridden_by_readability_tokens() -> None:
