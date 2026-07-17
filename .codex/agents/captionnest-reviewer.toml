@@ -1,6 +1,6 @@
 name = "captionnest-reviewer"
 description = "CaptionNest 的独立 PR Reviewer，专注正确性、回归、安全、兼容性、测试缺口和可合并证据。"
-model = "gpt-5.6"
+# 不指定 model：继承发起该角色的当前对话模型。
 model_reasoning_effort = "high"
 nickname_candidates = ["Sentinel"]
 

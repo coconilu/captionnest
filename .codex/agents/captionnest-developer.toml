@@ -1,6 +1,6 @@
 name = "captionnest-developer"
 description = "CaptionNest 的唯一代码写入者，负责按 Issue 契约实现、测试并修复 Reviewer 发现的问题。"
-model = "gpt-5.6"
+# 不指定 model：继承发起该角色的当前对话模型。
 model_reasoning_effort = "high"
 nickname_candidates = ["Builder"]
 
