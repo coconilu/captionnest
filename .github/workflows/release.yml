@@ -3,21 +3,18 @@ name: Windows Release
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: '要发布的版本号，例如 0.2.0（不要带 v）'
+      tag:
+        description: '已由 Prepare Release 创建的 annotated tag，例如 v0.2.2'
         required: true
         type: string
-      prerelease:
-        description: '标记为预发布版本'
-        required: true
-        type: boolean
-        default: false
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 concurrency:
-  group: windows-release
+  group: windows-release-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
@@ -26,61 +23,126 @@ jobs:
     timeout-minutes: 180
     env:
       GH_TOKEN: ${{ github.token }}
-      RELEASE_VERSION_INPUT: ${{ inputs.version }}
+      RELEASE_TAG_INPUT: ${{ inputs.tag }}
       RELEASE_PYTHON_VERSION: '3.12'
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\tooling\packaging\build\vcpkg-binary-cache
     steps:
-      - name: Check out main with tags
+      - name: Check out the exact release tag
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ inputs.tag }}
           fetch-depth: 0
 
-      - name: Validate one-click release request
+      - name: Validate tag, source commit, version, and rerun state
         shell: pwsh
         run: |
-          if ($env:GITHUB_REF -ne 'refs/heads/main') {
-            throw 'Run the one-click release workflow from the main branch.'
+          $Tag = $env:RELEASE_TAG_INPUT.Trim()
+          if ($Tag -ne $env:RELEASE_TAG_INPUT) {
+            throw 'The tag must not contain leading or trailing whitespace.'
           }
-          $Version = $env:RELEASE_VERSION_INPUT.Trim()
-          if ($Version -ne $env:RELEASE_VERSION_INPUT) {
-            throw 'The version must not contain leading or trailing whitespace.'
+          if ($Tag -notmatch '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
+            throw "Invalid tag '$Tag'. Use vMAJOR.MINOR.PATCH."
           }
-          if ($Version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
-            throw "Invalid version '$Version'. Use MAJOR.MINOR.PATCH without a v prefix."
-          }
-          $Tag = "v$Version"
-          & git fetch origin main --tags
-          if ($LASTEXITCODE -ne 0) { throw 'Unable to fetch main and tags.' }
-          $BaseSha = (& git rev-parse HEAD).Trim()
-          $RemoteMain = (& git rev-parse origin/main).Trim()
-          if ($BaseSha -ne $RemoteMain) {
-            throw "Checked out $BaseSha, but origin/main is $RemoteMain. Run the workflow again."
+          $Version = $Tag.Substring(1)
+          if ($env:GITHUB_REF -ne "refs/tags/$Tag") {
+            throw "This workflow must be dispatched with --ref $Tag; got $env:GITHUB_REF."
           }
 
-          $ReleaseListJson = & gh release list --repo $env:GITHUB_REPOSITORY --limit 1000 --json tagName
+          $GitFetchArgs = @('fetch', 'origin', '--tags')
+          & git @GitFetchArgs
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to fetch release tags.' }
+
+          $TagTypeArgs = @('cat-file', '-t', "refs/tags/$Tag")
+          $TagType = (& git @TagTypeArgs).Trim()
+          if ($LASTEXITCODE -ne 0 -or $TagType -ne 'tag') {
+            throw "$Tag must exist as an annotated tag; it will not be created or moved here."
+          }
+          $ResolveTagArgs = @('rev-parse', "$Tag^{commit}")
+          $TagCommit = (& git @ResolveTagArgs).Trim()
+          if ($LASTEXITCODE -ne 0) { throw "Unable to resolve $Tag to a commit." }
+          $ResolveHeadArgs = @('rev-parse', 'HEAD')
+          $HeadCommit = (& git @ResolveHeadArgs).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to resolve checked-out HEAD.' }
+          if ($HeadCommit -ne $TagCommit) {
+            throw "Checked-out HEAD $HeadCommit does not equal $Tag commit $TagCommit."
+          }
+          if ($env:GITHUB_SHA -ne $TagCommit) {
+            throw "Workflow source SHA $env:GITHUB_SHA does not equal $Tag commit $TagCommit."
+          }
+
+          $StatusArgs = @('status', '--porcelain=v1')
+          $Dirty = @(& git @StatusArgs)
+          if ($LASTEXITCODE -ne 0 -or $Dirty.Count -ne 0) {
+            throw 'The release checkout must be clean before building.'
+          }
+
+          & pwsh '-File' '.\scripts\check-version-consistency.ps1' '-ExpectedVersion' $Version
+          if ($LASTEXITCODE -ne 0) {
+            throw "$Tag does not contain project version $Version."
+          }
+
+          $TagMessageArgs = @('for-each-ref', '--format=%(contents)', "refs/tags/$Tag")
+          $TagMessage = @(& git @TagMessageArgs)
+          if ($LASTEXITCODE -ne 0) { throw "Unable to read $Tag metadata." }
+          $Markers = @($TagMessage | Where-Object { $_ -match '^prerelease=(true|false)$' })
+          if ($Markers.Count -ne 1) {
+            throw "$Tag must contain exactly one prerelease=true|false marker."
+          }
+          $Prerelease = $Markers[0].Substring('prerelease='.Length)
+
+          $ReleaseListArgs = @(
+            'release', 'list', '--repo', $env:GITHUB_REPOSITORY,
+            '--limit', '1000', '--json', 'tagName,isDraft,isPrerelease'
+          )
+          $ReleaseListJson = & gh @ReleaseListArgs
           if ($LASTEXITCODE -ne 0) { throw 'Unable to query existing releases.' }
-          $Releases = $ReleaseListJson | ConvertFrom-Json
-          $ReleaseExists = @($Releases).tagName -contains $Tag
-          if ($ReleaseExists) {
-            throw "Release $Tag already exists. Use a new version."
+          $MatchingReleases = @(
+            $ReleaseListJson |
+              ConvertFrom-Json |
+              Where-Object { $_.tagName -eq $Tag }
+          )
+          if ($MatchingReleases.Count -gt 1) {
+            throw "Found multiple releases for $Tag."
+          }
+          if ($MatchingReleases.Count -eq 1) {
+            if (-not $MatchingReleases[0].isDraft) {
+              throw "Published Release $Tag already exists and will never be overwritten."
+            }
+            if ($MatchingReleases[0].isPrerelease.ToString().ToLowerInvariant() -ne $Prerelease) {
+              throw "Draft Release $Tag prerelease state does not match the immutable tag metadata."
+            }
           }
 
-          $MatchingTags = @(& git tag --list $Tag)
-          if ($LASTEXITCODE -ne 0) { throw 'Unable to query existing tags.' }
-          $TagExists = $MatchingTags -contains $Tag
-          if ($TagExists) {
-            $TagSha = (& git rev-list -n 1 $Tag).Trim()
-            if ($TagSha -ne $BaseSha) {
-              throw "Tag $Tag points to $TagSha instead of current main $BaseSha."
+          $RulesetListArgs = @('api', "repos/$env:GITHUB_REPOSITORY/rulesets")
+          $RulesetListJson = & gh @RulesetListArgs
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to query repository tag rulesets.' }
+          $ProtectingRulesets = @()
+          foreach ($Summary in @($RulesetListJson | ConvertFrom-Json)) {
+            if ($Summary.target -ne 'tag' -or $Summary.enforcement -ne 'active') { continue }
+            $RulesetArgs = @('api', "repos/$env:GITHUB_REPOSITORY/rulesets/$($Summary.id)")
+            $RulesetJson = & gh @RulesetArgs
+            if ($LASTEXITCODE -ne 0) { throw "Unable to inspect tag ruleset $($Summary.id)." }
+            $Ruleset = $RulesetJson | ConvertFrom-Json
+            $RuleTypes = @($Ruleset.rules.type)
+            if (
+              @($Ruleset.conditions.ref_name.include) -contains 'refs/tags/v*' -and
+              @($Ruleset.conditions.ref_name.exclude).Count -eq 0 -and
+              $RuleTypes -contains 'update' -and
+              $RuleTypes -contains 'deletion' -and
+              @($Ruleset.bypass_actors).Count -eq 0 -and
+              $Ruleset.current_user_can_bypass -eq 'never'
+            ) {
+              $ProtectingRulesets += $Ruleset
             }
+          }
+          if ($ProtectingRulesets.Count -eq 0) {
+            throw 'An active refs/tags/v* ruleset must prohibit update and deletion without bypass actors.'
           }
 
           "RELEASE_VERSION=$Version" | Add-Content -LiteralPath $env:GITHUB_ENV
           "RELEASE_TAG=$Tag" | Add-Content -LiteralPath $env:GITHUB_ENV
-          "RELEASE_BASE_SHA=$BaseSha" | Add-Content -LiteralPath $env:GITHUB_ENV
-          "RELEASE_TAG_EXISTS=$($TagExists.ToString().ToLowerInvariant())" |
-            Add-Content -LiteralPath $env:GITHUB_ENV
+          "RELEASE_TAG_COMMIT=$TagCommit" | Add-Content -LiteralPath $env:GITHUB_ENV
+          "RELEASE_PRERELEASE=$Prerelease" | Add-Content -LiteralPath $env:GITHUB_ENV
 
       - name: Restore LGPL media wheel cache
         id: restore_media_wheel_cache
@@ -126,16 +188,8 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
-          & .\tooling\packaging\build\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+          & .\tooling\packaging\build\vcpkg\bootstrap-vcpkg.bat '-disableMetrics'
           if ($LASTEXITCODE -ne 0) { throw 'Unable to bootstrap pinned vcpkg.' }
-
-      - name: Update every project version
-        shell: pwsh
-        run: |
-          $Python = (& uv python find $env:RELEASE_PYTHON_VERSION).Trim()
-          if (-not $Python) { throw 'Unable to locate the release Python runtime.' }
-          & $Python .\tooling\release\version.py $env:RELEASE_VERSION --root .
-          if ($LASTEXITCODE -ne 0) { throw 'Unable to update project versions.' }
 
       - run: npm ci
         working-directory: apps/web
@@ -205,7 +259,7 @@ jobs:
         shell: pwsh
         run: .\scripts\build-desktop.ps1 -PythonExecutable $env:CAPTIONNEST_BUILD_PYTHON
 
-      - name: Stage release files
+      - name: Stage and verify release candidate
         shell: pwsh
         run: |
           $Stage = 'tooling\packaging\dist\release-candidate'
@@ -213,97 +267,266 @@ jobs:
             Remove-Item -LiteralPath $Stage -Recurse -Force
           }
           New-Item -ItemType Directory -Path $Stage -Force | Out-Null
+          $InstallerName = "CaptionNest_$env:RELEASE_VERSION`_x64-setup.exe"
+          $ChecksumName = "$InstallerName.sha256"
           $Nsis = 'apps\desktop\target\x86_64-pc-windows-msvc\release\bundle\nsis'
-          Copy-Item -Path "$Nsis\CaptionNest_*_x64-setup.exe" -Destination $Stage
-          Copy-Item -Path "$Nsis\CaptionNest_*_x64-setup.exe.sha256" -Destination $Stage
+          Copy-Item -LiteralPath (Join-Path $Nsis $InstallerName) -Destination $Stage
+          Copy-Item -LiteralPath (Join-Path $Nsis $ChecksumName) -Destination $Stage
           Copy-Item -LiteralPath 'tooling\packaging\dist\FFMPEG_BUILD_INFO.txt' -Destination $Stage
           Copy-Item `
             -LiteralPath 'tooling\packaging\dist\media-wheel\MEDIA_WHEEL_PROVENANCE.json' `
             -Destination $Stage
 
+          $ExpectedNames = @(
+            $InstallerName,
+            $ChecksumName,
+            'FFMPEG_BUILD_INFO.txt',
+            'MEDIA_WHEEL_PROVENANCE.json'
+          )
+          $Files = @(Get-ChildItem -LiteralPath $Stage -File)
+          $ActualNames = @($Files.Name | Sort-Object)
+          if (($ActualNames -join "`n") -ne (($ExpectedNames | Sort-Object) -join "`n")) {
+            throw "Release candidate contents differ from the four expected assets: $($ActualNames -join ', ')."
+          }
+          if (@($Files | Where-Object { $_.Length -le 0 }).Count -ne 0) {
+            throw 'Release candidate contains an empty asset.'
+          }
+          $InstallerPath = Join-Path $Stage $InstallerName
+          $ActualHash = (Get-FileHash -LiteralPath $InstallerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $ChecksumLine = (Get-Content -LiteralPath (Join-Path $Stage $ChecksumName) -Raw).Trim()
+          if ($ChecksumLine -ne "$ActualHash  $InstallerName") {
+            throw 'Installer checksum file does not match the exact staged installer.'
+          }
+
       - name: Smoke-test the exact installer
         timeout-minutes: 8
         shell: pwsh
         run: |
-          $Installers = @(
-            Get-ChildItem `
-              -LiteralPath 'tooling\packaging\dist\release-candidate' `
-              -Filter 'CaptionNest_*_x64-setup.exe' `
-              -File
-          )
-          if ($Installers.Count -ne 1) {
-            throw "Expected one staged installer; found $($Installers.Count)."
-          }
+          $InstallerPath = "tooling\packaging\dist\release-candidate\CaptionNest_$env:RELEASE_VERSION`_x64-setup.exe"
           .\scripts\smoke-test-installer.ps1 `
-            -InstallerPath $Installers[0].FullName `
+            -InstallerPath $InstallerPath `
             -ExpectedVersion $env:RELEASE_VERSION
 
       - name: Upload validated workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: captionnest-windows-x64-v${{ inputs.version }}
+          name: captionnest-windows-x64-${{ env.RELEASE_TAG }}
           if-no-files-found: error
           path: tooling/packaging/dist/release-candidate/*
 
-      - name: Commit the version and create the tag
-        shell: pwsh
-        run: |
-          & git fetch origin main --tags
-          if ($LASTEXITCODE -ne 0) { throw 'Unable to refresh main before publishing.' }
-          $RemoteMain = (& git rev-parse origin/main).Trim()
-          if ($RemoteMain -ne $env:RELEASE_BASE_SHA) {
-            throw "main moved from $env:RELEASE_BASE_SHA to $RemoteMain during the build. Run again."
-          }
-
-          $VersionFiles = @(
-            'apps/sidecar/pyproject.toml',
-            'apps/sidecar/uv.lock',
-            'apps/web/package.json',
-            'apps/web/package-lock.json',
-            'apps/desktop/tauri.conf.json',
-            'apps/desktop/Cargo.toml',
-            'apps/desktop/Cargo.lock'
-          )
-          if ($env:RELEASE_TAG_EXISTS -eq 'true') {
-            & git diff --exit-code -- $VersionFiles
-            if ($LASTEXITCODE -ne 0) {
-              throw "Existing tag $env:RELEASE_TAG cannot be resumed with uncommitted versions."
-            }
-          } else {
-            & git config user.name 'github-actions[bot]'
-            & git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-            & git add -- $VersionFiles
-            & git diff --cached --quiet
-            if ($LASTEXITCODE -ne 0) {
-              & git commit -m "chore: release $env:RELEASE_TAG"
-              if ($LASTEXITCODE -ne 0) { throw 'Unable to commit release versions.' }
-              & git push origin HEAD:main
-              if ($LASTEXITCODE -ne 0) { throw 'Unable to push the release version commit.' }
-            }
-            & git tag -a $env:RELEASE_TAG -m "CaptionNest $env:RELEASE_TAG"
-            if ($LASTEXITCODE -ne 0) { throw 'Unable to create the release tag.' }
-            & git push origin "refs/tags/$env:RELEASE_TAG"
-            if ($LASTEXITCODE -ne 0) { throw 'Unable to push the release tag.' }
-          }
-
-      - name: Publish GitHub Release with generated notes
-        uses: softprops/action-gh-release@v2
+      - name: Attest the final Windows installer
+        id: attest_installer
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
         with:
-          tag_name: v${{ inputs.version }}
-          name: CaptionNest v${{ inputs.version }}
-          prerelease: ${{ inputs.prerelease }}
-          generate_release_notes: true
-          fail_on_unmatched_files: true
-          body: |
-            CaptionNest 是一个面向 Windows 的本地优先双语字幕应用。
+          subject-path: tooling/packaging/dist/release-candidate/CaptionNest_${{ env.RELEASE_VERSION }}_x64-setup.exe
 
-            Windows 10/11 x64 用户请下载 `CaptionNest_${{ inputs.version }}_x64-setup.exe`。
+      - name: Record build provenance
+        shell: pwsh
+        env:
+          ATTESTATION_ID: ${{ steps.attest_installer.outputs.attestation-id }}
+          ATTESTATION_URL: ${{ steps.attest_installer.outputs.attestation-url }}
+        run: |
+          if (-not $env:ATTESTATION_ID -or -not $env:ATTESTATION_URL) {
+            throw 'actions/attest did not return an attestation ID and URL.'
+          }
+          @"
+          ## Windows installer build provenance
 
-            > 本版本尚未配置 Windows Authenticode 代码签名，首次安装可能出现 Microsoft Defender SmartScreen 提示。请只从本 Release 下载，并使用同名 `.sha256` 文件核对安装包。
+          - Attestation ID: ``$env:ATTESTATION_ID``
+          - Attestation URL: $env:ATTESTATION_URL
+          - Source/tag commit: ``$env:RELEASE_TAG_COMMIT``
+          "@ | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
 
-            `FFMPEG_BUILD_INFO.txt` 与 `MEDIA_WHEEL_PROVENANCE.json` 记录了 LGPL 媒体运行时的许可证门禁结果、固定版本和构建来源。
-          files: |
-            tooling/packaging/dist/release-candidate/CaptionNest_*_x64-setup.exe
-            tooling/packaging/dist/release-candidate/CaptionNest_*_x64-setup.exe.sha256
-            tooling/packaging/dist/release-candidate/FFMPEG_BUILD_INFO.txt
-            tooling/packaging/dist/release-candidate/MEDIA_WHEEL_PROVENANCE.json
+      - name: Create or resume draft, verify assets, and publish
+        shell: pwsh
+        env:
+          ATTESTATION_URL: ${{ steps.attest_installer.outputs.attestation-url }}
+        run: |
+          $Stage = 'tooling\packaging\dist\release-candidate'
+          $InstallerName = "CaptionNest_$env:RELEASE_VERSION`_x64-setup.exe"
+          $AssetNames = @(
+            $InstallerName,
+            "$InstallerName.sha256",
+            'FFMPEG_BUILD_INFO.txt',
+            'MEDIA_WHEEL_PROVENANCE.json'
+          )
+          $AssetPaths = @($AssetNames | ForEach-Object { Join-Path $Stage $_ })
+          $NotesPath = Join-Path $env:RUNNER_TEMP 'captionnest-release-notes.md'
+          @"
+          CaptionNest 是一个面向 Windows 的本地优先双语字幕应用。
+
+          Windows 10/11 x64 用户请下载 ``$InstallerName``。
+
+          ### 可验证发布
+
+              gh attestation verify .\$InstallerName -R $env:GITHUB_REPOSITORY
+              gh release verify $env:RELEASE_TAG -R $env:GITHUB_REPOSITORY
+              gh release verify-asset $env:RELEASE_TAG .\$InstallerName -R $env:GITHUB_REPOSITORY
+
+          Build provenance: $env:ATTESTATION_URL
+
+          > 本版本尚未配置 Windows Authenticode 代码签名，首次安装可能出现 Microsoft Defender SmartScreen 提示。Build provenance 证明构建来源和字节摘要，不等于恶意软件扫描、SBOM 或 Windows 发布者信誉。
+
+          ``FFMPEG_BUILD_INFO.txt`` 与 ``MEDIA_WHEEL_PROVENANCE.json`` 记录 LGPL 媒体运行时的许可证门禁、固定版本和构建来源。
+          "@ | Set-Content -LiteralPath $NotesPath -Encoding utf8
+
+          $ListArgs = @(
+            'release', 'list', '--repo', $env:GITHUB_REPOSITORY,
+            '--limit', '1000', '--json', 'tagName,isDraft,isPrerelease'
+          )
+          $ReleaseListJson = & gh @ListArgs
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to refresh release state before creating a draft.' }
+          $TagReleases = @(
+            $ReleaseListJson |
+              ConvertFrom-Json |
+              Where-Object { $_.tagName -eq $env:RELEASE_TAG }
+          )
+          if ($TagReleases.Count -gt 1) { throw "Found multiple releases for $env:RELEASE_TAG." }
+          if ($TagReleases.Count -eq 1 -and -not $TagReleases[0].isDraft) {
+            throw "Published Release $env:RELEASE_TAG appeared during the build; it will not be overwritten."
+          }
+
+          if ($TagReleases.Count -eq 0) {
+            $CreateArgs = @(
+              'release', 'create', $env:RELEASE_TAG,
+              '--repo', $env:GITHUB_REPOSITORY,
+              '--draft', '--verify-tag',
+              '--title', "CaptionNest $env:RELEASE_TAG",
+              '--notes-file', $NotesPath
+            )
+            if ($env:RELEASE_PRERELEASE -eq 'true') { $CreateArgs += '--prerelease' }
+            & gh @CreateArgs
+            if ($LASTEXITCODE -ne 0) { throw "Unable to create Draft Release $env:RELEASE_TAG." }
+          } else {
+            if ($TagReleases[0].isPrerelease.ToString().ToLowerInvariant() -ne $env:RELEASE_PRERELEASE) {
+              throw 'Existing Draft Release prerelease state changed during the build.'
+            }
+            $EditArgs = @(
+              'release', 'edit', $env:RELEASE_TAG,
+              '--repo', $env:GITHUB_REPOSITORY,
+              '--draft',
+              '--title', "CaptionNest $env:RELEASE_TAG",
+              '--notes-file', $NotesPath,
+              "--prerelease=$env:RELEASE_PRERELEASE"
+            )
+            & gh @EditArgs
+            if ($LASTEXITCODE -ne 0) { throw "Unable to refresh Draft Release $env:RELEASE_TAG." }
+          }
+
+          $UploadArgs = @(
+            'release', 'upload', $env:RELEASE_TAG,
+            '--repo', $env:GITHUB_REPOSITORY,
+            '--clobber'
+          ) + $AssetPaths
+          & gh @UploadArgs
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to upload every validated release asset.' }
+
+          $ViewArgs = @(
+            'release', 'view', $env:RELEASE_TAG,
+            '--repo', $env:GITHUB_REPOSITORY,
+            '--json', 'apiUrl,tagName,isDraft,isPrerelease'
+          )
+          $DraftJson = & gh @ViewArgs
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to query the uploaded Draft Release.' }
+          $Draft = $DraftJson | ConvertFrom-Json
+          if ($Draft.tagName -ne $env:RELEASE_TAG -or -not $Draft.isDraft) {
+            throw 'Expected exactly one Draft Release before publication.'
+          }
+          if ($Draft.apiUrl -notmatch '/releases/(?<id>\d+)$') {
+            throw 'Draft Release API URL does not contain a numeric release ID.'
+          }
+          $ReleaseId = $Matches.id
+          $GetReleaseArgs = @(
+            'api', "repos/$env:GITHUB_REPOSITORY/releases/$ReleaseId"
+          )
+          $ReleaseJson = & gh @GetReleaseArgs
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to inspect Draft Release assets.' }
+          $RemoteAssets = @(($ReleaseJson | ConvertFrom-Json).assets)
+          $RemoteNames = @($RemoteAssets.name | Sort-Object)
+          if (($RemoteNames -join "`n") -ne (($AssetNames | Sort-Object) -join "`n")) {
+            throw "Draft Release assets differ from the exact expected set: $($RemoteNames -join ', ')."
+          }
+          foreach ($Path in $AssetPaths) {
+            $File = Get-Item -LiteralPath $Path
+            $Remote = @($RemoteAssets | Where-Object { $_.name -eq $File.Name })
+            if ($Remote.Count -ne 1 -or $Remote[0].size -ne $File.Length) {
+              throw "Uploaded size does not match $($File.Name)."
+            }
+            $LocalDigest = "sha256:$((Get-FileHash -LiteralPath $File.FullName -Algorithm SHA256).Hash.ToLowerInvariant())"
+            if ($Remote[0].digest -ne $LocalDigest) {
+              throw "Uploaded digest does not match $($File.Name)."
+            }
+          }
+
+          # Re-read both protections immediately before publish. The initial validation
+          # may be up to 180 minutes old and cannot establish the final Release identity.
+          $RulesetListArgs = @('api', "repos/$env:GITHUB_REPOSITORY/rulesets")
+          $RulesetListJson = & gh @RulesetListArgs
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to re-query repository tag rulesets before publish.' }
+          $ProtectingRulesets = @()
+          foreach ($Summary in @($RulesetListJson | ConvertFrom-Json)) {
+            if ($Summary.target -ne 'tag' -or $Summary.enforcement -ne 'active') { continue }
+            $RulesetArgs = @('api', "repos/$env:GITHUB_REPOSITORY/rulesets/$($Summary.id)")
+            $RulesetJson = & gh @RulesetArgs
+            if ($LASTEXITCODE -ne 0) { throw "Unable to inspect tag ruleset $($Summary.id) before publish." }
+            $Ruleset = $RulesetJson | ConvertFrom-Json
+            $RuleTypes = @($Ruleset.rules.type)
+            if (
+              @($Ruleset.conditions.ref_name.include) -contains 'refs/tags/v*' -and
+              @($Ruleset.conditions.ref_name.exclude).Count -eq 0 -and
+              $RuleTypes -contains 'update' -and
+              $RuleTypes -contains 'deletion' -and
+              @($Ruleset.bypass_actors).Count -eq 0 -and
+              $Ruleset.current_user_can_bypass -eq 'never'
+            ) {
+              $ProtectingRulesets += $Ruleset
+            }
+          }
+          if ($ProtectingRulesets.Count -eq 0) {
+            throw 'Release tag protection disappeared or became bypassable; refusing to publish.'
+          }
+
+          $RemoteTagRef = "refs/tags/$env:RELEASE_TAG"
+          $RemotePeeledRef = "$RemoteTagRef^{}"
+          $LsRemoteArgs = @(
+            'ls-remote', '--exit-code', 'origin', $RemoteTagRef, $RemotePeeledRef
+          )
+          $RemoteTagLines = @(& git @LsRemoteArgs)
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to resolve the remote release tag before publish.' }
+          $RemotePeeledEntries = @(
+            $RemoteTagLines |
+              ForEach-Object {
+                $Fields = $_ -split "`t", 2
+                if ($Fields.Count -eq 2 -and $Fields[1] -eq $RemotePeeledRef) { $Fields[0] }
+              }
+          )
+          if ($RemotePeeledEntries.Count -ne 1) {
+            throw 'Remote release tag must still be an annotated tag with exactly one peeled commit.'
+          }
+          $RemoteTagCommit = $RemotePeeledEntries[0].ToLowerInvariant()
+          if (
+            $RemoteTagCommit -ne $env:RELEASE_TAG_COMMIT -or
+            $RemoteTagCommit -ne $env:GITHUB_SHA
+          ) {
+            throw "Remote tag moved to $RemoteTagCommit after build start; refusing to publish."
+          }
+
+          $PublishRequest = @{ draft = $false } | ConvertTo-Json -Compress
+          $PublishArgs = @(
+            'api', '--method', 'PATCH',
+            "repos/$env:GITHUB_REPOSITORY/releases/$ReleaseId",
+            '--input', '-'
+          )
+          $PublishedJson = $PublishRequest | & gh @PublishArgs
+          if ($LASTEXITCODE -ne 0) { throw "Unable to publish Release $env:RELEASE_TAG." }
+          $Published = $PublishedJson | ConvertFrom-Json
+          if ($Published.draft -or -not $Published.immutable) {
+            throw 'GitHub did not confirm a published immutable Release.'
+          }
+          @"
+          ## Immutable Release published
+
+          - Release: $($Published.html_url)
+          - Tag/commit: ``$env:RELEASE_TAG`` / ``$env:RELEASE_TAG_COMMIT``
+          - Assets: $($AssetNames -join ', ')
+          "@ | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY

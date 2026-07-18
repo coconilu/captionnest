@@ -11,6 +11,8 @@
 | SHA-256 | 构建脚本与 Release workflow 自动生成 |
 | PyAV/FFmpeg 许可证门禁 | 默认 fail closed；正式 workflow 构建锁定的 LGPL FFmpeg 8.1.2 + PyAV 18.0.0 wheel |
 | 构建证据 | 随产物提供 `FFMPEG_BUILD_INFO.txt` 与 `MEDIA_WHEEL_PROVENANCE.json` |
+| EXE build provenance | `actions/attest` 使用 GitHub OIDC 为最终安装包生成可验证证明 |
+| Immutable Release | 已启用；发布后 tag、commit 和全部 Release assets 由 release attestation 绑定且不可替换 |
 | Authenticode | **尚未配置** |
 | 自动更新 | **尚未启用**；没有签名元数据前不得开启 |
 
@@ -25,32 +27,113 @@ flowchart TD
     C --> D["构建 x64 NSIS"]
     D --> E["安装/启动/卸载冒烟"]
     E --> F["生成并复核 SHA-256"]
-    F --> G["上传 Release"]
+    F --> G["生成 EXE build provenance"]
+    G --> H["Draft 上传并核对全部资产"]
+    H --> I["发布 Immutable Release"]
 ```
 
-推荐发布入口是 GitHub Actions 的 `Windows Release`。维护者从 `main` 手动运行 workflow，只需输入不带 `v` 的版本号（例如 `0.2.0`）以及是否为预发布；workflow 会依次完成统一版本更新、锁定媒体 wheel 构建、许可证门禁、测试、NSIS 封装、安装/启动/退出/卸载冒烟、版本提交、tag 和 GitHub Release。首次构建 FFmpeg 较慢，后续构建使用 vcpkg binary cache。
+推荐发布入口是 GitHub Actions 的 `Prepare Release`。维护者从 `main` 手动输入不带 `v` 的版本号（例如 `0.2.2`）及是否为预发布。该 workflow 更新全部项目版本、提交 `main`、创建绝不移动的 annotated tag，然后以该 tag 作为 workflow ref 显式 dispatch 独立的 `Windows Release`。之所以显式 dispatch，是因为使用 `GITHUB_TOKEN` 推送 tag 不会递归触发新的 workflow run。
+
+`Windows Release` 只接受既有 tag，精确 checkout 后同时校验：`GITHUB_REF` 是该 tag、`GITHUB_SHA` 等于 tag commit、tag 是 annotated tag、项目版本等于 tag 版本。之后才构建、测试、执行许可证门禁与安装冒烟；全部通过后为最终 EXE 生成 build provenance，创建或恢复 Draft Release，逐个比对四项资产的名称、大小和 GitHub SHA-256 digest，最后发布 Immutable Release。
+
+`actions/attest` 固定为完整提交 `f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6`（v4.2.0），只传最终 EXE 的 `subject-path`，并记录官方 action 输出的 `attestation-id` 与 `attestation-url`。Release job 的权限边界是 `contents: write`（Draft/Release）、`id-token: write`（GitHub OIDC）和 `attestations: write`（写入证明）；Prepare 另有 `actions: write` 用于独立 dispatch。流程不引入 secret、证书文件或长期私钥。
+
+仓库还必须存在 active tag ruleset：包含 `refs/tags/v*`、同时限制 update 与 deletion、没有 bypass actor，且 workflow token 不可 bypass。Release run 会在构建开始和最终 publish PATCH 紧邻前各验证一次；最终门禁还会重新读取远端 annotated tag 的 peeled commit，并要求它同时等于 `RELEASE_TAG_COMMIT` 和 `GITHUB_SHA`。规则失效、tag 被删除/改成 lightweight tag 或 commit 发生变化时，Draft 可以保留供诊断，但绝不会发送 publish PATCH。
+
+官方依据：[actions/attest v4.2.0](https://github.com/actions/attest/tree/v4.2.0)、[使用 Artifact Attestations](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations)、[Immutable Releases](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases)、[验证 Release 完整性](https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/secure-your-dependencies/verify-release-integrity)。
 
 ```mermaid
 flowchart LR
-    A["输入 0.2.0"] --> B["更新版本与锁文件"]
-    B --> C["测试并构建"]
-    C --> D["安装包自动冒烟"]
-    D --> E["提交 main + 创建 v0.2.0"]
-    E --> F["自动生成说明并发布 Release"]
+    A["Prepare 输入 0.2.2"] --> B["更新版本并提交 main"]
+    B --> C["创建 annotated v0.2.2"]
+    C --> D["以 tag ref dispatch Windows Release"]
+    D --> E["精确 tag 构建、测试与冒烟"]
+    E --> F["EXE build provenance"]
+    F --> G["Draft 资产 digest 核对"]
+    G --> H["发布 Immutable Release"]
 ```
 
-Release 说明不调用 AI。GitHub 根据上一个 tag 至当前 tag 之间合并的 PR 标题、作者和提交生成变更列表，`.github/release.yml` 负责中文分类，workflow 的固定模板补充 Windows 下载、SmartScreen 和 LGPL 构建证据说明。
+Release 说明不调用 AI。固定模板包含 Windows 下载、三种在线验证命令、build provenance URL、SmartScreen 与 LGPL 构建证据说明。
 
 维护者的唯一发布操作如下：
 
 | 操作 | 值 |
 |---|---|
-| 打开 | `Actions` → `Windows Release` → `Run workflow` |
+| 打开 | `Actions` → `Prepare Release` → `Run workflow` |
 | 分支 | `main` |
-| `version` | 新版本号，例如 `0.2.0`，不要带 `v` |
+| `version` | 新版本号，例如 `0.2.2`，不要带 `v` |
 | `prerelease` | 正式版保持关闭，测试版打开 |
 
-同一版本已经存在 Release 时 workflow 会拒绝覆盖；tag 已创建但 Release 尚未创建，且 tag 仍指向当前 `main` 时，可以用同一版本重试发布。
+## 失败与安全重试
+
+新架构刻意接受“已经有 tag、尚无 Release”这一可恢复状态。失败时不得删除或移动 tag 来伪装重建：
+
+| 失败状态 | 安全重试语义 |
+|---|---|
+| 版本提交前失败 | 修复原因后从 `main` 重跑 `Prepare Release` |
+| 已提交版本、尚未创建 tag | 用相同版本和 `prerelease` 重跑；版本更新幂等，tag 固定到当前版本提交 |
+| tag 已存在、无 Release | 用相同输入重跑 `Prepare Release`；它只会验证 annotated tag、版本、main 历史与 tag 元数据，再次 dispatch |
+| Draft Release 已存在 | 对同一 tag 重跑 `Windows Release`；仅允许覆盖该 Draft 中四个预期同名资产，随后重新核对完整集合与 digest |
+| Release 已发布 | 永久拒绝覆盖或移动 tag；任何修复必须发布新版本 |
+
+构建、测试、许可证检查、安装冒烟、`actions/attest`、Draft 资产上传或 digest 核对任一步失败，都不会发布最终 Release。与旧流程不同，失败时**可能已经留下版本提交和 tag**；这是确保 attestation source commit 与 Release tag commit 完全一致的必要边界。
+
+## 下载后的验证
+
+在克隆过本仓库并 fetch tag 的目录中，用 Release 的真实 tag 和文件名替换示例值：
+
+```powershell
+$Tag = 'v0.2.2'
+$Installer = '.\CaptionNest_0.2.2_x64-setup.exe'
+$TagCommit = (git rev-parse "$Tag^{commit}").Trim()
+
+gh attestation verify $Installer `
+  -R coconilu/captionnest `
+  --signer-workflow coconilu/captionnest/.github/workflows/release.yml `
+  --source-ref "refs/tags/$Tag" `
+  --source-digest $TagCommit `
+  --format json
+
+gh release verify $Tag -R coconilu/captionnest
+gh release verify-asset $Tag $Installer -R coconilu/captionnest
+```
+
+成功结果至少要交叉检查以下事实：
+
+| 检查项 | 预期 |
+|---|---|
+| repository / signer workflow | `coconilu/captionnest` / `.github/workflows/release.yml` |
+| source ref / commit | `refs/tags/v0.2.2`，且 commit 等于 `git rev-parse "v0.2.2^{commit}"` |
+| build provenance subject digest | 等于本地 EXE 的 SHA-256，也等于同名 `.sha256` 首列 |
+| release attestation | tag、commit 与 Release 中全部资产均被 GitHub 的发布证明覆盖 |
+
+本地摘要可独立交叉检查：
+
+```powershell
+$Actual = (Get-FileHash $Installer -Algorithm SHA256).Hash.ToLowerInvariant()
+$Recorded = ((Get-Content "$Installer.sha256" -Raw).Trim() -split '\s+')[0]
+if ($Actual -ne $Recorded) { throw 'EXE 与发布的 .sha256 不一致。' }
+```
+
+篡改测试必须失败；不要在原下载文件上操作：
+
+```powershell
+$Tampered = '.\CaptionNest_tampered.exe'
+Copy-Item $Installer $Tampered
+[IO.File]::AppendAllText((Resolve-Path $Tampered), 'tampered')
+gh attestation verify $Tampered -R coconilu/captionnest
+if ($LASTEXITCODE -eq 0) { throw '篡改后的文件不应通过验证。' }
+```
+
+## 证明边界
+
+| 机制 | 能证明 | 不能证明 |
+|---|---|---|
+| `.sha256` | 下载字节与记录摘要相同 | 摘要记录来自谁、由哪个 workflow 构建 |
+| build provenance | 最终 EXE 摘要、仓库、构建 workflow、source ref/commit | 软件无漏洞/恶意行为、Windows 发布者信誉 |
+| release attestation | Immutable Release 的 tag、commit 和全部 assets | 单个 EXE 的详细构建步骤；它不替代 build provenance |
+| SBOM | 组件清单（本 Issue 尚未生成最终产物级 SBOM） | 构建身份、代码签名或组件安全性 |
+| Authenticode | Windows 发布者身份、签名完整性和可选时间戳（当前未配置） | GitHub 构建来源与完整依赖清单 |
 
 等价的本机构建需要先 bootstrap 与 `tooling/packaging/media-runtime/vcpkg.json` 相同 baseline 的 vcpkg：
 
@@ -66,7 +149,7 @@ npm --prefix apps/web run lint
 
 `scripts/build-desktop.ps1` 会依次生成媒体许可证证据、sidecar、NSIS 和校验和。门禁会同时检查 FFmpeg 配置、自报许可证和 PyAV wheel 实际携带的 DLL。检测到 `--enable-nonfree` 会无条件中止；检测到 `--enable-gpl` 或已知 GPL 外部库配置/DLL 时默认中止；无法读取完整元数据或无法在 Windows 上枚举 bundled DLL 时同样中止，避免把检测失败误当作许可通过。
 
-版本发布由 `tooling/release/version.py` 一次性更新 Python、Web、Tauri、Cargo 及对应 lock 文件；它会先验证全部目标再写盘，避免只更新一部分。`scripts/check-version-consistency.ps1` 在构建阶段再次核对所有声明。只有测试、许可证门禁和安装包冒烟全部通过，workflow 才会向 `main` 提交机械化版本变更、创建 `v<版本>` tag 并发布 Release；失败时不会提交或打 tag。构建期间若远端 `main` 发生变化，发布也会停止并要求重新运行。
+版本准备由 `tooling/release/version.py` 一次性更新 Python、Web、Tauri、Cargo 及对应 lock 文件；它会先验证全部目标再写盘，避免只更新一部分。Prepare 在推送版本提交前再次确认远端 `main` 没有移动，然后创建带 `prerelease` 标记的 annotated tag。独立的 tag-ref Release run 使用 `scripts/check-version-consistency.ps1` 重新核对全部声明，并且绝不写版本、提交或 tag。
 
 官方 PyAV 18.0.0 Windows wheel 自报 LGPL，但构建配置和实际 DLL 包含 x264/x265，因此仍会按设计失败。这不是误报，也不能通过删除证据文件或只采信自报许可证绕过。正式 workflow 不使用该 wheel，而是从已校验哈希的 PyAV 源码构建 wheel，链接由锁定 vcpkg baseline 生成且未启用 GPL/nonfree/x264/x265 的 FFmpeg，并保存 wheel、源码和构建输入的哈希证据。
 

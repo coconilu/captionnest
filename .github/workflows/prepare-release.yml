@@ -1,0 +1,189 @@
+name: Prepare Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '要发布的版本号，例如 0.2.2（不要带 v）'
+        required: true
+        type: string
+      prerelease:
+        description: '标记为预发布版本'
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  actions: write
+  contents: write
+
+concurrency:
+  group: prepare-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_VERSION_INPUT: ${{ inputs.version }}
+      RELEASE_PRERELEASE_INPUT: ${{ inputs.prerelease }}
+    steps:
+      - name: Check out current main with tags
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Prepare immutable release tag
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -ne 'refs/heads/main') {
+            throw 'Run Prepare Release from the main branch.'
+          }
+
+          $Version = $env:RELEASE_VERSION_INPUT.Trim()
+          if ($Version -ne $env:RELEASE_VERSION_INPUT) {
+            throw 'The version must not contain leading or trailing whitespace.'
+          }
+          if ($Version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
+            throw "Invalid version '$Version'. Use MAJOR.MINOR.PATCH without a v prefix."
+          }
+          $Tag = "v$Version"
+          $Prerelease = $env:RELEASE_PRERELEASE_INPUT.ToLowerInvariant()
+          if ($Prerelease -notin @('true', 'false')) {
+            throw "Invalid prerelease value '$Prerelease'."
+          }
+
+          $FetchArgs = @('fetch', 'origin', 'main', '--tags')
+          & git @FetchArgs
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to fetch main and tags.' }
+          $BaseSha = (& git @('rev-parse', 'HEAD')).Trim()
+          $RemoteMain = (& git @('rev-parse', 'origin/main')).Trim()
+          if ($BaseSha -ne $RemoteMain) {
+            throw "Checked out $BaseSha, but origin/main is $RemoteMain. Run again."
+          }
+
+          $ReleaseListArgs = @(
+            'release', 'list', '--repo', $env:GITHUB_REPOSITORY,
+            '--limit', '1000', '--json', 'tagName,isDraft,isPrerelease'
+          )
+          $ReleaseListJson = & gh @ReleaseListArgs
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to query existing releases.' }
+          $MatchingReleases = @(
+            $ReleaseListJson |
+              ConvertFrom-Json |
+              Where-Object { $_.tagName -eq $Tag }
+          )
+          if ($MatchingReleases.Count -gt 1) {
+            throw "Found multiple releases for $Tag."
+          }
+          if ($MatchingReleases.Count -eq 1 -and -not $MatchingReleases[0].isDraft) {
+            throw "Published Release $Tag already exists. Use a new version."
+          }
+          if (
+            $MatchingReleases.Count -eq 1 -and
+            $MatchingReleases[0].isPrerelease.ToString().ToLowerInvariant() -ne $Prerelease
+          ) {
+            throw "Draft Release $Tag prerelease state does not match this request."
+          }
+
+          & git @('show-ref', '--verify', '--quiet', "refs/tags/$Tag")
+          $TagExists = $LASTEXITCODE -eq 0
+          if ($TagExists) {
+            $TagType = (& git @('cat-file', '-t', "refs/tags/$Tag")).Trim()
+            if ($LASTEXITCODE -ne 0 -or $TagType -ne 'tag') {
+              throw "Existing $Tag must be an annotated tag; it will not be replaced."
+            }
+            $TagCommit = (& git @('rev-parse', "$Tag^{commit}")).Trim()
+            if ($LASTEXITCODE -ne 0) { throw "Unable to resolve $Tag to a commit." }
+            & git @('merge-base', '--is-ancestor', $TagCommit, 'origin/main')
+            if ($LASTEXITCODE -ne 0) {
+              throw "Existing $Tag points to $TagCommit outside current main history."
+            }
+            $TagMessage = @(& git @('for-each-ref', '--format=%(contents)', "refs/tags/$Tag"))
+            $Markers = @($TagMessage | Where-Object { $_ -match '^prerelease=(true|false)$' })
+            if ($Markers.Count -ne 1 -or $Markers[0] -ne "prerelease=$Prerelease") {
+              throw "Existing $Tag prerelease metadata does not match this request."
+            }
+            & git @('checkout', '--detach', $Tag)
+            if ($LASTEXITCODE -ne 0) { throw "Unable to check out existing $Tag." }
+            & pwsh '-File' '.\scripts\check-version-consistency.ps1' `
+              '-ExpectedVersion' $Version
+            if ($LASTEXITCODE -ne 0) {
+              throw "Existing $Tag does not contain version $Version."
+            }
+          } else {
+            if ($MatchingReleases.Count -ne 0) {
+              throw "Draft Release $Tag exists without its tag; repair it manually."
+            }
+            & python @('.\tooling\release\version.py', $Version, '--root', '.')
+            if ($LASTEXITCODE -ne 0) { throw 'Unable to update project versions.' }
+            & pwsh '-File' '.\scripts\check-version-consistency.ps1' `
+              '-ExpectedVersion' $Version
+            if ($LASTEXITCODE -ne 0) { throw 'Version consistency check failed.' }
+
+            $VersionFiles = @(
+              'apps/sidecar/pyproject.toml',
+              'apps/sidecar/uv.lock',
+              'apps/web/package.json',
+              'apps/web/package-lock.json',
+              'apps/desktop/tauri.conf.json',
+              'apps/desktop/Cargo.toml',
+              'apps/desktop/Cargo.lock'
+            )
+            $Unexpected = @(
+              & git @('status', '--porcelain=v1') |
+                ForEach-Object { $_.Substring(3) } |
+                Where-Object { $_ -notin $VersionFiles }
+            )
+            if ($Unexpected.Count -ne 0) {
+              throw "Prepare Release changed unexpected files: $($Unexpected -join ', ')"
+            }
+
+            & git @('config', 'user.name', 'github-actions[bot]')
+            & git @('config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com')
+            & git @('add', '--') @VersionFiles
+            & git @('diff', '--cached', '--quiet')
+            if ($LASTEXITCODE -ne 0) {
+              & git @('commit', '-m', "chore: release $Tag")
+              if ($LASTEXITCODE -ne 0) { throw 'Unable to commit release versions.' }
+              & git @('push', 'origin', 'HEAD:main')
+              if ($LASTEXITCODE -ne 0) {
+                throw 'Unable to push the release commit; main may have moved.'
+              }
+            }
+
+            $TagCommit = (& git @('rev-parse', 'HEAD')).Trim()
+            & git @('tag', '-a', $Tag, '-m', "CaptionNest $Tag", '-m', "prerelease=$Prerelease")
+            if ($LASTEXITCODE -ne 0) { throw "Unable to create annotated tag $Tag." }
+            & git @('push', 'origin', "refs/tags/$Tag")
+            if ($LASTEXITCODE -ne 0) {
+              throw "Unable to push $Tag; an existing tag will never be moved."
+            }
+          }
+
+          "RELEASE_TAG=$Tag" | Add-Content -LiteralPath $env:GITHUB_ENV
+          "RELEASE_TAG_COMMIT=$TagCommit" | Add-Content -LiteralPath $env:GITHUB_ENV
+
+      - name: Dispatch tag-anchored Windows Release
+        shell: pwsh
+        run: |
+          $DispatchArgs = @(
+            'workflow', 'run', 'release.yml',
+            '--repo', $env:GITHUB_REPOSITORY,
+            '--ref', $env:RELEASE_TAG,
+            '-f', "tag=$env:RELEASE_TAG"
+          )
+          & gh @DispatchArgs
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to dispatch Windows Release for $env:RELEASE_TAG."
+          }
+          @"
+          ## Release prepared
+
+          - Tag: ``$env:RELEASE_TAG``
+          - Commit: ``$env:RELEASE_TAG_COMMIT``
+          - Windows Release was dispatched with the tag itself as its workflow ref.
+          "@ | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
