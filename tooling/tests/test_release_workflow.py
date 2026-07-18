@@ -1,6 +1,36 @@
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _native_repository_paths(script: str) -> list[tuple[str, str]]:
+    """Collect literal repository paths passed to native tools in a pwsh block."""
+    commands: list[str] = []
+    current = ""
+    for line in script.splitlines():
+        stripped = line.strip()
+        if current:
+            current = f"{current} {stripped}"
+            if not stripped.endswith("`"):
+                commands.append(current)
+                current = ""
+            continue
+        if re.match(r"^&\s+(?:git|gh|python|pwsh)\b", stripped):
+            current = stripped
+            if not stripped.endswith("`"):
+                commands.append(current)
+                current = ""
+    if current:
+        commands.append(current)
+
+    paths: list[tuple[str, str]] = []
+    for command in commands:
+        executable = re.match(r"^&\s+(\w+)", command)
+        assert executable is not None
+        for path in re.findall(r"'(\.[\\/][^']+)'", command):
+            paths.append((executable.group(1), path))
+    return paths
 
 
 def test_prepare_release_owns_version_commit_tag_and_tag_ref_dispatch() -> None:
@@ -16,9 +46,29 @@ def test_prepare_release_owns_version_commit_tag_and_tag_ref_dispatch() -> None:
     assert "prerelease=$Prerelease" in prepare
     assert "'--ref', $env:RELEASE_TAG" in prepare
     assert "'-f', \"tag=$env:RELEASE_TAG\"" in prepare
-    assert prepare.index("tooling\\release\\version.py") < prepare.index(
+    assert prepare.index("tooling/release/version.py") < prepare.index(
         "git @('commit'"
     ) < prepare.index("git @('tag', '-a'") < prepare.index("Dispatch tag-anchored")
+
+
+def test_prepare_release_native_repository_paths_are_cross_platform() -> None:
+    prepare = (ROOT / ".github" / "workflows" / "prepare-release.yml").read_text(
+        encoding="utf-8"
+    )
+    prepare_step = prepare.split("- name: Prepare immutable release tag", 1)[1].split(
+        "- name: Dispatch tag-anchored Windows Release", 1
+    )[0]
+
+    native_paths = _native_repository_paths(prepare_step)
+
+    assert native_paths == [
+        ("pwsh", "./scripts/check-version-consistency.ps1"),
+        ("python", "./tooling/release/version.py"),
+        ("pwsh", "./scripts/check-version-consistency.ps1"),
+    ]
+    assert all("\\" not in path for _, path in native_paths)
+    version_files = prepare_step.split("$VersionFiles = @(", 1)[1].split(")", 1)[0]
+    assert "\\" not in version_files
 
 
 def test_release_is_anchored_to_exact_annotated_tag_and_source_commit() -> None:
