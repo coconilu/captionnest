@@ -1,6 +1,6 @@
 [package]
 name = "captionnest-desktop"
-version = "0.2.3"
+version = "0.2.4"
 description = "CaptionNest Windows desktop shell"
 authors = ["CaptionNest contributors"]
 edition = "2021"
