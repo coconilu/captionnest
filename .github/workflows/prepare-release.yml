@@ -31,7 +31,7 @@ jobs:
       RELEASE_PRERELEASE_INPUT: ${{ inputs.prerelease }}
     steps:
       - name: Check out current main with tags
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0
@@ -166,6 +166,8 @@ jobs:
 
           "RELEASE_TAG=$Tag" | Add-Content -LiteralPath $env:GITHUB_ENV
           "RELEASE_TAG_COMMIT=$TagCommit" | Add-Content -LiteralPath $env:GITHUB_ENV
+          "RELEASE_VERSION=$Version" | Add-Content -LiteralPath $env:GITHUB_ENV
+          "RELEASE_PRERELEASE=$Prerelease" | Add-Content -LiteralPath $env:GITHUB_ENV
 
       - name: Dispatch tag-anchored Windows Release
         shell: pwsh
@@ -174,7 +176,8 @@ jobs:
             'workflow', 'run', 'release.yml',
             '--repo', $env:GITHUB_REPOSITORY,
             '--ref', $env:RELEASE_TAG,
-            '-f', "tag=$env:RELEASE_TAG"
+            '-f', "version=$env:RELEASE_VERSION",
+            '-f', "prerelease=$env:RELEASE_PRERELEASE"
           )
           & gh @DispatchArgs
           if ($LASTEXITCODE -ne 0) {
@@ -185,5 +188,5 @@ jobs:
 
           - Tag: ``$env:RELEASE_TAG``
           - Commit: ``$env:RELEASE_TAG_COMMIT``
-          - Windows Release was dispatched with the tag itself as its workflow ref.
+          - Windows Release was dispatched separately with the tag itself as its workflow ref.
           "@ | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
