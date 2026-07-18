@@ -619,6 +619,7 @@ export function App() {
             canStart={!configValidationError}
             startHint={configValidationError ?? '批次配置可用'}
             showStartAction={false}
+            initiallyOpen
             onChange={setSettings}
             onStart={() => undefined}
           >

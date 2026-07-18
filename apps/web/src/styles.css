@@ -2530,7 +2530,7 @@ textarea:disabled {
   margin-top: 16px;
 }
 
-.batch-drop-zone {
+.batch-path-picker {
   min-height: 168px;
   margin-top: 15px;
   padding: 24px 18px;
@@ -2547,28 +2547,22 @@ textarea:disabled {
   transition: border-color 150ms ease, background 150ms ease, transform 150ms ease;
 }
 
-.batch-drop-zone.is-dragging {
-  border-color: var(--accent-bright);
-  background: var(--surface-teal);
-  transform: scale(0.997);
-}
-
-.batch-drop-zone > svg {
+.batch-path-picker > svg {
   width: 28px;
   height: 28px;
 }
 
-.batch-drop-zone > strong {
+.batch-path-picker > strong {
   color: var(--text);
   font-size: 13px;
 }
 
-.batch-drop-zone > span {
+.batch-path-picker > span {
   color: var(--muted);
   font-size: 8px;
 }
 
-.batch-drop-zone > div {
+.batch-path-picker > div {
   margin-top: 8px;
   display: flex;
   flex-wrap: wrap;
@@ -2576,7 +2570,7 @@ textarea:disabled {
   gap: 8px;
 }
 
-.batch-drop-zone .button {
+.batch-path-picker .button {
   min-height: 38px;
   padding-inline: 15px;
   font-size: 10px;
@@ -4813,9 +4807,9 @@ textarea {
 }
 
 .create-task-dialog {
-  width: min(650px, calc(100vw - 48px));
-  height: min(570px, calc(100dvh - 48px));
-  min-height: min(540px, calc(100dvh - 48px));
+  width: min(1180px, calc(100vw - 48px));
+  height: min(820px, calc(100dvh - 48px));
+  min-height: min(700px, calc(100dvh - 48px));
   max-height: calc(100dvh - 48px);
   border-color: var(--border);
   border-radius: 10px;
@@ -4860,7 +4854,7 @@ textarea {
 
 .batch-creator {
   height: 100%;
-  grid-template-columns: 342px 308px;
+  grid-template-columns: minmax(0, 1.25fr) minmax(420px, 0.9fr);
   grid-template-rows: minmax(0, 1fr) 74px;
   background: #191c20;
 }
@@ -4897,8 +4891,8 @@ textarea {
   line-height: var(--line-sm);
 }
 
-.batch-drop-zone {
-  min-height: 150px;
+.batch-path-picker {
+  min-height: 132px;
   margin-top: 12px;
   padding: 16px;
   border: 1px dashed var(--border);
@@ -4909,37 +4903,31 @@ textarea {
   transform: none;
 }
 
-.batch-drop-zone.is-dragging {
-  border-color: var(--accent);
-  background: #152628;
-  transform: none;
-}
-
-.batch-drop-zone > svg {
+.batch-path-picker > svg {
   width: 22px;
   height: 22px;
 }
 
-.batch-drop-zone > strong {
+.batch-path-picker > strong {
   color: var(--text);
   font-size: var(--text-sm);
   font-weight: 500;
   line-height: var(--line-sm);
 }
 
-.batch-drop-zone > span {
+.batch-path-picker > span {
   max-width: 260px;
   color: var(--muted);
   font-size: var(--text-xs);
   line-height: var(--line-xs);
 }
 
-.batch-drop-zone > div {
+.batch-path-picker > div {
   margin-top: 2px;
   gap: 6px;
 }
 
-.batch-drop-zone .button {
+.batch-path-picker .button {
   min-height: 32px;
   padding: 0 10px;
   border-radius: 6px;
@@ -4947,7 +4935,7 @@ textarea {
   line-height: var(--line-sm);
 }
 
-.batch-drop-zone .button-secondary {
+.batch-path-picker .button-secondary {
   color: #fff;
   background: var(--accent);
 }

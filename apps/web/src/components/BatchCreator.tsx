@@ -5,30 +5,27 @@ import {
   FolderOpen,
   LoaderCircle,
   Play,
-  Upload,
   X,
 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 
 import {
   createBatch,
   pickVideos,
   preflightBatch,
-  uploadFiles,
 } from '../api/client'
 import { fileNameFromPath, formatBytes } from '../lib/format'
 import type {
   BatchConfigSnapshot,
   BatchCreateResult,
   BatchSourcePreflightView,
-  BatchSourceRequest,
 } from '../types/api'
 
 interface StagedSource {
   id: string
   name: string
   size?: number
-  request?: BatchSourceRequest
+  request: { video_path: string }
   error?: string
 }
 
@@ -64,20 +61,13 @@ export function BatchCreator({
   const [sources, setSources] = useState<StagedSource[]>([])
   const [batchName, setBatchName] = useState('')
   const [picking, setPicking] = useState(false)
-  const [uploading, setUploading] = useState(false)
   const [preflightBusy, setPreflightBusy] = useState(false)
   const [creating, setCreating] = useState(false)
-  const [dragging, setDragging] = useState(false)
   const [preflight, setPreflight] = useState<BatchSourcePreflightView[]>([])
   const [actionError, setActionError] = useState<string | null>(null)
   const [resultMessage, setResultMessage] = useState<string | null>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const resolvedSources = useMemo(
-    () => sources.filter((source): source is StagedSource & { request: BatchSourceRequest } =>
-      Boolean(source.request)),
-    [sources],
-  )
+  const resolvedSources = sources
   const preflightById = useMemo(() => new Map(
     resolvedSources.map((source, index) => [source.id, preflight[index]]),
   ), [preflight, resolvedSources])
@@ -85,8 +75,8 @@ export function BatchCreator({
   const invalidCount = sources.length - validCount
 
   useEffect(() => {
-    onBusyChange(picking || uploading || creating)
-  }, [creating, onBusyChange, picking, uploading])
+    onBusyChange(picking || creating)
+  }, [creating, onBusyChange, picking])
 
   useEffect(() => () => onBusyChange(false), [onBusyChange])
 
@@ -145,39 +135,6 @@ export function BatchCreator({
     }
   }
 
-  const addBrowserFiles = async (files: File[]) => {
-    if (!files.length) return
-    setUploading(true)
-    setActionError(null)
-    setResultMessage(null)
-    try {
-      const result = await uploadFiles(files)
-      const additions: StagedSource[] = result.results.map((item) => {
-        const file = files[item.index]
-        if (item.ok && item.upload) {
-          return {
-            id: stagedId(),
-            name: item.upload.name,
-            size: item.upload.size,
-            request: { upload_id: item.upload.upload_id },
-          }
-        }
-        return {
-          id: stagedId(),
-          name: item.name || file?.name || `文件 ${item.index + 1}`,
-          size: file?.size,
-          error: item.error ?? '上传失败',
-        }
-      })
-      setSources((current) => [...current, ...additions])
-      if (result.failed) setActionError(`${result.failed} 个文件上传失败，可移除后继续`)
-    } catch (error) {
-      setActionError(error instanceof Error ? error.message : '多文件上传失败')
-    } finally {
-      setUploading(false)
-    }
-  }
-
   const create = async (autoStart: boolean) => {
     const validationError = autoStart ? startError ?? configError : configError
     if (validationError) {
@@ -227,7 +184,7 @@ export function BatchCreator({
     }
   }
 
-  const busy = picking || uploading || creating
+  const busy = picking || creating
   const createDisabled = busy
     || preflightBusy
     || Boolean(configError)
@@ -255,43 +212,15 @@ export function BatchCreator({
           />
         </label>
 
-        <div
-          className={`batch-drop-zone ${dragging ? 'is-dragging' : ''}`}
-          onDragEnter={(event) => {
-            event.preventDefault()
-            if (!busy) setDragging(true)
-          }}
-          onDragOver={(event) => event.preventDefault()}
-          onDragLeave={() => setDragging(false)}
-          onDrop={(event) => {
-            event.preventDefault()
-            setDragging(false)
-            if (!busy) void addBrowserFiles([...event.dataTransfer.files])
-          }}
-        >
-          {uploading || picking ? <LoaderCircle className="is-spinning" /> : <Upload />}
-          <strong>{dragging ? '松开即可上传' : '拖入多个视频，或选择来源'}</strong>
+        <div className="batch-path-picker">
+          {picking ? <LoaderCircle className="is-spinning" /> : <FolderOpen />}
+          <strong>一次选择一个或多个本机视频</strong>
           <span>支持 MP4、MKV、MOV、AVI、WEBM、M4V、TS、MTS、M2TS</span>
           <div>
             <button type="button" className="button button-secondary" onClick={() => void addPathSources()} disabled={busy || !connected}>
               <FolderOpen size={16} />
-              本机路径
+              选择本机视频
             </button>
-            <button type="button" className="button button-ghost" onClick={() => fileInputRef.current?.click()} disabled={busy || !connected}>
-              <Upload size={16} />
-              浏览器上传
-            </button>
-            <input
-              ref={fileInputRef}
-              className="sr-only"
-              type="file"
-              multiple
-              accept="video/*,.mkv,.m4v,.ts,.mts,.m2ts"
-              onChange={(event) => {
-                void addBrowserFiles([...(event.target.files ?? [])])
-                event.target.value = ''
-              }}
-            />
           </div>
         </div>
 

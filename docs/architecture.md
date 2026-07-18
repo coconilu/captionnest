@@ -88,7 +88,7 @@ flowchart LR
 | `POST /api/batches/preflight` | 逐文件验证格式、路径、大小、同批重复项、已存在输出和同名 SRT 冲突，不因单项失败丢失其他结果 |
 | `POST /api/batches` | 复制公共配置到每个有效源并创建独立 Job；返回 Batch 与逐项创建结果 |
 | `POST /api/jobs/bulk-actions` | 逐 Job 执行 run、cancel、retry_failed、delete 或 update_config，部分失败不回滚其他项 |
-| `POST /api/uploads/bulk` | 浏览器多文件上传，逐文件返回成功或错误 |
+| `POST /api/uploads/bulk` | 旧客户端兼容的浏览器多文件上传；当前新建任务界面不调用 |
 | `DELETE /api/batches/{id}` | 默认仅解除分组；`delete_jobs=true` 时删除可删除 Job 的内部记录/中间产物，导出的 SRT 永不随 Batch 删除 |
 
 Summary 分页使用固定快照水位与不可变 `(created_at, job_id)` 排序。首屏冻结有序 `JobSummaryView` 副本；不透明 cursor 只携带随机 `snapshot_id`、筛选指纹和偏移，并由当前进程的 256-bit 随机密钥对完整 payload 做 HMAC-SHA256 签名，任何字段篡改都会被拒绝。后续页不再用 Job 当前版本重算成员，因而首屏后出现的新成员不会混入本轮，已计入的未读成员即使再次更新也不会丢失；增量窗口固定为 `updated_after < updated_at <= server_time`，新版本只在下一轮返回一次。快照仅驻留当前 Sidecar 进程，TTL 为 5 分钟，最多 64 个快照且合计最多 20,000 个 Summary；过期、重启失效或被 LRU 淘汰的 cursor 明确返回 400。后续页省略筛选参数时沿用首屏条件，显式不匹配会被拒绝。Summary 不含日志、步骤、API Key 或其他运行时秘密。
@@ -128,7 +128,7 @@ Tauri 只在带令牌的健康检查返回 200 后创建窗口。这样既避免
 | 密钥 | API Key 仅存在于当前页面与单次执行内存，不出现在本地存储、JobView、日志和磁盘 |
 | 外部进程 | 全部使用参数数组与 `shell=False` 等价方式；禁止拼接 shell 命令 |
 | 时间轴 | 由程序持有；模型只能翻译稳定 ID 文本；写出前严格校验 ID 集合 |
-| 文件 | 默认输出源视频同目录；上传副本则输出到应用数据目录中的副本旁 |
+| 文件 | 当前新建任务默认输出源视频同目录；历史上传副本仍输出到应用数据目录中的副本旁 |
 | 模型 | 保存到 Tauri 应用数据目录；采用固定提交、临时目录、校验与原子替换 |
 
 ## 打包布局

@@ -6,7 +6,6 @@ import type {
   BatchRecord,
   BackendCapabilities,
   BackendHealth,
-  BulkUploadResponse,
   EnvironmentView,
   JobBulkActionRequest,
   JobBulkActionResponse,
@@ -116,16 +115,6 @@ export async function pickVideos(signal?: AbortSignal): Promise<PickVideoRespons
     signal,
   })
   return selected.selected && selected.path ? [selected] : []
-}
-
-export function uploadFiles(files: File[], signal?: AbortSignal) {
-  const body = new FormData()
-  files.forEach((file) => body.append('files', file, file.name))
-  return request<BulkUploadResponse>('/api/uploads/bulk', {
-    method: 'POST',
-    body,
-    signal,
-  })
 }
 
 export function createJob(payload: JobRequest, signal?: AbortSignal) {
