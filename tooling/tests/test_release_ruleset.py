@@ -98,7 +98,27 @@ def test_visible_bypass_state_fails_closed(
     result, summary = _run_ruleset_check(tmp_path, ruleset)
 
     assert result.returncode != 0
-    assert "any visible bypass fields must be empty/never" in result.stderr
+    assert "RULESET_PROTECTION_MISSING" in result.stderr
+    assert summary == ""
+
+
+@pytest.mark.parametrize(
+    "visible_admin_field",
+    [
+        {"bypass_actors": []},
+        {"current_user_can_bypass": "never"},
+    ],
+)
+def test_partial_admin_visibility_fails_closed(
+    tmp_path: Path, visible_admin_field: dict[str, object]
+) -> None:
+    ruleset = _base_ruleset()
+    ruleset.update(visible_admin_field)
+
+    result, summary = _run_ruleset_check(tmp_path, ruleset)
+
+    assert result.returncode != 0
+    assert "RULESET_ADMIN_VISIBILITY_PARTIAL" in result.stderr
     assert summary == ""
 
 
@@ -129,5 +149,5 @@ def test_structural_release_tag_protection_fails_closed(
     result, summary = _run_ruleset_check(tmp_path, ruleset)
 
     assert result.returncode != 0
-    assert "active refs/tags/v* ruleset" in result.stderr
+    assert "RULESET_PROTECTION_MISSING" in result.stderr
     assert summary == ""

@@ -65,6 +65,10 @@ foreach ($Ruleset in @(Get-RulesetDetails)) {
     $BypassVisible = $null -ne $BypassProperty
     $CurrentUserVisible = $null -ne $CurrentUserProperty
 
+    if ($BypassVisible -xor $CurrentUserVisible) {
+        throw 'RULESET_ADMIN_VISIBILITY_PARTIAL: bypass_actors and current_user_can_bypass must be either both visible or both absent.'
+    }
+
     if (
         $BypassVisible -and
         ($null -eq $BypassProperty.Value -or @($BypassProperty.Value).Count -ne 0)
@@ -84,7 +88,7 @@ foreach ($Ruleset in @(Get-RulesetDetails)) {
 }
 
 if ($StructurallyProtected.Count -eq 0) {
-    throw 'An active refs/tags/v* ruleset must prohibit update and deletion; any visible bypass fields must be empty/never.'
+    throw 'RULESET_PROTECTION_MISSING: An active refs/tags/v* ruleset must prohibit update and deletion; any visible bypass fields must be empty/never.'
 }
 
 if ($AdminVerified.Count -gt 0) {
