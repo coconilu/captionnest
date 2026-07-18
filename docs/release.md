@@ -32,20 +32,22 @@ flowchart TD
     H --> I["发布 Immutable Release"]
 ```
 
-推荐发布入口是 GitHub Actions 的 `Prepare Release`。维护者从 `main` 手动输入不带 `v` 的版本号（例如 `0.2.2`）及是否为预发布。该 workflow 更新全部项目版本、提交 `main`、创建绝不移动的 annotated tag，然后以该 tag 作为 workflow ref 显式 dispatch 独立的 `Windows Release`。之所以显式 dispatch，是因为使用 `GITHUB_TOKEN` 推送 tag 不会递归触发新的 workflow run。
+推荐发布入口是 GitHub Actions 的 `Prepare Release`。维护者从 `main` 手动输入不带 `v` 的版本号（例如 `0.2.3`）及是否为预发布。该 workflow 更新全部项目版本、提交 `main`、创建绝不移动的 annotated tag，然后以该 tag 作为 workflow ref 显式 dispatch 独立的 `Windows Release`。之所以显式 dispatch，是因为使用 `GITHUB_TOKEN` 推送 tag 不会递归触发新的 workflow run。
 
 `Windows Release` 只接受既有 tag，精确 checkout 后同时校验：`GITHUB_REF` 是该 tag、`GITHUB_SHA` 等于 tag commit、tag 是 annotated tag、项目版本等于 tag 版本。之后才构建、测试、执行许可证门禁与安装冒烟；全部通过后为最终 EXE 生成 build provenance，创建或恢复 Draft Release，逐个比对四项资产的名称、大小和 GitHub SHA-256 digest，最后发布 Immutable Release。
 
 `actions/attest` 固定为完整提交 `f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6`（v4.2.0），只传最终 EXE 的 `subject-path`，并记录官方 action 输出的 `attestation-id` 与 `attestation-url`。Release job 的权限边界是 `contents: write`（Draft/Release）、`id-token: write`（GitHub OIDC）和 `attestations: write`（写入证明）；Prepare 另有 `actions: write` 用于独立 dispatch。流程不引入 secret、证书文件或长期私钥。
 
-仓库还必须存在 active tag ruleset：包含 `refs/tags/v*`、同时限制 update 与 deletion、没有 bypass actor，且 workflow token 不可 bypass。Release run 会在构建开始和最终 publish PATCH 紧邻前各验证一次；最终门禁还会重新读取远端 annotated tag 的 peeled commit，并要求它同时等于 `RELEASE_TAG_COMMIT` 和 `GITHUB_SHA`。规则失效、tag 被删除/改成 lightweight tag 或 commit 发生变化时，Draft 可以保留供诊断，但绝不会发送 publish PATCH。
+仓库还必须存在 active tag ruleset：包含 `refs/tags/v*`、同时限制 update 与 deletion、没有 bypass actor，且 workflow token 不可 bypass。Release run 会在构建开始和最终 publish PATCH 紧邻前各验证一次；active、tag target、精确 include、空 exclude、update 与 deletion 始终 fail closed。GitHub 的 ruleset API 只在调用者拥有 ruleset 写权限时返回 `bypass_actors`，普通 `GITHUB_TOKEN` 还可能看不到 `current_user_can_bypass`。因此，这两个字段可见时 workflow 会严格要求 `[]` 与 `never`；字段不可见时不会误判失败，但日志和 Job Summary 会明确标记“管理员前置条件未由本次 workflow 验证”。最终门禁还会重新读取远端 annotated tag 的 peeled commit，并要求它同时等于 `RELEASE_TAG_COMMIT` 和 `GITHUB_SHA`。规则失效、可见 bypass 状态不安全、tag 被删除/改成 lightweight tag 或 commit 发生变化时，Draft 可以保留供诊断，但绝不会发送 publish PATCH。
+
+管理员必须在仓库 `Settings` → `Rules` → `Rulesets` 中确认 tag ruleset 的 bypass list 为空，或使用具备仓库 Administration 权限的临时本地身份检查 `gh api repos/coconilu/captionnest/rulesets/19140023`，确认 `bypass_actors=[]`、`current_user_can_bypass=never`。不要把管理员 token 存入 Actions secret，也不要为读取这两个字段给 Release job 增加 Administration 写权限；GitHub Actions 没有可安全授予的 `administration: read` workflow 权限。详见 [Repository rules REST API](https://docs.github.com/en/rest/repos/rules?apiVersion=2026-03-10)。
 
 官方依据：[actions/attest v4.2.0](https://github.com/actions/attest/tree/v4.2.0)、[使用 Artifact Attestations](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations)、[Immutable Releases](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases)、[验证 Release 完整性](https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/secure-your-dependencies/verify-release-integrity)。
 
 ```mermaid
 flowchart LR
-    A["Prepare 输入 0.2.2"] --> B["更新版本并提交 main"]
-    B --> C["创建 annotated v0.2.2"]
+    A["Prepare 输入 0.2.3"] --> B["更新版本并提交 main"]
+    B --> C["创建 annotated v0.2.3"]
     C --> D["以 tag ref dispatch Windows Release"]
     D --> E["精确 tag 构建、测试与冒烟"]
     E --> F["EXE build provenance"]
@@ -61,7 +63,7 @@ Release 说明不调用 AI。固定模板包含 Windows 下载、三种在线验
 |---|---|
 | 打开 | `Actions` → `Prepare Release` → `Run workflow` |
 | 分支 | `main` |
-| `version` | 新版本号，例如 `0.2.2`，不要带 `v` |
+| `version` | 新版本号，例如 `0.2.3`，不要带 `v` |
 | `prerelease` | 正式版保持关闭，测试版打开 |
 
 ## 失败与安全重试
@@ -76,6 +78,8 @@ Release 说明不调用 AI。固定模板包含 Windows 下载、三种在线验
 | Draft Release 已存在 | 对同一 tag 重跑 `Windows Release`；仅允许覆盖该 Draft 中四个预期同名资产，随后重新核对完整集合与 digest |
 | Release 已发布 | 永久拒绝覆盖或移动 tag；任何修复必须发布新版本 |
 
+`v0.2.2` 是一次已知失败发布留下的受保护 annotated tag；该次运行在创建 Draft/Release 前因管理员字段不可见而失败，因此没有对应 Draft 或 Release。不得移动或删除 `v0.2.2`，本修复合并后的首次发布必须使用新版本 `v0.2.3`。
+
 构建、测试、许可证检查、安装冒烟、`actions/attest`、Draft 资产上传或 digest 核对任一步失败，都不会发布最终 Release。与旧流程不同，失败时**可能已经留下版本提交和 tag**；这是确保 attestation source commit 与 Release tag commit 完全一致的必要边界。
 
 ## 下载后的验证
@@ -83,8 +87,8 @@ Release 说明不调用 AI。固定模板包含 Windows 下载、三种在线验
 在克隆过本仓库并 fetch tag 的目录中，用 Release 的真实 tag 和文件名替换示例值：
 
 ```powershell
-$Tag = 'v0.2.2'
-$Installer = '.\CaptionNest_0.2.2_x64-setup.exe'
+$Tag = 'v0.2.3'
+$Installer = '.\CaptionNest_0.2.3_x64-setup.exe'
 $TagCommit = (git rev-parse "$Tag^{commit}").Trim()
 
 gh attestation verify $Installer `
@@ -103,7 +107,7 @@ gh release verify-asset $Tag $Installer -R coconilu/captionnest
 | 检查项 | 预期 |
 |---|---|
 | repository / signer workflow | `coconilu/captionnest` / `.github/workflows/release.yml` |
-| source ref / commit | `refs/tags/v0.2.2`，且 commit 等于 `git rev-parse "v0.2.2^{commit}"` |
+| source ref / commit | `refs/tags/v0.2.3`，且 commit 等于 `git rev-parse "v0.2.3^{commit}"` |
 | build provenance subject digest | 等于本地 EXE 的 SHA-256，也等于同名 `.sha256` 首列 |
 | release attestation | tag、commit 与 Release 中全部资产均被 GitHub 的发布证明覆盖 |
 
