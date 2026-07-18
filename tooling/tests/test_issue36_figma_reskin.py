@@ -113,9 +113,10 @@ def test_legacy_visible_text_selectors_are_overridden_by_readability_tokens() ->
 def test_figma_modal_and_responsive_breakpoints_keep_actions_reachable() -> None:
     styles = source("styles.css")
 
-    assert "width: min(650px, calc(100vw - 48px));" in styles
-    assert "height: min(570px, calc(100dvh - 48px));" in styles
-    assert "grid-template-columns: 342px 308px;" in styles
+    assert "width: min(1180px, calc(100vw - 48px));" in styles
+    assert "height: min(820px, calc(100dvh - 48px));" in styles
+    assert "min-height: min(700px, calc(100dvh - 48px));" in styles
+    assert "grid-template-columns: minmax(0, 1.25fr) minmax(420px, 0.9fr);" in styles
     assert "grid-template-rows: minmax(0, 1fr) 74px;" in styles
     assert "@media (max-width: 920px)" in styles
     assert "@media (max-width: 640px)" in styles
