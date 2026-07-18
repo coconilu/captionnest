@@ -3,56 +3,89 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_release_workflow_is_one_click_and_main_only() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-
-    assert "workflow_dispatch:" in workflow
-    assert "version:" in workflow
-    assert "prerelease:" in workflow
-    assert "ref: main" in workflow
-    assert "publish_release" not in workflow
-    assert "tags:" not in workflow
-
-
-def test_release_workflow_owns_the_complete_release_transaction() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-
-    expected_steps = (
-        "Update every project version",
-        "Build LGPL media wheel",
-        "Install and verify LGPL media wheel",
-        "Test Python with release media runtime",
-        "Build NSIS and checksum",
-        "Smoke-test the exact installer",
-        "Commit the version and create the tag",
-        "Publish GitHub Release with generated notes",
+def test_prepare_release_owns_version_commit_tag_and_tag_ref_dispatch() -> None:
+    prepare = (ROOT / ".github" / "workflows" / "prepare-release.yml").read_text(
+        encoding="utf-8"
     )
-    for step in expected_steps:
-        assert step in workflow
 
-    assert "generate_release_notes: true" in workflow
-    assert "git push origin HEAD:main" in workflow
-    assert 'git push origin "refs/tags/$env:RELEASE_TAG"' in workflow
+    assert "workflow_dispatch:" in prepare
+    assert "ref: main" in prepare
+    assert "actions: write" in prepare
+    assert "contents: write" in prepare
+    assert "git @('tag', '-a'" in prepare
+    assert "prerelease=$Prerelease" in prepare
+    assert "'--ref', $env:RELEASE_TAG" in prepare
+    assert "'-f', \"tag=$env:RELEASE_TAG\"" in prepare
+    assert prepare.index("tooling\\release\\version.py") < prepare.index(
+        "git @('commit'"
+    ) < prepare.index("git @('tag', '-a'") < prepare.index("Dispatch tag-anchored")
 
 
-def test_release_validation_does_not_fail_when_release_and_tag_are_missing() -> None:
+def test_release_is_anchored_to_exact_annotated_tag_and_source_commit() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "ref: ${{ inputs.tag }}" in workflow
+    assert 'if ($env:GITHUB_REF -ne "refs/tags/$Tag")' in workflow
+    assert "$TagType -ne 'tag'" in workflow
+    assert 'if ($env:GITHUB_SHA -ne $TagCommit)' in workflow
+    assert "check-version-consistency.ps1' '-ExpectedVersion' $Version" in workflow
+    assert "Update every project version" not in workflow
+    assert "git @('tag'" not in workflow
+    assert "git @('push'" not in workflow
+
+
+def test_attestation_is_pinned_minimally_permitted_and_fail_closed() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "contents: write" in workflow
+    assert "id-token: write" in workflow
+    assert "attestations: write" in workflow
+    assert (
+        "actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0"
+        in workflow
+    )
+    assert "continue-on-error" not in workflow
+    assert "attestation-id" in workflow
+    assert "attestation-url" in workflow
+    assert workflow.index("Install and verify LGPL media wheel") < workflow.index(
+        "Test Python with release media runtime"
+    ) < workflow.index("Smoke-test the exact installer") < workflow.index(
+        "Attest the final Windows installer"
+    ) < workflow.index("Create or resume draft, verify assets, and publish")
+
+
+def test_release_publishes_only_after_exact_draft_asset_digest_verification() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8"
+    )
+    publish_step = workflow.split(
+        "- name: Create or resume draft, verify assets, and publish", 1
+    )[1]
+
+    assert "--draft" in publish_step
+    assert "Published Release $env:RELEASE_TAG" in publish_step
+    assert "--clobber" in publish_step
+    assert "--json', 'apiUrl,tagName,isDraft,isPrerelease'" in publish_step
+    assert "databaseId" not in publish_step
+    assert "$Remote[0].digest -ne $LocalDigest" in publish_step
+    assert "@{ draft = $false }" in publish_step
+    assert "--method', 'PATCH'" in publish_step
+    assert "-not $Published.immutable" in publish_step
+    assert publish_step.index("release', 'upload'") < publish_step.index(
+        "$Remote[0].digest -ne $LocalDigest"
+    ) < publish_step.index("@{ draft = $false }")
+
+
+def test_release_notes_have_verification_commands_and_fixed_safety_text() -> None:
     workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
 
-    assert "gh release view" not in workflow
-    assert "git show-ref --verify" not in workflow
-    assert "gh release list" in workflow
-    assert "git tag --list" in workflow
-    assert "$ReleaseExists = @($Releases).tagName -contains $Tag" in workflow
-    assert "$TagExists = $MatchingTags -contains $Tag" in workflow
-
-
-def test_generated_release_notes_have_chinese_categories_and_fixed_safety_text() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-    notes_config = (ROOT / ".github" / "release.yml").read_text(encoding="utf-8")
-
-    assert "新功能" in notes_config
-    assert "问题修复" in notes_config
-    assert "其他变更" in notes_config
+    assert "gh attestation verify" in workflow
+    assert "gh release verify " in workflow
+    assert "gh release verify-asset" in workflow
     assert "SmartScreen" in workflow
     assert "FFMPEG_BUILD_INFO.txt" in workflow
 
