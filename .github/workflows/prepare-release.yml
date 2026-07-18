@@ -109,7 +109,7 @@ jobs:
             }
             & git @('checkout', '--detach', $Tag)
             if ($LASTEXITCODE -ne 0) { throw "Unable to check out existing $Tag." }
-            & pwsh '-File' '.\scripts\check-version-consistency.ps1' `
+            & pwsh '-File' './scripts/check-version-consistency.ps1' `
               '-ExpectedVersion' $Version
             if ($LASTEXITCODE -ne 0) {
               throw "Existing $Tag does not contain version $Version."
@@ -118,9 +118,9 @@ jobs:
             if ($MatchingReleases.Count -ne 0) {
               throw "Draft Release $Tag exists without its tag; repair it manually."
             }
-            & python @('.\tooling\release\version.py', $Version, '--root', '.')
+            & python @('./tooling/release/version.py', $Version, '--root', '.')
             if ($LASTEXITCODE -ne 0) { throw 'Unable to update project versions.' }
-            & pwsh '-File' '.\scripts\check-version-consistency.ps1' `
+            & pwsh '-File' './scripts/check-version-consistency.ps1' `
               '-ExpectedVersion' $Version
             if ($LASTEXITCODE -ne 0) { throw 'Version consistency check failed.' }
 
