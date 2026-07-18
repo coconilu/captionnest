@@ -66,6 +66,7 @@ uv run --project apps/sidecar --extra dev ruff check apps/sidecar
 uv run --project apps/sidecar --extra dev ruff check --config apps/sidecar/pyproject.toml tooling
 Set-Location apps/web
 npm run lint
+npm test
 npm run build
 Set-Location ../..
 cargo fmt --manifest-path apps/desktop/Cargo.toml --check
