@@ -64,27 +64,32 @@ foreach ($Ruleset in @(Get-RulesetDetails)) {
     $CurrentUserProperty = $Ruleset.PSObject.Properties['current_user_can_bypass']
     $BypassVisible = $null -ne $BypassProperty
     $CurrentUserVisible = $null -ne $CurrentUserProperty
+    $CurrentUserSafe = (
+        $CurrentUserVisible -and
+        $CurrentUserProperty.Value -is [string] -and
+        $CurrentUserProperty.Value -ceq 'never'
+    )
 
-    if ($BypassVisible -xor $CurrentUserVisible) {
-        throw 'RULESET_ADMIN_VISIBILITY_PARTIAL: bypass_actors and current_user_can_bypass must be either both visible or both absent.'
-    }
-
-    if (
-        $BypassVisible -and
-        ($null -eq $BypassProperty.Value -or @($BypassProperty.Value).Count -ne 0)
-    ) {
-        continue
-    }
-    if ($CurrentUserVisible -and $CurrentUserProperty.Value -ne 'never') {
-        continue
+    if ($BypassVisible) {
+        if (-not $CurrentUserVisible) {
+            throw 'RULESET_ADMIN_VISIBILITY_UNSAFE: current_user_can_bypass is missing while bypass_actors is visible.'
+        }
+        if (
+            $null -eq $BypassProperty.Value -or
+            @($BypassProperty.Value).Count -ne 0 -or
+            -not $CurrentUserSafe
+        ) {
+            continue
+        }
+        $AdminVerified += $Ruleset
+    } else {
+        if ($CurrentUserVisible -and -not $CurrentUserSafe) {
+            throw 'RULESET_ADMIN_VISIBILITY_UNSAFE: current_user_can_bypass must be never when bypass_actors is hidden.'
+        }
+        $AdminVisibilityLimited += $Ruleset
     }
 
     $StructurallyProtected += $Ruleset
-    if ($BypassVisible -and $CurrentUserVisible) {
-        $AdminVerified += $Ruleset
-    } else {
-        $AdminVisibilityLimited += $Ruleset
-    }
 }
 
 if ($StructurallyProtected.Count -eq 0) {
@@ -95,7 +100,7 @@ if ($AdminVerified.Count -gt 0) {
     $VisibilityMessage = 'No-bypass fields were visible and verified: bypass_actors=[] and current_user_can_bypass=never.'
     Write-Host $VisibilityMessage
 } else {
-    $VisibilityMessage = 'Admin-only bypass fields are not fully visible to this GITHUB_TOKEN. No-bypass remains an external administrator prerequisite and was not verified by this workflow.'
+    $VisibilityMessage = 'bypass_actors was not visible to this GITHUB_TOKEN. An empty administrator bypass list remains an external administrator prerequisite and was not verified by this workflow; current_user_can_bypass, when visible, was verified as never.'
     Write-Warning $VisibilityMessage
 }
 

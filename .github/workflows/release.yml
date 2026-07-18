@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: '已由 Prepare Release 创建的 annotated tag，例如 v0.2.3'
+        description: '已由 Prepare Release 创建的 annotated tag，例如 v0.2.4'
         required: true
         type: string
 

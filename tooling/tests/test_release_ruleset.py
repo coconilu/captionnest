@@ -62,6 +62,24 @@ def test_missing_admin_only_fields_pass_with_explicit_external_prerequisite(
     output = " ".join((result.stdout + result.stderr).split())
     assert "external administrator prerequisite" in output
     assert "was not verified by this workflow" in output
+    assert "bypass_actors was not visible" in summary
+    assert "external administrator prerequisite" in summary
+    assert "was not verified by this workflow" in summary
+
+
+def test_hidden_bypass_with_visible_never_passes_as_admin_limited(
+    tmp_path: Path,
+) -> None:
+    ruleset = _base_ruleset()
+    ruleset["current_user_can_bypass"] = "never"
+
+    result, summary = _run_ruleset_check(tmp_path, ruleset)
+
+    assert result.returncode == 0, result.stderr
+    output = " ".join((result.stdout + result.stderr).split())
+    assert "bypass_actors was not visible" in output
+    assert "external administrator prerequisite" in output
+    assert "bypass_actors was not visible" in summary
     assert "external administrator prerequisite" in summary
     assert "was not verified by this workflow" in summary
 
@@ -84,12 +102,14 @@ def test_visible_safe_admin_fields_are_verified(tmp_path: Path) -> None:
         ([{"actor_type": "RepositoryRole", "actor_id": 5}], "never"),
         (None, "never"),
         ([], "always"),
+        ([], ""),
+        ([], None),
     ],
 )
 def test_visible_bypass_state_fails_closed(
     tmp_path: Path,
     bypass_actors: list[dict[str, object]] | None,
-    current_user_can_bypass: str,
+    current_user_can_bypass: object,
 ) -> None:
     ruleset = _base_ruleset()
     ruleset["bypass_actors"] = bypass_actors
@@ -102,23 +122,28 @@ def test_visible_bypass_state_fails_closed(
     assert summary == ""
 
 
-@pytest.mark.parametrize(
-    "visible_admin_field",
-    [
-        {"bypass_actors": []},
-        {"current_user_can_bypass": "never"},
-    ],
-)
-def test_partial_admin_visibility_fails_closed(
-    tmp_path: Path, visible_admin_field: dict[str, object]
-) -> None:
+def test_visible_bypass_with_missing_current_user_fails_closed(tmp_path: Path) -> None:
     ruleset = _base_ruleset()
-    ruleset.update(visible_admin_field)
+    ruleset["bypass_actors"] = []
 
     result, summary = _run_ruleset_check(tmp_path, ruleset)
 
     assert result.returncode != 0
-    assert "RULESET_ADMIN_VISIBILITY_PARTIAL" in result.stderr
+    assert "RULESET_ADMIN_VISIBILITY_UNSAFE" in result.stderr
+    assert summary == ""
+
+
+@pytest.mark.parametrize("current_user_can_bypass", ["always", "", None])
+def test_hidden_bypass_with_unsafe_current_user_fails_closed(
+    tmp_path: Path, current_user_can_bypass: object
+) -> None:
+    ruleset = _base_ruleset()
+    ruleset["current_user_can_bypass"] = current_user_can_bypass
+
+    result, summary = _run_ruleset_check(tmp_path, ruleset)
+
+    assert result.returncode != 0
+    assert "RULESET_ADMIN_VISIBILITY_UNSAFE" in result.stderr
     assert summary == ""
 
 
