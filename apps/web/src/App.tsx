@@ -8,6 +8,7 @@ import {
   runJobStep,
   updateJobStepConfig,
 } from './api/client'
+import { AboutPanel } from './components/AboutPanel'
 import { AppHeader } from './components/AppHeader'
 import { AppSidebar, type AppView } from './components/AppSidebar'
 import { BatchCreator } from './components/BatchCreator'
@@ -18,6 +19,7 @@ import { SettingsPanel } from './components/SettingsPanel'
 import { TaskConsole } from './components/TaskConsole'
 import { TaskInspectorHeader } from './components/TaskInspectorHeader'
 import { WorkflowPipeline } from './components/WorkflowPipeline'
+import { useAppVersion } from './hooks/useAppVersion'
 import { useBackendStatus } from './hooks/useBackendStatus'
 import { useEnvironmentStatus } from './hooks/useEnvironmentStatus'
 import { useJobSummaries } from './hooks/useJobSummaries'
@@ -43,10 +45,12 @@ export function App() {
   const {
     connected,
     checking: backendChecking,
+    health: backendHealth,
     capabilities,
     error: backendError,
     refresh: refreshBackend,
   } = useBackendStatus()
+  const desktopVersion = useAppVersion()
   const {
     data: environment,
     checking: environmentChecking,
@@ -591,6 +595,12 @@ export function App() {
                   initiallyOpen
                   onChange={setSettings}
                   onStart={() => undefined}
+                />
+                <AboutPanel
+                  desktopVersion={desktopVersion}
+                  sidecarConnected={connected}
+                  sidecarChecking={backendChecking}
+                  sidecarVersion={backendHealth?.version ?? null}
                 />
               </div>
             </section>

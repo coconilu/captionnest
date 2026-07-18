@@ -354,6 +354,8 @@ export interface BulkUploadResponse {
 
 export interface BackendHealth {
   status?: string
+  service?: string
+  version?: string
   [key: string]: unknown
 }
 

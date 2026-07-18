@@ -1,9 +1,11 @@
 import time
+from importlib.metadata import version as distribution_version
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+from sublingo_local import __version__
 from sublingo_local.app import create_app
 from sublingo_local.jobs import STEP_ORDER
 from sublingo_local.model_manager import ModelView
@@ -60,7 +62,9 @@ def clear_desktop_session_token(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_health_capabilities_upload_and_job_do_not_echo_api_key(tmp_path: Path) -> None:
     app = create_app(data_dir=tmp_path / "data", pipeline=FakePipeline())  # type: ignore[arg-type]
     with TestClient(app) as client:
-        assert client.get("/api/health").json()["status"] == "ok"
+        health = client.get("/api/health").json()
+        assert health["status"] == "ok"
+        assert health["version"] == distribution_version("captionnest") == __version__
         capabilities = client.get("/api/capabilities").json()
         assert capabilities["asr"]["provider"] == "faster-whisper"
         assert {item["id"] for item in capabilities["asr"]["providers"]} == {
