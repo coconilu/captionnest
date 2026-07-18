@@ -55,6 +55,7 @@ DATAS = [
     (str(ROOT / "THIRD_PARTY_NOTICES.md"), "."),
     (str(PACKAGING_ROOT / "dist" / "FFMPEG_BUILD_INFO.txt"), "."),
 ]
+DATAS += copy_metadata("captionnest")
 media_provenance = (
     PACKAGING_ROOT / "dist" / "media-wheel" / "MEDIA_WHEEL_PROVENANCE.json"
 )

@@ -4526,6 +4526,76 @@ textarea {
 
 .settings-page-content {
   width: min(820px, calc(100% - 48px));
+  display: grid;
+  gap: 16px;
+}
+
+.about-panel {
+  min-width: 0;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: #181a1f;
+}
+
+.about-panel-header h3 {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: var(--line-sm);
+}
+
+.about-panel-header p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: var(--text-xs);
+  line-height: var(--line-xs);
+}
+
+.about-version-list {
+  display: grid;
+  gap: 10px;
+  margin: 18px 0 0;
+}
+
+.about-version-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 20px;
+  min-width: 0;
+}
+
+.about-version-row dt {
+  color: var(--muted);
+  font-size: var(--text-xs);
+  line-height: var(--line-xs);
+}
+
+.about-version-row dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  line-height: var(--line-xs);
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.about-version-notice {
+  margin: 16px 0 0;
+  padding: 10px 12px;
+  border-radius: 6px;
+  color: var(--text-soft);
+  background: var(--surface-teal);
+  font-size: var(--text-xs);
+  line-height: 1.55;
+}
+
+.about-version-notice.is-warning {
+  color: var(--warning);
+  background: var(--warning-soft);
 }
 
 .utility-workspace .settings-sidebar,
@@ -5337,6 +5407,15 @@ textarea {
   .settings-page-content {
     width: calc(100% - 28px);
     margin: 14px auto;
+  }
+
+  .about-panel {
+    padding: 16px;
+  }
+
+  .about-version-row {
+    align-items: flex-start;
+    gap: 12px;
   }
 
   .create-task-dialog-layer {

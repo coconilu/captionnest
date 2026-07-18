@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 
 import { getCapabilities, getHealth } from '../api/client'
-import type { BackendCapabilities } from '../types/api'
+import type { BackendCapabilities, BackendHealth } from '../types/api'
 
 interface BackendState {
   connected: boolean
   checking: boolean
+  health: BackendHealth | null
   capabilities: BackendCapabilities
   error: string | null
 }
@@ -13,6 +14,7 @@ interface BackendState {
 const initialState: BackendState = {
   connected: false,
   checking: true,
+  health: null,
   capabilities: {},
   error: null,
 }
@@ -32,6 +34,7 @@ export function useBackendStatus() {
       setState({
         connected: false,
         checking: false,
+        health: null,
         capabilities: capabilities.status === 'fulfilled' ? capabilities.value : {},
         error: health.reason instanceof Error ? health.reason.message : '无法连接本地服务',
       })
@@ -41,6 +44,7 @@ export function useBackendStatus() {
     setState({
       connected: true,
       checking: false,
+      health: health.value,
       capabilities: capabilities.status === 'fulfilled' ? capabilities.value : {},
       error: capabilities.status === 'rejected' ? '能力信息暂不可用' : null,
     })

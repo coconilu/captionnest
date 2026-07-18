@@ -97,3 +97,23 @@ def test_pyinstaller_spec_uses_repository_level_roots() -> None:
     assert 'PACKAGING_ROOT = ROOT / "tooling" / "packaging"' in spec
     assert 'DESKTOP_ROOT = ROOT / "apps" / "desktop"' in spec
     assert 'pathex=[str(SIDECAR_ROOT / "src")]' in spec
+
+
+def test_frontend_ci_and_review_commands_run_the_web_test_suite() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    frontend_job = workflow.split("  frontend:", maxsplit=1)[1].split(
+        "  desktop-check:", maxsplit=1
+    )[0]
+    review_guide = (ROOT / "docs" / "code-review.md").read_text(encoding="utf-8")
+
+    expected_steps = (
+        "- run: npm ci\n        working-directory: apps/web",
+        "- run: npm test\n        working-directory: apps/web",
+        "- run: npm run lint\n        working-directory: apps/web",
+        "- run: npm run build\n        working-directory: apps/web",
+    )
+    assert all(step in frontend_job for step in expected_steps)
+    assert [frontend_job.index(step) for step in expected_steps] == sorted(
+        frontend_job.index(step) for step in expected_steps
+    )
+    assert "Set-Location apps/web\nnpm run lint\nnpm test\nnpm run build" in review_guide
