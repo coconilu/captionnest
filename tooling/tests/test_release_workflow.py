@@ -34,6 +34,12 @@ def test_release_is_anchored_to_exact_annotated_tag_and_source_commit() -> None:
     assert "Update every project version" not in workflow
     assert "git @('tag'" not in workflow
     assert "git @('push'" not in workflow
+    assert workflow.count("repos/$env:GITHUB_REPOSITORY/rulesets") >= 2
+    assert "'refs/tags/v*'" in workflow
+    assert "$RuleTypes -contains 'update'" in workflow
+    assert "$RuleTypes -contains 'deletion'" in workflow
+    assert "@($Ruleset.bypass_actors).Count -eq 0" in workflow
+    assert "$Ruleset.current_user_can_bypass -eq 'never'" in workflow
 
 
 def test_attestation_is_pinned_minimally_permitted_and_fail_closed() -> None:
@@ -78,6 +84,31 @@ def test_release_publishes_only_after_exact_draft_asset_digest_verification() ->
     assert publish_step.index("release', 'upload'") < publish_step.index(
         "$Remote[0].digest -ne $LocalDigest"
     ) < publish_step.index("@{ draft = $false }")
+
+
+def test_tag_move_after_initial_validation_fails_before_publish_patch() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8"
+    )
+    publish_step = workflow.split(
+        "- name: Create or resume draft, verify assets, and publish", 1
+    )[1]
+    final_gate = publish_step.split(
+        "# Re-read both protections immediately before publish.", 1
+    )[1].split("$PublishRequest =", 1)[0]
+
+    assert "repos/$env:GITHUB_REPOSITORY/rulesets" in final_gate
+    assert "refs/tags/v*" in final_gate
+    assert "'update'" in final_gate and "'deletion'" in final_gate
+    assert "'ls-remote', '--exit-code', 'origin'" in final_gate
+    assert "$RemotePeeledRef" in final_gate
+    assert "$RemoteTagCommit -ne $env:RELEASE_TAG_COMMIT" in final_gate
+    assert "$RemoteTagCommit -ne $env:GITHUB_SHA" in final_gate
+    assert "Remote tag moved" in final_gate
+    assert "--method', 'PATCH'" not in final_gate
+    assert publish_step.index("$RemoteTagCommit -ne $env:GITHUB_SHA") < publish_step.index(
+        "$PublishRequest ="
+    ) < publish_step.index("--method', 'PATCH'")
 
 
 def test_release_notes_have_verification_commands_and_fixed_safety_text() -> None:

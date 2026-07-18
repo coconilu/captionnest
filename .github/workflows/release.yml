@@ -113,6 +113,32 @@ jobs:
             }
           }
 
+          $RulesetListArgs = @('api', "repos/$env:GITHUB_REPOSITORY/rulesets")
+          $RulesetListJson = & gh @RulesetListArgs
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to query repository tag rulesets.' }
+          $ProtectingRulesets = @()
+          foreach ($Summary in @($RulesetListJson | ConvertFrom-Json)) {
+            if ($Summary.target -ne 'tag' -or $Summary.enforcement -ne 'active') { continue }
+            $RulesetArgs = @('api', "repos/$env:GITHUB_REPOSITORY/rulesets/$($Summary.id)")
+            $RulesetJson = & gh @RulesetArgs
+            if ($LASTEXITCODE -ne 0) { throw "Unable to inspect tag ruleset $($Summary.id)." }
+            $Ruleset = $RulesetJson | ConvertFrom-Json
+            $RuleTypes = @($Ruleset.rules.type)
+            if (
+              @($Ruleset.conditions.ref_name.include) -contains 'refs/tags/v*' -and
+              @($Ruleset.conditions.ref_name.exclude).Count -eq 0 -and
+              $RuleTypes -contains 'update' -and
+              $RuleTypes -contains 'deletion' -and
+              @($Ruleset.bypass_actors).Count -eq 0 -and
+              $Ruleset.current_user_can_bypass -eq 'never'
+            ) {
+              $ProtectingRulesets += $Ruleset
+            }
+          }
+          if ($ProtectingRulesets.Count -eq 0) {
+            throw 'An active refs/tags/v* ruleset must prohibit update and deletion without bypass actors.'
+          }
+
           "RELEASE_VERSION=$Version" | Add-Content -LiteralPath $env:GITHUB_ENV
           "RELEASE_TAG=$Tag" | Add-Content -LiteralPath $env:GITHUB_ENV
           "RELEASE_TAG_COMMIT=$TagCommit" | Add-Content -LiteralPath $env:GITHUB_ENV
@@ -430,6 +456,59 @@ jobs:
             if ($Remote[0].digest -ne $LocalDigest) {
               throw "Uploaded digest does not match $($File.Name)."
             }
+          }
+
+          # Re-read both protections immediately before publish. The initial validation
+          # may be up to 180 minutes old and cannot establish the final Release identity.
+          $RulesetListArgs = @('api', "repos/$env:GITHUB_REPOSITORY/rulesets")
+          $RulesetListJson = & gh @RulesetListArgs
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to re-query repository tag rulesets before publish.' }
+          $ProtectingRulesets = @()
+          foreach ($Summary in @($RulesetListJson | ConvertFrom-Json)) {
+            if ($Summary.target -ne 'tag' -or $Summary.enforcement -ne 'active') { continue }
+            $RulesetArgs = @('api', "repos/$env:GITHUB_REPOSITORY/rulesets/$($Summary.id)")
+            $RulesetJson = & gh @RulesetArgs
+            if ($LASTEXITCODE -ne 0) { throw "Unable to inspect tag ruleset $($Summary.id) before publish." }
+            $Ruleset = $RulesetJson | ConvertFrom-Json
+            $RuleTypes = @($Ruleset.rules.type)
+            if (
+              @($Ruleset.conditions.ref_name.include) -contains 'refs/tags/v*' -and
+              @($Ruleset.conditions.ref_name.exclude).Count -eq 0 -and
+              $RuleTypes -contains 'update' -and
+              $RuleTypes -contains 'deletion' -and
+              @($Ruleset.bypass_actors).Count -eq 0 -and
+              $Ruleset.current_user_can_bypass -eq 'never'
+            ) {
+              $ProtectingRulesets += $Ruleset
+            }
+          }
+          if ($ProtectingRulesets.Count -eq 0) {
+            throw 'Release tag protection disappeared or became bypassable; refusing to publish.'
+          }
+
+          $RemoteTagRef = "refs/tags/$env:RELEASE_TAG"
+          $RemotePeeledRef = "$RemoteTagRef^{}"
+          $LsRemoteArgs = @(
+            'ls-remote', '--exit-code', 'origin', $RemoteTagRef, $RemotePeeledRef
+          )
+          $RemoteTagLines = @(& git @LsRemoteArgs)
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to resolve the remote release tag before publish.' }
+          $RemotePeeledEntries = @(
+            $RemoteTagLines |
+              ForEach-Object {
+                $Fields = $_ -split "`t", 2
+                if ($Fields.Count -eq 2 -and $Fields[1] -eq $RemotePeeledRef) { $Fields[0] }
+              }
+          )
+          if ($RemotePeeledEntries.Count -ne 1) {
+            throw 'Remote release tag must still be an annotated tag with exactly one peeled commit.'
+          }
+          $RemoteTagCommit = $RemotePeeledEntries[0].ToLowerInvariant()
+          if (
+            $RemoteTagCommit -ne $env:RELEASE_TAG_COMMIT -or
+            $RemoteTagCommit -ne $env:GITHUB_SHA
+          ) {
+            throw "Remote tag moved to $RemoteTagCommit after build start; refusing to publish."
           }
 
           $PublishRequest = @{ draft = $false } | ConvertTo-Json -Compress
