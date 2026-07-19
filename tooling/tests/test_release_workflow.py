@@ -47,6 +47,18 @@ def test_prepare_release_owns_version_commit_tag_and_tag_ref_dispatch() -> None:
     assert "'--ref', $env:RELEASE_TAG" in prepare
     assert "'-f', \"version=$env:RELEASE_VERSION\"" in prepare
     assert "'-f', \"prerelease=$env:RELEASE_PRERELEASE\"" in prepare
+    assert prepare.count("./scripts/check-release-workflow-contract.ps1") == 2
+    assert prepare.count("'-ContractRef', 'origin/main'") == 2
+    assert "legacy or unknown immutable release workflow contract" in prepare
+    assert prepare.rindex("./scripts/check-release-workflow-contract.ps1") < prepare.index(
+        "Dispatch tag-anchored"
+    )
+    existing_tag_path = prepare.split("if ($TagExists) {", 1)[1].split("} else {", 1)[0]
+    assert existing_tag_path.index(
+        "./scripts/check-release-workflow-contract.ps1"
+    ) < existing_tag_path.index("$TagMessage = @(") < existing_tag_path.index(
+        "git @('checkout', '--detach', $Tag)"
+    )
     assert prepare.index("tooling/release/version.py") < prepare.index(
         "git @('commit'"
     ) < prepare.index("git @('tag', '-a'") < prepare.index("Dispatch tag-anchored")

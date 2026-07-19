@@ -98,6 +98,15 @@ jobs:
             }
             $TagCommit = (& git @('rev-parse', "$Tag^{commit}")).Trim()
             if ($LASTEXITCODE -ne 0) { throw "Unable to resolve $Tag to a commit." }
+            $ExistingContractCheckArgs = @(
+              '-File', './scripts/check-release-workflow-contract.ps1',
+              '-Tag', $Tag,
+              '-ContractRef', 'origin/main'
+            )
+            & pwsh @ExistingContractCheckArgs
+            if ($LASTEXITCODE -ne 0) {
+              throw "$Tag uses a legacy or unknown immutable release workflow contract and cannot be rerun safely. Keep the tag unchanged and publish a new version."
+            }
             & git @('merge-base', '--is-ancestor', $TagCommit, 'origin/main')
             if ($LASTEXITCODE -ne 0) {
               throw "Existing $Tag points to $TagCommit outside current main history."
@@ -161,6 +170,15 @@ jobs:
             & git @('push', 'origin', "refs/tags/$Tag")
             if ($LASTEXITCODE -ne 0) {
               throw "Unable to push $Tag; an existing tag will never be moved."
+            }
+            $NewContractCheckArgs = @(
+              '-File', './scripts/check-release-workflow-contract.ps1',
+              '-Tag', $Tag,
+              '-ContractRef', 'origin/main'
+            )
+            & pwsh @NewContractCheckArgs
+            if ($LASTEXITCODE -ne 0) {
+              throw "$Tag does not contain the current immutable release workflow contract; keep it unchanged and publish a new version."
             }
           }
 

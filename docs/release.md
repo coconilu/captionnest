@@ -69,17 +69,18 @@ Release 说明不调用 AI。固定模板包含 Windows 下载、三种在线验
 
 ## 失败与安全重试
 
-新架构刻意接受“已经有 tag、尚无 Release”这一可恢复状态。失败时不得删除或移动 tag 来伪装重建：
+新架构仅接受“由当前发布契约创建、已经有 tag、尚无 Release”这一可恢复状态。Prepare 会在 dispatch 前读取 tag 内的 `.github/workflows/release.yml`，要求它明确声明必需的 `version`/`prerelease` 输入，并与当前 tag-anchored 安全构建工作流完全一致。旧版或未知契约一律 fail closed；失败时不得删除或移动 tag 来伪装重建：
 
 | 失败状态 | 安全重试语义 |
 |---|---|
 | 版本提交前失败 | 修复原因后从 `main` 重跑 `Prepare Release` |
 | 已提交版本、尚未创建 tag | 用相同版本和 `prerelease` 重跑；版本更新幂等，tag 固定到当前版本提交 |
-| tag 已存在、无 Release | 用相同输入重跑 `Prepare Release`；它只会验证 annotated tag、版本、main 历史与 tag 元数据，再次 dispatch |
-| Draft Release 已存在 | 从同一 tag 重跑 `Windows Release`，输入不带 `v` 的同版本号和匹配的 `prerelease`；仅允许覆盖该 Draft 中四个预期同名资产，随后重新核对完整集合与 digest |
+| 当前契约 tag 已存在、无 Release | 用相同输入重跑 `Prepare Release`；它会验证 annotated tag、版本、main 历史、tag 元数据和 tag 内发布工作流契约，再次 dispatch |
+| legacy/未知契约 tag 已存在 | 保留 immutable tag，不得改用旧 `tag` 输入、移动或删除 tag；该 tag 不能安全重跑，必须发布一个从未使用的新版本 |
+| 当前契约的 Draft Release 已存在 | 从同一 tag 重跑 `Windows Release`，输入不带 `v` 的同版本号和匹配的 `prerelease`；仅允许覆盖该 Draft 中四个预期同名资产，随后重新核对完整集合与 digest |
 | Release 已发布 | 永久拒绝覆盖或移动 tag；任何修复必须发布新版本 |
 
-`v0.2.2` 和 `v0.2.3` 都是已知失败发布留下的受保护 annotated tag，且都没有对应 Draft 或 Release。`v0.2.2` 因管理员字段完全不可见时的旧误判失败；`v0.2.3` 的 run 29642143052 因生产 API 合法返回“`bypass_actors` 缺失、`current_user_can_bypass=never`”而被旧 XOR 规则误判。不得移动或删除这两个 tag，本修复合并后的首次发布必须使用新版本 `v0.2.4`。
+`v0.2.2`、`v0.2.3`、`v0.2.4` 等既有 tag 保存的是旧版 `Windows Release` 输入或安全逻辑，不能通过当前 Prepare 安全重跑。`v0.2.2` 因管理员字段完全不可见时的旧误判失败；`v0.2.3` 的 run 29642143052 因生产 API 合法返回“`bypass_actors` 缺失、`current_user_can_bypass=never`”而被旧 XOR 规则误判。不得移动或删除这些 tag；下一次发布必须使用从未创建过的新版本（当前应从 `v0.2.5` 开始）。
 
 构建、测试、许可证检查、安装冒烟、`actions/attest`、Draft 资产上传或 digest 核对任一步失败，都不会发布最终 Release。与旧流程不同，失败时**可能已经留下版本提交和 tag**；这是确保 attestation source commit 与 Release tag commit 完全一致的必要边界。
 
