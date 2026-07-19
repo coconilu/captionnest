@@ -1,3 +1,4 @@
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -10,6 +11,14 @@ CURRENT_RELEASE_WORKFLOW = (
     ROOT / ".github" / "workflows" / "release.yml"
 ).read_text(encoding="utf-8")
 POWERSHELL = shutil.which("pwsh") or shutil.which("powershell")
+ANSI_CONTROL_SEQUENCE = re.compile(r"(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]")
+POWERSHELL_RICH_ERROR_CONTINUATION_GUTTER = re.compile(
+    r"(?m)^ {5}\| +(?![~^])(?=\S)"
+)
+FAIL_CLOSED_MESSAGE = (
+    "uses a legacy or unknown immutable release workflow contract and cannot be "
+    "rerun safely. Keep the tag unchanged and publish a new version."
+)
 
 LEGACY_RELEASE_WORKFLOW = """\
 name: Legacy Windows Release
@@ -93,6 +102,15 @@ def _check_contract(repo: Path, tag: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _normalize_powershell_output(completed: subprocess.CompletedProcess[str]) -> str:
+    output = f"{completed.stdout}\n{completed.stderr}"
+    without_ansi = ANSI_CONTROL_SEQUENCE.sub("", output)
+    without_continuation_gutters = POWERSHELL_RICH_ERROR_CONTINUATION_GUTTER.sub(
+        "", without_ansi
+    )
+    return " ".join(without_continuation_gutters.split())
+
+
 def test_current_tag_workflow_contract_is_dispatchable(tmp_path: Path) -> None:
     repo = _init_contract_repo(tmp_path, "v0.2.5", CURRENT_RELEASE_WORKFLOW)
 
@@ -115,9 +133,10 @@ def test_legacy_or_unknown_tag_workflow_schema_fails_closed(
     repo = _init_contract_repo(tmp_path, tag, tag_workflow)
 
     completed = _check_contract(repo, tag)
-    output = f"{completed.stdout}\n{completed.stderr}"
+    output = _normalize_powershell_output(completed)
 
     assert completed.returncode != 0
+    assert f"{tag} {FAIL_CLOSED_MESSAGE}" in output
     assert "legacy or unknown immutable release workflow contract" in output
     assert "cannot be rerun safely" in output
     assert "Keep the tag unchanged and publish a new version" in output
@@ -133,8 +152,40 @@ def test_same_inputs_with_different_tag_workflow_fails_closed(tmp_path: Path) ->
     repo = _init_contract_repo(tmp_path, "v0.2.6", altered_workflow)
 
     completed = _check_contract(repo, "v0.2.6")
+    output = _normalize_powershell_output(completed)
 
     assert completed.returncode != 0
-    assert "legacy or unknown immutable release workflow contract" in (
-        f"{completed.stdout}\n{completed.stderr}"
+    assert f"v0.2.6 {FAIL_CLOSED_MESSAGE}" in output
+    assert "legacy or unknown immutable release workflow contract" in output
+
+
+def test_powershell_output_normalization_preserves_complete_fail_closed_message() -> None:
+    raw_output = (
+        "\x1b[31;1mLine |\x1b[0m\r\n"
+        "  86 |  \x1b[31;1mthrow \"release workflow contract rejected\"\x1b[0m\r\n"
+        "     |  \x1b[31;1m~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\x1b[0m\r\n"
+        "\x1b[31;1m     | \x1b[0m"
+        "\x1b[31;1mv0.2.4 uses a legacy or unknown immutable release workflow\x1b[0m\r\n"
+        "\x1b[31;1m     | \x1b[0m"
+        "\x1b[31;1mcontract and cannot be rerun safely. Keep the tag unchanged\x1b[0m\r\n"
+        "\x1b[31;1m     | \x1b[0m"
+        "\x1b[31;1mand publish a new version.\x1b[0m"
     )
+    completed = subprocess.CompletedProcess(
+        args=["pwsh", "-File", str(CONTRACT_CHECK)],
+        returncode=1,
+        stdout="",
+        stderr=raw_output,
+    )
+    ansi_and_whitespace_only = " ".join(
+        ANSI_CONTROL_SEQUENCE.sub("", raw_output).split()
+    )
+    normalized_output = _normalize_powershell_output(completed)
+
+    assert completed.returncode != 0
+    assert f"v0.2.4 {FAIL_CLOSED_MESSAGE}" not in raw_output
+    assert f"v0.2.4 {FAIL_CLOSED_MESSAGE}" not in ansi_and_whitespace_only
+    assert f"v0.2.4 {FAIL_CLOSED_MESSAGE}" in normalized_output
+    assert "Line |" in normalized_output
+    assert '86 | throw "release workflow contract rejected"' in normalized_output
+    assert "| ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" in normalized_output
