@@ -45,7 +45,20 @@ def test_prepare_release_owns_version_commit_tag_and_tag_ref_dispatch() -> None:
     assert "git @('tag', '-a'" in prepare
     assert "prerelease=$Prerelease" in prepare
     assert "'--ref', $env:RELEASE_TAG" in prepare
-    assert "'-f', \"tag=$env:RELEASE_TAG\"" in prepare
+    assert "'-f', \"version=$env:RELEASE_VERSION\"" in prepare
+    assert "'-f', \"prerelease=$env:RELEASE_PRERELEASE\"" in prepare
+    assert prepare.count("./scripts/check-release-workflow-contract.ps1") == 2
+    assert prepare.count("'-ContractRef', 'origin/main'") == 2
+    assert "legacy or unknown immutable release workflow contract" in prepare
+    assert prepare.rindex("./scripts/check-release-workflow-contract.ps1") < prepare.index(
+        "Dispatch tag-anchored"
+    )
+    existing_tag_path = prepare.split("if ($TagExists) {", 1)[1].split("} else {", 1)[0]
+    assert existing_tag_path.index(
+        "./scripts/check-release-workflow-contract.ps1"
+    ) < existing_tag_path.index("$TagMessage = @(") < existing_tag_path.index(
+        "git @('checkout', '--detach', $Tag)"
+    )
     assert prepare.index("tooling/release/version.py") < prepare.index(
         "git @('commit'"
     ) < prepare.index("git @('tag', '-a'") < prepare.index("Dispatch tag-anchored")
@@ -76,7 +89,8 @@ def test_release_is_anchored_to_exact_annotated_tag_and_source_commit() -> None:
         encoding="utf-8"
     )
 
-    assert "ref: ${{ inputs.tag }}" in workflow
+    assert "ref: v${{ inputs.version }}" in workflow
+    assert "inputs.tag" not in workflow
     assert 'if ($env:GITHUB_REF -ne "refs/tags/$Tag")' in workflow
     assert "$TagType -ne 'tag'" in workflow
     assert 'if ($env:GITHUB_SHA -ne $TagCommit)' in workflow
@@ -87,6 +101,83 @@ def test_release_is_anchored_to_exact_annotated_tag_and_source_commit() -> None:
     assert workflow.count("./scripts/check-release-tag-ruleset.ps1") == 2
     assert "'-Phase', 'Build start'" in workflow
     assert "'-Phase', 'Immediately before publish'" in workflow
+
+
+def test_windows_release_routes_main_to_prepare_and_builds_only_exact_tag() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8"
+    )
+    route = workflow.split("- name: Route release request", 1)[1].split(
+        "windows-x64:", 1
+    )[0]
+
+    assert "version:" in workflow
+    assert "prerelease:" in workflow
+    assert "without a v prefix" in route
+    assert "$env:GITHUB_REF -eq 'refs/heads/main'" in route
+    assert "'workflow', 'run', 'prepare-release.yml'" in route
+    assert "'--ref', 'main'" in route
+    assert "'-f', \"version=$Version\"" in route
+    assert "'-f', \"prerelease=$Prerelease\"" in route
+    assert '$ExpectedRef = "refs/tags/v$Version"' in route
+    assert "if ($env:GITHUB_REF -ne $ExpectedRef)" in route
+    assert "Run Windows Release from main or dispatch it with --ref" in route
+    assert "'mode=prepare'" in route
+    assert "'mode=build'" in route
+    assert "needs: route" in workflow
+    assert "if: needs.route.outputs.mode == 'build'" in workflow
+    assert "group: windows-release-${{ github.ref }}-${{ inputs.version }}" in workflow
+    assert "The tag-anchored Windows build and publish will appear as a separate" in route
+
+
+def test_prepare_dispatches_tag_anchored_release_with_unprefixed_version() -> None:
+    prepare = (ROOT / ".github" / "workflows" / "prepare-release.yml").read_text(
+        encoding="utf-8"
+    )
+    dispatch = prepare.split("- name: Dispatch tag-anchored Windows Release", 1)[1]
+
+    assert "'--ref', $env:RELEASE_TAG" in dispatch
+    assert "'-f', \"version=$env:RELEASE_VERSION\"" in dispatch
+    assert "'-f', \"prerelease=$env:RELEASE_PRERELEASE\"" in dispatch
+    assert "tag=$env:RELEASE_TAG" not in dispatch
+
+
+def test_javascript_actions_and_project_runtime_use_node_24() -> None:
+    workflows = {
+        path.name: path.read_text(encoding="utf-8")
+        for path in (ROOT / ".github" / "workflows").glob("*.yml")
+        if path.name in {"ci.yml", "prepare-release.yml", "release.yml"}
+    }
+    combined = "\n".join(workflows.values())
+    action_refs = re.findall(r"uses:\s+([^\s#]+)", combined)
+
+    expected_refs = {
+        "actions/checkout@v7",
+        "actions/setup-node@v7",
+        "actions/cache/restore@v6",
+        "actions/cache/save@v6",
+        "actions/upload-artifact@v7",
+        "astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990",
+    }
+    targeted_refs = {
+        ref
+        for ref in action_refs
+        if ref.startswith(
+            (
+                "actions/checkout@",
+                "actions/setup-node@",
+                "actions/cache/restore@",
+                "actions/cache/save@",
+                "actions/upload-artifact@",
+                "astral-sh/setup-uv@",
+            )
+        )
+    }
+
+    assert targeted_refs == expected_refs
+    assert combined.count("# v8.3.2") == 2
+    assert re.findall(r"node-version:\s+'(\d+)'", combined) == ["24", "24", "24"]
+    assert "node-version: '22'" not in combined
 
 
 def test_attestation_is_pinned_minimally_permitted_and_fail_closed() -> None:
@@ -196,8 +287,8 @@ def test_vcpkg_cache_is_saved_before_later_release_checks() -> None:
         encoding="utf-8"
     )
 
-    assert "actions/cache/restore@v4" in workflow
-    assert "actions/cache/save@v4" in workflow
+    assert "actions/cache/restore@v6" in workflow
+    assert "actions/cache/save@v6" in workflow
     assert workflow.index("Install and verify LGPL media wheel") < workflow.index(
         "Save vcpkg binary cache"
     ) < workflow.index("Lint Python")
@@ -215,7 +306,7 @@ def test_release_reuses_a_verified_final_media_wheel_cache() -> None:
     )[0]
     vcpkg_checkout = workflow.split("- name: Check out pinned vcpkg baseline", 1)[
         1
-    ].split("- uses: actions/setup-node@v4", 1)[0]
+    ].split("- uses: actions/setup-node@v7", 1)[0]
 
     assert "id: restore_media_wheel_cache" in workflow
     assert "path: tooling/packaging/dist/media-wheel" in workflow

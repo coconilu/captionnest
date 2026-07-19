@@ -31,7 +31,7 @@ jobs:
       RELEASE_PRERELEASE_INPUT: ${{ inputs.prerelease }}
     steps:
       - name: Check out current main with tags
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0
@@ -98,6 +98,15 @@ jobs:
             }
             $TagCommit = (& git @('rev-parse', "$Tag^{commit}")).Trim()
             if ($LASTEXITCODE -ne 0) { throw "Unable to resolve $Tag to a commit." }
+            $ExistingContractCheckArgs = @(
+              '-File', './scripts/check-release-workflow-contract.ps1',
+              '-Tag', $Tag,
+              '-ContractRef', 'origin/main'
+            )
+            & pwsh @ExistingContractCheckArgs
+            if ($LASTEXITCODE -ne 0) {
+              throw "$Tag uses a legacy or unknown immutable release workflow contract and cannot be rerun safely. Keep the tag unchanged and publish a new version."
+            }
             & git @('merge-base', '--is-ancestor', $TagCommit, 'origin/main')
             if ($LASTEXITCODE -ne 0) {
               throw "Existing $Tag points to $TagCommit outside current main history."
@@ -162,10 +171,21 @@ jobs:
             if ($LASTEXITCODE -ne 0) {
               throw "Unable to push $Tag; an existing tag will never be moved."
             }
+            $NewContractCheckArgs = @(
+              '-File', './scripts/check-release-workflow-contract.ps1',
+              '-Tag', $Tag,
+              '-ContractRef', 'origin/main'
+            )
+            & pwsh @NewContractCheckArgs
+            if ($LASTEXITCODE -ne 0) {
+              throw "$Tag does not contain the current immutable release workflow contract; keep it unchanged and publish a new version."
+            }
           }
 
           "RELEASE_TAG=$Tag" | Add-Content -LiteralPath $env:GITHUB_ENV
           "RELEASE_TAG_COMMIT=$TagCommit" | Add-Content -LiteralPath $env:GITHUB_ENV
+          "RELEASE_VERSION=$Version" | Add-Content -LiteralPath $env:GITHUB_ENV
+          "RELEASE_PRERELEASE=$Prerelease" | Add-Content -LiteralPath $env:GITHUB_ENV
 
       - name: Dispatch tag-anchored Windows Release
         shell: pwsh
@@ -174,7 +194,8 @@ jobs:
             'workflow', 'run', 'release.yml',
             '--repo', $env:GITHUB_REPOSITORY,
             '--ref', $env:RELEASE_TAG,
-            '-f', "tag=$env:RELEASE_TAG"
+            '-f', "version=$env:RELEASE_VERSION",
+            '-f', "prerelease=$env:RELEASE_PRERELEASE"
           )
           & gh @DispatchArgs
           if ($LASTEXITCODE -ne 0) {
@@ -185,5 +206,5 @@ jobs:
 
           - Tag: ``$env:RELEASE_TAG``
           - Commit: ``$env:RELEASE_TAG_COMMIT``
-          - Windows Release was dispatched with the tag itself as its workflow ref.
+          - Windows Release was dispatched separately with the tag itself as its workflow ref.
           "@ | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY

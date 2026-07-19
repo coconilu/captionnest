@@ -3,47 +3,115 @@ name: Windows Release
 on:
   workflow_dispatch:
     inputs:
-      tag:
-        description: '已由 Prepare Release 创建的 annotated tag，例如 v0.2.4'
+      version:
+        description: '要发布的版本号，例如 0.2.5（不要带 v）'
         required: true
         type: string
+      prerelease:
+        description: '标记为预发布版本'
+        required: true
+        type: boolean
+        default: false
 
-permissions:
-  contents: write
-  id-token: write
-  attestations: write
+permissions: {}
 
 concurrency:
-  group: windows-release-${{ inputs.tag }}
+  group: windows-release-${{ github.ref }}-${{ inputs.version }}
   cancel-in-progress: false
 
 jobs:
-  windows-x64:
-    runs-on: windows-latest
-    timeout-minutes: 180
+  route:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    outputs:
+      mode: ${{ steps.route.outputs.mode }}
     env:
       GH_TOKEN: ${{ github.token }}
-      RELEASE_TAG_INPUT: ${{ inputs.tag }}
+      RELEASE_VERSION_INPUT: ${{ inputs.version }}
+      RELEASE_PRERELEASE_INPUT: ${{ inputs.prerelease }}
+    steps:
+      - name: Route release request
+        id: route
+        shell: pwsh
+        run: |
+          $Version = $env:RELEASE_VERSION_INPUT.Trim()
+          if ($Version -ne $env:RELEASE_VERSION_INPUT) {
+            throw 'The version must not contain leading or trailing whitespace.'
+          }
+          if ($Version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
+            throw "Invalid version '$Version'. Use MAJOR.MINOR.PATCH without a v prefix."
+          }
+          $Prerelease = $env:RELEASE_PRERELEASE_INPUT.ToLowerInvariant()
+          if ($Prerelease -notin @('true', 'false')) {
+            throw "Invalid prerelease value '$Prerelease'."
+          }
+
+          if ($env:GITHUB_REF -eq 'refs/heads/main') {
+            $DispatchArgs = @(
+              'workflow', 'run', 'prepare-release.yml',
+              '--repo', $env:GITHUB_REPOSITORY,
+              '--ref', 'main',
+              '-f', "version=$Version",
+              '-f', "prerelease=$Prerelease"
+            )
+            & gh @DispatchArgs
+            if ($LASTEXITCODE -ne 0) {
+              throw "Unable to dispatch Prepare Release for v$Version."
+            }
+            'mode=prepare' | Add-Content -LiteralPath $env:GITHUB_OUTPUT
+            @"
+            ## Prepare Release dispatched
+
+            - Requested tag: ``v$Version``
+            - Prerelease: ``$Prerelease``
+            - This run only routed the request. Prepare Release will create or verify the annotated tag.
+            - The tag-anchored Windows build and publish will appear as a separate Windows Release run.
+            "@ | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+            exit 0
+          }
+
+          $ExpectedRef = "refs/tags/v$Version"
+          if ($env:GITHUB_REF -ne $ExpectedRef) {
+            throw "Run Windows Release from main or dispatch it with --ref v$Version; got $env:GITHUB_REF."
+          }
+          'mode=build' | Add-Content -LiteralPath $env:GITHUB_OUTPUT
+
+  windows-x64:
+    needs: route
+    if: needs.route.outputs.mode == 'build'
+    runs-on: windows-latest
+    timeout-minutes: 180
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_VERSION_INPUT: ${{ inputs.version }}
+      RELEASE_PRERELEASE_INPUT: ${{ inputs.prerelease }}
       RELEASE_PYTHON_VERSION: '3.12'
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\tooling\packaging\build\vcpkg-binary-cache
     steps:
       - name: Check out the exact release tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.tag }}
+          ref: v${{ inputs.version }}
           fetch-depth: 0
 
       - name: Validate tag, source commit, version, and rerun state
         shell: pwsh
         run: |
-          $Tag = $env:RELEASE_TAG_INPUT.Trim()
-          if ($Tag -ne $env:RELEASE_TAG_INPUT) {
-            throw 'The tag must not contain leading or trailing whitespace.'
+          $Version = $env:RELEASE_VERSION_INPUT.Trim()
+          if ($Version -ne $env:RELEASE_VERSION_INPUT) {
+            throw 'The version must not contain leading or trailing whitespace.'
           }
-          if ($Tag -notmatch '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
-            throw "Invalid tag '$Tag'. Use vMAJOR.MINOR.PATCH."
+          if ($Version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
+            throw "Invalid version '$Version'. Use MAJOR.MINOR.PATCH without a v prefix."
           }
-          $Version = $Tag.Substring(1)
+          $Tag = "v$Version"
           if ($env:GITHUB_REF -ne "refs/tags/$Tag") {
             throw "This workflow must be dispatched with --ref $Tag; got $env:GITHUB_REF."
           }
@@ -89,6 +157,9 @@ jobs:
             throw "$Tag must contain exactly one prerelease=true|false marker."
           }
           $Prerelease = $Markers[0].Substring('prerelease='.Length)
+          if ($Prerelease -ne $env:RELEASE_PRERELEASE_INPUT.ToLowerInvariant()) {
+            throw "$Tag prerelease metadata does not match this workflow request."
+          }
 
           $ReleaseListArgs = @(
             'release', 'list', '--repo', $env:GITHUB_REPOSITORY,
@@ -129,7 +200,7 @@ jobs:
 
       - name: Restore LGPL media wheel cache
         id: restore_media_wheel_cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: tooling/packaging/dist/media-wheel
           key: >-
@@ -137,19 +208,19 @@ jobs:
 
       - name: Check out pinned vcpkg baseline
         if: steps.restore_media_wheel_cache.outputs.cache-hit != 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: microsoft/vcpkg
           ref: db4723bd0a99eab031f1a3dee4336dca43049c87
           path: tooling/packaging/build/vcpkg
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '24'
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           python-version: ${{ env.RELEASE_PYTHON_VERSION }}
           enable-cache: true
@@ -161,7 +232,7 @@ jobs:
       - name: Restore vcpkg binary cache
         if: steps.restore_media_wheel_cache.outputs.cache-hit != 'true'
         id: restore_vcpkg_cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: tooling/packaging/build/vcpkg-binary-cache
           key: vcpkg-windows-x64-${{ hashFiles('tooling/packaging/media-runtime/vcpkg.json') }}
@@ -201,7 +272,7 @@ jobs:
 
       - name: Save LGPL media wheel cache
         if: steps.restore_media_wheel_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: tooling/packaging/dist/media-wheel
           key: >-
@@ -211,7 +282,7 @@ jobs:
         if: >-
           steps.restore_media_wheel_cache.outputs.cache-hit != 'true' &&
           steps.restore_vcpkg_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: tooling/packaging/build/vcpkg-binary-cache
           key: vcpkg-windows-x64-${{ hashFiles('tooling/packaging/media-runtime/vcpkg.json') }}
@@ -291,7 +362,7 @@ jobs:
             -ExpectedVersion $env:RELEASE_VERSION
 
       - name: Upload validated workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: captionnest-windows-x64-${{ env.RELEASE_TAG }}
           if-no-files-found: error

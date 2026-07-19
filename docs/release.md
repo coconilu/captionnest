@@ -32,11 +32,11 @@ flowchart TD
     H --> I["发布 Immutable Release"]
 ```
 
-推荐发布入口是 GitHub Actions 的 `Prepare Release`。维护者从 `main` 手动输入不带 `v` 的版本号（例如 `0.2.4`）及是否为预发布。该 workflow 更新全部项目版本、提交 `main`、创建绝不移动的 annotated tag，然后以该 tag 作为 workflow ref 显式 dispatch 独立的 `Windows Release`。之所以显式 dispatch，是因为使用 `GITHUB_TOKEN` 推送 tag 不会递归触发新的 workflow run。
+推荐发布入口是 GitHub Actions 的 `Windows Release`：从 `main` 输入不带 `v` 的版本号（例如 `0.2.5`）及是否为预发布。该入口本身不构建，而是先 dispatch `Prepare Release`；Prepare 更新全部项目版本、提交 `main`、创建绝不移动的 annotated tag，再以该 tag 作为 workflow ref 显式 dispatch 独立的 `Windows Release` 构建 run。维护者也可以直接运行 `Prepare Release`，结果完全相同。之所以显式 dispatch，是因为使用 `GITHUB_TOKEN` 推送 tag 不会递归触发新的 workflow run。
 
-`Windows Release` 只接受既有 tag，精确 checkout 后同时校验：`GITHUB_REF` 是该 tag、`GITHUB_SHA` 等于 tag commit、tag 是 annotated tag、项目版本等于 tag 版本。之后才构建、测试、执行许可证门禁与安装冒烟；全部通过后为最终 EXE 生成 build provenance，创建或恢复 Draft Release，逐个比对四项资产的名称、大小和 GitHub SHA-256 digest，最后发布 Immutable Release。
+`Windows Release` 只有在 ref 为输入版本对应的既有 tag 时才进入构建；从 `main` 运行只负责路由，其他 ref 明确失败。tag run 精确 checkout 后同时校验：`GITHUB_REF` 是该 tag、`GITHUB_SHA` 等于 tag commit、tag 是 annotated tag、项目版本等于 tag 版本、`prerelease` 输入等于 tag 元数据。之后才构建、测试、执行许可证门禁与安装冒烟；全部通过后为最终 EXE 生成 build provenance，创建或恢复 Draft Release，逐个比对四项资产的名称、大小和 GitHub SHA-256 digest，最后发布 Immutable Release。
 
-`actions/attest` 固定为完整提交 `f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6`（v4.2.0），只传最终 EXE 的 `subject-path`，并记录官方 action 输出的 `attestation-id` 与 `attestation-url`。Release job 的权限边界是 `contents: write`（Draft/Release）、`id-token: write`（GitHub OIDC）和 `attestations: write`（写入证明）；Prepare 另有 `actions: write` 用于独立 dispatch。流程不引入 secret、证书文件或长期私钥。
+`actions/attest` 固定为完整提交 `f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6`（v4.2.0），只传最终 EXE 的 `subject-path`，并记录官方 action 输出的 `attestation-id` 与 `attestation-url`。tag 构建 job 的权限边界是 `contents: write`（Draft/Release）、`id-token: write`（GitHub OIDC）和 `attestations: write`（写入证明）；`Windows Release` 的路由 job 与 Prepare 各有 `actions: write` 用于独立 dispatch，且路由 job 不 checkout 或执行仓库代码。流程不引入 secret、证书文件或长期私钥。
 
 仓库还必须存在 active tag ruleset：包含 `refs/tags/v*`、同时限制 update 与 deletion、没有 bypass actor，且 workflow token 不可 bypass。Release run 会在构建开始和最终 publish PATCH 紧邻前各验证一次；active、tag target、精确 include、空 exclude、update 与 deletion 始终 fail closed。GitHub 的 ruleset API 只在调用者拥有 ruleset 写权限时返回 `bypass_actors`，但 `current_user_can_bypass` 仍可能对普通 `GITHUB_TOKEN` 可见。因此校验采用精确三态：`bypass_actors` 可见时必须为 `[]`，并且 `current_user_can_bypass` 必须同时可见且为 `never`；`bypass_actors` 不可见时，只接受 current 字段也缺失或严格为 `never`，这两种情况都会带告警继续，并在日志和 Job Summary 明确标记“管理员 bypass 列表是外部前置条件，未由本次 workflow 验证”；`bypass_actors` 缺失但 current 字段为其他值或空值，以及 `bypass_actors` 可见但 current 字段缺失，都会立即 fail closed。最终门禁还会重新读取远端 annotated tag 的 peeled commit，并要求它同时等于 `RELEASE_TAG_COMMIT` 和 `GITHUB_SHA`。规则失效、可见 bypass 状态不安全、管理员字段出现不安全非对称响应、tag 被删除/改成 lightweight tag 或 commit 发生变化时，Draft 可以保留供诊断，但绝不会发送 publish PATCH。
 
@@ -46,8 +46,8 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    A["Prepare 输入 0.2.4"] --> B["更新版本并提交 main"]
-    B --> C["创建 annotated v0.2.4"]
+    A["Windows Release / main 输入 0.2.5"] --> B["dispatch Prepare Release"]
+    B --> C["更新版本并创建 annotated v0.2.5"]
     C --> D["以 tag ref dispatch Windows Release"]
     D --> E["精确 tag 构建、测试与冒烟"]
     E --> F["EXE build provenance"]
@@ -57,28 +57,30 @@ flowchart LR
 
 Release 说明不调用 AI。固定模板包含 Windows 下载、三种在线验证命令、build provenance URL、SmartScreen 与 LGPL 构建证据说明。
 
-维护者的唯一发布操作如下：
+维护者可使用以下任一入口；通常选择 `Windows Release`：
 
-| 操作 | 值 |
+| 配置 | 值 |
 |---|---|
-| 打开 | `Actions` → `Prepare Release` → `Run workflow` |
+| 推荐入口 | `Actions` → `Windows Release` → `Run workflow` |
+| 直接 Prepare | `Actions` → `Prepare Release` → `Run workflow` |
 | 分支 | `main` |
-| `version` | 新版本号，例如 `0.2.4`，不要带 `v` |
+| `version` | 新版本号，例如 `0.2.5`，不要带 `v` |
 | `prerelease` | 正式版保持关闭，测试版打开 |
 
 ## 失败与安全重试
 
-新架构刻意接受“已经有 tag、尚无 Release”这一可恢复状态。失败时不得删除或移动 tag 来伪装重建：
+新架构仅接受“由当前发布契约创建、已经有 tag、尚无 Release”这一可恢复状态。Prepare 会在 dispatch 前读取 tag 内的 `.github/workflows/release.yml`，要求它明确声明必需的 `version`/`prerelease` 输入，并与当前 tag-anchored 安全构建工作流完全一致。旧版或未知契约一律 fail closed；失败时不得删除或移动 tag 来伪装重建：
 
 | 失败状态 | 安全重试语义 |
 |---|---|
 | 版本提交前失败 | 修复原因后从 `main` 重跑 `Prepare Release` |
 | 已提交版本、尚未创建 tag | 用相同版本和 `prerelease` 重跑；版本更新幂等，tag 固定到当前版本提交 |
-| tag 已存在、无 Release | 用相同输入重跑 `Prepare Release`；它只会验证 annotated tag、版本、main 历史与 tag 元数据，再次 dispatch |
-| Draft Release 已存在 | 对同一 tag 重跑 `Windows Release`；仅允许覆盖该 Draft 中四个预期同名资产，随后重新核对完整集合与 digest |
+| 当前契约 tag 已存在、无 Release | 用相同输入重跑 `Prepare Release`；它会验证 annotated tag、版本、main 历史、tag 元数据和 tag 内发布工作流契约，再次 dispatch |
+| legacy/未知契约 tag 已存在 | 保留 immutable tag，不得改用旧 `tag` 输入、移动或删除 tag；该 tag 不能安全重跑，必须发布一个从未使用的新版本 |
+| 当前契约的 Draft Release 已存在 | 从同一 tag 重跑 `Windows Release`，输入不带 `v` 的同版本号和匹配的 `prerelease`；仅允许覆盖该 Draft 中四个预期同名资产，随后重新核对完整集合与 digest |
 | Release 已发布 | 永久拒绝覆盖或移动 tag；任何修复必须发布新版本 |
 
-`v0.2.2` 和 `v0.2.3` 都是已知失败发布留下的受保护 annotated tag，且都没有对应 Draft 或 Release。`v0.2.2` 因管理员字段完全不可见时的旧误判失败；`v0.2.3` 的 run 29642143052 因生产 API 合法返回“`bypass_actors` 缺失、`current_user_can_bypass=never`”而被旧 XOR 规则误判。不得移动或删除这两个 tag，本修复合并后的首次发布必须使用新版本 `v0.2.4`。
+`v0.2.2`、`v0.2.3`、`v0.2.4` 等既有 tag 保存的是旧版 `Windows Release` 输入或安全逻辑，不能通过当前 Prepare 安全重跑。`v0.2.2` 因管理员字段完全不可见时的旧误判失败；`v0.2.3` 的 run 29642143052 因生产 API 合法返回“`bypass_actors` 缺失、`current_user_can_bypass=never`”而被旧 XOR 规则误判。不得移动或删除这些 tag；下一次发布必须使用从未创建过的新版本（当前应从 `v0.2.5` 开始）。
 
 构建、测试、许可证检查、安装冒烟、`actions/attest`、Draft 资产上传或 digest 核对任一步失败，都不会发布最终 Release。与旧流程不同，失败时**可能已经留下版本提交和 tag**；这是确保 attestation source commit 与 Release tag commit 完全一致的必要边界。
 
