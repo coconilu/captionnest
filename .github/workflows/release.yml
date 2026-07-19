@@ -62,14 +62,15 @@ jobs:
               throw "Unable to dispatch Prepare Release for v$Version."
             }
             'mode=prepare' | Add-Content -LiteralPath $env:GITHUB_OUTPUT
-            @"
-            ## Prepare Release dispatched
-
-            - Requested tag: ``v$Version``
-            - Prerelease: ``$Prerelease``
-            - This run only routed the request. Prepare Release will create or verify the annotated tag.
-            - The tag-anchored Windows build and publish will appear as a separate Windows Release run.
-            "@ | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+            $SummaryLines = @(
+              '## Prepare Release dispatched',
+              '',
+              "- Requested tag: ``v$Version``",
+              "- Prerelease: ``$Prerelease``",
+              '- This run only routed the request. Prepare Release will create or verify the annotated tag.',
+              '- The tag-anchored Windows build and publish will appear as a separate Windows Release run.'
+            )
+            $SummaryLines | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
             exit 0
           }
 
