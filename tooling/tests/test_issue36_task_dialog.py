@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -80,7 +81,13 @@ def test_task_dialog_opens_with_editable_recognition_translation_and_export() ->
     settings = source("components/SettingsPanel.tsx")
     dialog_content = app.split("<CreateTaskDialog", maxsplit=1)[1]
 
-    assert "initiallyOpen" in dialog_content
+    assert "<SettingsPanel" in dialog_content
+    assert "initiallyOpen" not in dialog_content
+    advanced_options = re.search(
+        r"<details[^>]*className=\"advanced-options\"[^>]*>", settings
+    )
+    assert advanced_options, "SettingsPanel 应保留高级选项折叠区"
+    assert " open" not in advanced_options.group(0), "高级选项应默认折叠"
     assert all(
         label in settings
         for label in ("识别设置", "翻译设置", "导出设置", "识别模型", "目标语言")
