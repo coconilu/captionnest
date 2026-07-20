@@ -1,7 +1,8 @@
-import { Boxes, GitBranch } from 'lucide-react'
+import { Boxes, FolderOpen, GitBranch } from 'lucide-react'
 import { useState } from 'react'
 
-import { formatBytes, formatDuration, formatTokenCount } from '../lib/format'
+import { openOutputFolder } from '../lib/actions'
+import { formatBytes } from '../lib/format'
 import type {
   AsrStepConfig,
   ExportStepConfig,
@@ -26,20 +27,25 @@ const STEP_LABELS: Record<JobStepId, string> = {
 
 const PREVIEW_STEPS: JobStepId[] = ['media', 'transcription', 'translation', 'export']
 
-function configSummary(step: JobStepView): string {
+interface StepSummary {
+  text: string
+  title?: string
+}
+
+function configSummary(step: JobStepView): StepSummary {
   if (step.id === 'media') {
     const config = step.config as MediaStepConfig
-    return config.name
+    return { text: config.name }
   }
   if (step.id === 'transcription') {
     const config = step.config as AsrStepConfig
-    const device = config.device === 'cuda' ? 'CUDA' : 'CPU'
+    const device = config.device === 'cuda' ? 'GPU' : 'CPU'
     const mode = config.output_mode === 'word_resegmented' ? '逐词重排' : '原始分片'
     const boundary = config.dynamic_chunking ? '动态边界' : '固定边界'
     const retry = config.selective_retry ? '二次识别' : '单次识别'
     const timestamps = config.timestamp_normalization ? '实验校时' : '原始时间轴'
     const hotwords = config.hotwords?.length ? ` · ${config.hotwords.length} 个提示词` : ''
-    return `${config.model} · ${device} · ${mode} · ${boundary} · ${retry} · ${timestamps}${hotwords}`
+    return { text: `${config.model} · ${device} · ${mode} · ${boundary} · ${retry} · ${timestamps}${hotwords}` }
   }
   if (step.id === 'translation') {
     const config = step.config as TranslationStepConfig
@@ -49,12 +55,17 @@ function configSummary(step: JobStepView): string {
       lmstudio: 'LM Studio',
       deepseek: 'DeepSeek',
     }[config.provider]
-    return `${target} · ${provider}${config.model ? ` · ${config.model}` : ''}`
+    return {
+      text: `${target} · ${provider}`,
+      title: config.model ? `${target} · ${provider} · ${config.model}` : undefined,
+    }
   }
   const config = step.config as ExportStepConfig
-  return config.output_directory
-    ? `输出至 ${config.output_directory}`
-    : '输出至源视频目录 · 双语 SRT'
+  return {
+    text: config.output_directory
+      ? `输出至 ${config.output_directory}`
+      : '输出至源视频目录 · 双语 SRT',
+  }
 }
 
 function artifactSummary(step: JobStepView): string | null {
@@ -82,6 +93,7 @@ interface WorkflowPipelineProps {
   onUpdateStep: (step: JobStepId, config: JobStepConfig) => Promise<void>
   onRunStep: (step: JobStepId) => Promise<void>
   onReplaceMedia: () => Promise<void>
+  onActionError: (message: string | null) => void
 }
 
 export function WorkflowPipeline({
@@ -93,6 +105,7 @@ export function WorkflowPipeline({
   onUpdateStep,
   onRunStep,
   onReplaceMedia,
+  onActionError,
 }: WorkflowPipelineProps) {
   const [editingStep, setEditingStep] = useState<JobStepId | null>(null)
   const [savingStep, setSavingStep] = useState<JobStepId | null>(null)
@@ -154,7 +167,7 @@ export function WorkflowPipeline({
       <div className="pipeline-heading">
         <div>
           <span className="panel-step-label">任务流水线 · {job.id.slice(0, 8)}</span>
-          <h2 id="pipeline-title">可配置、可恢复的字幕任务</h2>
+          <h2 id="pipeline-title">处理步骤</h2>
         </div>
         <span className={`pipeline-job-status is-${job.status}`}>
           {job.status === 'completed'
@@ -173,51 +186,35 @@ export function WorkflowPipeline({
         </span>
       </div>
 
-      <details className="pipeline-metrics-disclosure">
-        <summary>查看任务累计指标</summary>
-        <div className="pipeline-job-metrics" aria-label="任务累计指标">
-          <div>
-            <span>自然时间跨度</span>
-            <strong>{job.wall_duration_ms === null
-              ? '尚未开始'
-              : formatDuration(job.wall_duration_ms)}</strong>
-          </div>
-          <div>
-            <span>Attempt 累计耗时</span>
-            <strong>{job.cumulative_attempt_duration_ms === null
-              ? '尚无完整记录'
-              : formatDuration(job.cumulative_attempt_duration_ms)}</strong>
-          </div>
-          <div>
-            <span>模型总 Token</span>
-            <strong>{job.total_model_usage
-              ? formatTokenCount(job.total_model_usage.total_tokens)
-              : '尚无模型调用'}</strong>
-            {job.total_model_usage ? (
-              <small>
-                {job.total_model_usage.request_count} 次请求 · {job.total_model_usage.complete
-                  ? '完整报告'
-                  : '部分报告'}
-              </small>
-            ) : null}
-          </div>
-        </div>
-      </details>
-
       <div className="pipeline-step-grid">
         {job.steps.map((step, index) => {
           const editing = editingStep === step.id
           const busy = disabled || savingStep !== null || runningStep !== null
+          const summary = configSummary(step)
+          const exportReady = step.id === 'export'
+            && step.status === 'succeeded'
+            && Boolean(step.artifact?.path)
           return (
             <PipelineStepCard
               key={step.id}
               step={step}
               index={index + 1}
               label={STEP_LABELS[step.id]}
-              summary={configSummary(step)}
+              summary={summary.text}
+              summaryTitle={summary.title}
               artifactSummary={artifactSummary(step)}
               editing={editing}
               disabled={busy}
+              headerAction={exportReady ? (
+                <button
+                  type="button"
+                  className="pipeline-open-folder-button"
+                  onClick={() => void openOutputFolder(step.artifact?.path, onActionError)}
+                >
+                  <FolderOpen size={15} />
+                  打开所在文件夹
+                </button>
+              ) : undefined}
               onToggleEdit={() => setEditingStep(editing ? null : step.id)}
               onRun={() => void run(step.id)}
               onReplaceMedia={step.id === 'media'

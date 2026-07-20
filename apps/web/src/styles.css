@@ -534,55 +534,6 @@ textarea:disabled {
   background: var(--surface);
 }
 
-.task-summary {
-  padding: 17px 18px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface-teal);
-}
-
-.task-summary-heading {
-  margin-top: 12px;
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.task-summary-heading h2 {
-  margin: 0;
-  color: var(--text);
-  font-size: 14px;
-  line-height: 1.25;
-}
-
-.task-summary-heading p {
-  margin: 4px 0 0;
-  color: var(--muted);
-  font-size: 10px;
-}
-
-.summary-settings-button {
-  width: 34px;
-  height: 34px;
-  padding: 0;
-  border: 0;
-  border-radius: 10px;
-  flex: 0 0 auto;
-  display: grid;
-  place-items: center;
-  color: var(--accent);
-  background: transparent;
-  cursor: pointer;
-  transition: background 150ms ease, color 150ms ease;
-}
-
-.summary-settings-button:hover,
-.summary-settings-button[aria-expanded="true"] {
-  color: #fff;
-  background: var(--accent);
-}
-
 .summary-chips {
   margin-top: 15px;
   display: flex;
@@ -3590,6 +3541,32 @@ textarea {
   background: #121417;
 }
 
+.column-resizer {
+  min-width: 0;
+  position: relative;
+  cursor: col-resize;
+  background: transparent;
+  touch-action: none;
+}
+
+.column-resizer::after {
+  content: '';
+  position: absolute;
+  inset: 0 2px;
+  border-radius: 2px;
+  background: transparent;
+  transition: background 120ms ease;
+}
+
+.column-resizer:hover::after {
+  background: #2a3f45;
+}
+
+.column-resizer.is-active::after,
+.column-resizer:active::after {
+  background: var(--accent);
+}
+
 .multi-task-workbench {
   width: 100%;
   height: 100%;
@@ -4312,15 +4289,25 @@ textarea {
 }
 
 .pipeline-step-header h3 {
+  overflow: hidden;
   color: var(--text);
   font-size: var(--text-sm);
   line-height: var(--line-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pipeline-step-header > div {
+  min-width: 0;
 }
 
 .pipeline-step-status {
+  overflow: hidden;
   color: var(--muted);
   font-size: var(--text-xs);
   line-height: var(--line-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pipeline-step-status svg {
@@ -4628,88 +4615,20 @@ textarea {
 
 .settings-sidebar,
 .settings-section,
-.task-summary,
 .settings-drawer,
 .settings-content {
   color: var(--text);
   background: transparent;
 }
 
-.task-summary {
-  padding: 16px;
-}
-
-.task-summary-heading h2,
 .section-heading h2,
 .environment-section-heading h2 {
   color: var(--text);
 }
 
-.task-summary-heading p,
 .section-heading span,
 .environment-section-heading span {
   color: var(--muted);
-}
-
-.summary-settings-button {
-  width: auto;
-  min-width: 62px;
-  min-height: 28px;
-  padding: 0 8px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  color: var(--muted);
-  background: #23272e;
-  font-size: var(--text-sm);
-  line-height: var(--line-sm);
-}
-
-.summary-config-list {
-  margin-top: 12px;
-  display: grid;
-  gap: 8px;
-}
-
-.summary-config-list > span {
-  min-height: 44px;
-  padding: 0 12px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  background: #1d2026;
-}
-
-.summary-config-list small {
-  color: var(--muted);
-  font-size: var(--text-xs);
-  line-height: var(--line-xs);
-}
-
-.summary-config-list strong {
-  overflow: hidden;
-  color: var(--text);
-  font-size: var(--text-sm);
-  font-weight: 500;
-  line-height: var(--line-sm);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.task-summary-note {
-  margin: 12px 0 0;
-  padding: 12px;
-  border-radius: 6px;
-  color: var(--muted);
-  background: #23272e;
-  font-size: var(--text-xs);
-  line-height: var(--line-xs);
 }
 
 .settings-section {
@@ -5074,54 +4993,41 @@ textarea {
 .batch-creator-settings {
   padding: 0;
   border-color: var(--border);
-  position: relative;
+  overflow: hidden;
   background: #191c20;
 }
 
 .batch-creator-settings .settings-sidebar {
   width: 100%;
   height: 100%;
+  padding: 16px 15px 20px;
   border: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   background: transparent;
-}
-
-.batch-creator-settings .task-summary {
-  padding: 16px 15px;
-}
-
-.batch-creator-settings .task-summary-heading h2 {
-  font-size: var(--text-md);
-  line-height: var(--line-md);
-}
-
-.batch-creator-settings .task-summary-heading p {
-  display: none;
-}
-
-.batch-creator-settings .summary-settings-button {
-  border-color: transparent;
-  background: transparent;
-}
-
-.batch-creator-settings .summary-config-list {
-  margin-top: 12px;
-  gap: 9px;
-}
-
-.batch-creator-settings .summary-config-list > span {
-  min-height: 44px;
 }
 
 .batch-creator-settings .settings-drawer {
-  position: absolute;
-  inset: 44px 0 0;
-  z-index: 2;
-  overflow-y: auto;
-  border-top: 1px solid var(--border);
-  background: #191c20;
+  border: 0;
+  border-radius: 0;
+  overflow: visible;
+  background: transparent;
+  box-shadow: none;
 }
 
-.batch-creator-settings .task-summary-note {
+.batch-creator-settings .settings-content {
+  max-height: none;
+  overflow: visible;
+}
+
+.batch-creator-settings .settings-section {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #181a1f;
+}
+
+.batch-creator-settings .settings-section + .settings-section {
   margin-top: 12px;
 }
 
@@ -5434,7 +5340,7 @@ textarea {
   }
 
   .batch-creator-main,
-  .batch-creator-settings .task-summary {
+  .batch-creator-settings .settings-sidebar {
     padding: 14px;
   }
 
@@ -5455,4 +5361,99 @@ textarea {
     min-width: 0;
     padding: 0 6px;
   }
+}
+
+/* 三栏拖拽布局之外的新组件样式 */
+
+.task-inspector-heading {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.task-inspector-heading .delete-job-button {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.advanced-options {
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #1d2026;
+}
+
+.advanced-options > summary {
+  min-height: 40px;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-soft);
+  font-size: var(--text-sm);
+  line-height: var(--line-sm);
+  cursor: pointer;
+  list-style: none;
+}
+
+.advanced-options > summary::-webkit-details-marker {
+  display: none;
+}
+
+.advanced-options > summary svg {
+  transition: transform 140ms ease;
+}
+
+.advanced-options[open] > summary svg {
+  transform: rotate(180deg);
+}
+
+.advanced-options-body {
+  padding: 4px 12px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.pipeline-open-folder-button {
+  min-height: 36px;
+  margin: 8px 9px 0;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  color: #0a0d0f;
+  background: var(--accent);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  line-height: var(--line-sm);
+  cursor: pointer;
+}
+
+.pipeline-open-folder-button:hover:not(:disabled) {
+  border-color: var(--accent-bright, var(--accent));
+  color: #0a0d0f;
+  background: var(--accent-bright, var(--accent));
+}
+
+.inline-error-action {
+  min-height: 24px;
+  margin-left: auto;
+  padding: 0 10px;
+  border: 1px solid currentColor;
+  border-radius: 5px;
+  flex: 0 0 auto;
+  align-self: center;
+  color: inherit;
+  background: transparent;
+  font-size: var(--text-sm);
+  line-height: var(--line-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.inline-error-action:hover {
+  background: rgba(255, 255, 255, 0.08);
 }

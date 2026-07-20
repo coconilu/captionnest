@@ -46,6 +46,31 @@ export function formatDateTime(timestamp?: string | null) {
   }).format(date)
 }
 
+export function formatRelativeTime(timestamp?: string | null) {
+  if (!timestamp) return '尚未开始'
+  const date = new Date(timestamp)
+  if (Number.isNaN(date.getTime())) return timestamp
+  const diffMs = Date.now() - date.getTime()
+  if (diffMs < 0) return '刚刚'
+  const seconds = Math.floor(diffMs / 1_000)
+  if (seconds < 60) return '刚刚'
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes} 分钟前`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours} 小时前`
+  const days = Math.floor(hours / 24)
+  if (days < 30) return `${days} 天前`
+  return formatDateTime(timestamp)
+}
+
+export function formatBatchStamp(timestamp?: string | null) {
+  if (!timestamp) return ''
+  const date = new Date(timestamp)
+  if (Number.isNaN(date.getTime())) return ''
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
 export function formatDuration(durationMs?: number | null) {
   if (durationMs === null || durationMs === undefined) return '未记录'
   if (durationMs < 1_000) return `${durationMs} 毫秒`

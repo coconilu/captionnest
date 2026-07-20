@@ -1,5 +1,5 @@
 import { AlertCircle, LoaderCircle, MousePointerClick } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
   deleteJob,
@@ -21,6 +21,7 @@ import { TaskInspectorHeader } from './components/TaskInspectorHeader'
 import { WorkflowPipeline } from './components/WorkflowPipeline'
 import { useAppVersion } from './hooks/useAppVersion'
 import { useBackendStatus } from './hooks/useBackendStatus'
+import { useColumnLayout } from './hooks/useColumnLayout'
 import { useEnvironmentStatus } from './hooks/useEnvironmentStatus'
 import { useJobSummaries } from './hooks/useJobSummaries'
 import { useModelCatalog } from './hooks/useModelCatalog'
@@ -84,6 +85,8 @@ export function App() {
   const selectedJob = useSelectedJob(selectedJobId, connected)
   const selectedJobDetail = selectedJob.job
   const refreshSelectedJob = selectedJob.refresh
+  const layoutRef = useRef<HTMLDivElement>(null)
+  const columnLayout = useColumnLayout(layoutRef)
 
   const selectedModel = models.find((item) => item.id === settings.asrModel)
   const selectedAsrProvider: AsrProvider = selectedModel?.provider ?? 'faster_whisper'
@@ -196,6 +199,13 @@ export function App() {
     ?? (settings.provider === 'deepseek' && !settings.deepseekApiKey.trim()
       ? '创建并启动 DeepSeek 任务前，请填写本次运行的 API Key'
       : null)
+  const modelDownloadRequired = selectedModelStatus === 'missing'
+    || selectedModelStatus === 'damaged'
+
+  const handleGoToModels = useCallback(() => {
+    setCreatorOpen(false)
+    setActiveView('services')
+  }, [])
 
   useEffect(() => {
     if (!summaryStore.items.length) {
@@ -479,11 +489,47 @@ export function App() {
         cudaAvailable={cudaAvailable}
         onRefresh={() => void handleFullRefresh()}
       />
-      <div className="app-layout">
+      <div
+        className="app-layout"
+        ref={layoutRef}
+        style={columnLayout.enabled
+          ? { gridTemplateColumns: `${columnLayout.widths.nav}px 6px minmax(0, 1fr)` }
+          : undefined}
+      >
         <AppSidebar activeView={activeView} onSelect={setActiveView} />
+        {columnLayout.enabled ? (
+          <div
+            className={`column-resizer ${columnLayout.resizing === 'nav' ? 'is-active' : ''}`}
+            role="separator"
+            tabIndex={0}
+            aria-orientation="vertical"
+            aria-label="调整导航列宽度"
+            aria-valuenow={columnLayout.widths.nav}
+            aria-valuemin={120}
+            aria-valuemax={columnLayout.widths.nav + columnLayout.widths.list - 320}
+            title="拖动调整宽度，左右方向键微调，双击恢复默认比例"
+            onPointerDown={columnLayout.startResize('nav')}
+            onPointerMove={columnLayout.onHandlePointerMove}
+            onPointerUp={columnLayout.onHandlePointerEnd}
+            onPointerCancel={columnLayout.onHandlePointerEnd}
+            onDoubleClick={columnLayout.resetRatios}
+            onKeyDown={(event) => {
+              if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+                event.preventDefault()
+                columnLayout.resizeBy('nav', event.key === 'ArrowRight' ? 16 : -16)
+              }
+            }}
+          />
+        ) : null}
         <main className="app-workspace">
           {activeView === 'tasks' ? (
-            <section className="master-detail-layout" aria-label="任务列表与详情">
+            <section
+              className="master-detail-layout"
+              aria-label="任务列表与详情"
+              style={columnLayout.enabled
+                ? { gridTemplateColumns: `${columnLayout.widths.list}px 6px minmax(0, 1fr)` }
+                : undefined}
+            >
               <JobListPanel
                 items={summaryStore.items}
                 batches={summaryStore.batches}
@@ -500,6 +546,30 @@ export function App() {
                 onToggleVisible={handleToggleVisible}
                 onBulkAction={(action) => void handleBulkAction(action)}
               />
+              {columnLayout.enabled ? (
+                <div
+                  className={`column-resizer ${columnLayout.resizing === 'list' ? 'is-active' : ''}`}
+                  role="separator"
+                  tabIndex={0}
+                  aria-orientation="vertical"
+                  aria-label="调整任务列表与详情宽度"
+                  aria-valuenow={columnLayout.widths.list}
+                  aria-valuemin={320}
+                  aria-valuemax={columnLayout.widths.list + columnLayout.widths.detail - 340}
+                  title="拖动调整宽度，左右方向键微调，双击恢复默认比例"
+                  onPointerDown={columnLayout.startResize('list')}
+                  onPointerMove={columnLayout.onHandlePointerMove}
+                  onPointerUp={columnLayout.onHandlePointerEnd}
+                  onPointerCancel={columnLayout.onHandlePointerEnd}
+                  onDoubleClick={columnLayout.resetRatios}
+                  onKeyDown={(event) => {
+                    if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+                      event.preventDefault()
+                      columnLayout.resizeBy('list', event.key === 'ArrowRight' ? 16 : -16)
+                    }
+                  }}
+                />
+              ) : null}
 
               <section className="job-detail-panel" aria-label="当前任务详情">
                 {selectedJob.loading && !detailJob ? (
@@ -516,7 +586,11 @@ export function App() {
                   </div>
                 ) : detailJob ? (
                   <>
-                    <TaskInspectorHeader job={detailJob} />
+                    <TaskInspectorHeader
+                      job={detailJob}
+                      disabled={selectedMutationBusy}
+                      onDeleteJob={() => void handleDeleteJob()}
+                    />
                     <WorkflowPipeline
                       key={detailJob.id}
                       job={detailJob}
@@ -529,14 +603,13 @@ export function App() {
                       onUpdateStep={handleUpdateJobStep}
                       onRunStep={handleRunJobStep}
                       onReplaceMedia={handleReplaceTaskMedia}
+                      onActionError={(message) => setDetailError(detailJob.id, message)}
                     />
                     <TaskConsole
                       job={detailJob}
                       pollError={selectedJob.error}
                       actionError={detailError}
                       onActionError={(message) => setDetailError(detailJob.id, message)}
-                      onDeleteJob={() => void handleDeleteJob()}
-                      disabled={selectedMutationBusy}
                     />
                   </>
                 ) : (
@@ -592,7 +665,6 @@ export function App() {
                   canStart={!configValidationError}
                   startHint={configValidationError ?? '配置可用'}
                   showStartAction={false}
-                  initiallyOpen
                   onChange={setSettings}
                   onStart={() => undefined}
                 />
@@ -621,6 +693,7 @@ export function App() {
           onBusyChange={setBatchBusy}
           onCreated={handleBatchCreated}
           onClose={() => setCreatorOpen(false)}
+          onGoToModels={modelDownloadRequired ? handleGoToModels : undefined}
         >
           <SettingsPanel
             value={settings}
@@ -629,7 +702,6 @@ export function App() {
             canStart={!configValidationError}
             startHint={configValidationError ?? '批次配置可用'}
             showStartAction={false}
-            initiallyOpen
             onChange={setSettings}
             onStart={() => undefined}
           >

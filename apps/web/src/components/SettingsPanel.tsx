@@ -1,4 +1,4 @@
-import { Eye, EyeOff, Play, ShieldCheck, SlidersHorizontal } from 'lucide-react'
+import { ChevronDown, Eye, EyeOff, Play, ShieldCheck } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 
 import {
@@ -17,7 +17,6 @@ interface SettingsPanelProps {
   canStart: boolean
   startHint: string
   showStartAction?: boolean
-  initiallyOpen?: boolean
   children?: ReactNode
   onChange: (next: SettingsValue) => void
   onStart: () => void
@@ -34,13 +33,6 @@ const TARGET_LANGUAGES: Array<{ value: TargetLanguage; label: string }> = [
   { value: 'en', label: '英语' },
   { value: 'ko', label: '韩语' },
 ]
-
-const MODEL_LABELS: Record<AsrModel, string> = {
-  small: 'small',
-  medium: 'medium',
-  'large-v3': 'large-v3',
-  'large-v3-turbo': 'large-v3-turbo',
-}
 
 const OUTPUT_MODES: Array<{
   value: AsrOutputMode
@@ -68,52 +60,20 @@ export function SettingsPanel({
   canStart,
   startHint,
   showStartAction = true,
-  initiallyOpen = false,
   children,
   onChange,
   onStart,
 }: SettingsPanelProps) {
   const [showKey, setShowKey] = useState(false)
-  const [settingsOpen, setSettingsOpen] = useState(initiallyOpen)
   const patch = <K extends keyof SettingsValue>(key: K, next: SettingsValue[K]) =>
     onChange({ ...value, [key]: next })
-  const targetLanguage = TARGET_LANGUAGES.find((item) => item.value === value.targetLanguage)?.label ?? value.targetLanguage
-  const provider = PROVIDERS.find((item) => item.value === value.provider)?.label ?? value.provider
   const outputMode = OUTPUT_MODES.find((item) => item.value === value.asrOutputMode)?.label ?? value.asrOutputMode
   const hotwordValidation = validateHotwordText(value.asrHotwordsText)
 
   return (
     <aside className="settings-sidebar" aria-label="新任务默认设置">
-      <section className="task-summary" aria-labelledby="task-summary-title">
-        <div className="task-summary-heading">
-          <div>
-            <h2 id="task-summary-title">处理配置</h2>
-            <p>配置将应用到本批次的全部视频</p>
-          </div>
-          <button
-            type="button"
-            className="summary-settings-button"
-            onClick={() => setSettingsOpen((open) => !open)}
-            aria-expanded={settingsOpen}
-            aria-controls="task-settings-panel"
-          >
-            <SlidersHorizontal size={18} aria-hidden="true" />
-            <span>{settingsOpen ? '收起' : '调整'}</span>
-          </button>
-        </div>
-        <div className="summary-config-list" aria-label="当前任务设置">
-          <span><small>目标语言</small><strong>{targetLanguage}</strong></span>
-          <span><small>识别模型</small><strong>{MODEL_LABELS[value.asrModel]}</strong></span>
-          <span><small>翻译服务</small><strong>{provider}</strong></span>
-          <span><small>字幕切分</small><strong>{outputMode}</strong></span>
-          <span><small>输出位置</small><strong>{value.exportOutputDirectory.trim() ? '自定义目录' : '源视频目录'}</strong></span>
-        </div>
-        <p className="task-summary-note">动态边界 {value.asrDynamicChunking ? '已开启' : '已关闭'} · 提示词 {hotwordValidation.hotwords.length} 个</p>
-      </section>
-
-      {settingsOpen ? (
-        <div id="task-settings-panel" className="settings-drawer">
-          <div className="settings-content">
+      <div id="task-settings-panel" className="settings-drawer">
+        <div className="settings-content">
           <section className="settings-section">
             <div className="section-heading section-heading-with-copy">
               <div>
@@ -162,8 +122,8 @@ export function SettingsPanel({
             </fieldset>
             <label className={`switch-row ${!cudaAvailable ? 'is-unavailable' : ''}`}>
               <span>
-                <strong>启用 CUDA 加速</strong>
-                <small>{cudaAvailable ? '使用 NVIDIA GPU 与 FP16' : '当前未检测到可用 CUDA'}</small>
+                <strong>启用 GPU 加速</strong>
+                <small>{cudaAvailable ? '使用 NVIDIA GPU 与 FP16' : '当前未检测到可用的 GPU 加速'}</small>
               </span>
               <input
                 type="checkbox"
@@ -172,75 +132,6 @@ export function SettingsPanel({
                 onChange={(event) => patch('useCuda', event.target.checked)}
               />
               <i aria-hidden="true" />
-            </label>
-            <label className="switch-row">
-              <span>
-                <strong>语音活动检测</strong>
-                <small>跳过长静音区域，提高识别效率</small>
-              </span>
-              <input
-                type="checkbox"
-                checked={value.asrVadFilter}
-                disabled={disabled}
-                onChange={(event) => patch('asrVadFilter', event.target.checked)}
-              />
-              <i aria-hidden="true" />
-            </label>
-            <label className="switch-row">
-              <span>
-                <strong>动态切片边界</strong>
-                <small>将 60 秒边界吸附到附近自然停顿</small>
-              </span>
-              <input
-                type="checkbox"
-                checked={value.asrDynamicChunking}
-                disabled={disabled}
-                onChange={(event) => patch('asrDynamicChunking', event.target.checked)}
-              />
-              <i aria-hidden="true" />
-            </label>
-            <label className="switch-row">
-              <span>
-                <strong>低置信片段二次识别</strong>
-                <small>只对可疑片段执行一次有界重识别</small>
-              </span>
-              <input
-                type="checkbox"
-                checked={value.asrSelectiveRetry}
-                disabled={disabled}
-                onChange={(event) => patch('asrSelectiveRetry', event.target.checked)}
-              />
-              <i aria-hidden="true" />
-            </label>
-            <label className="switch-row">
-              <span>
-                <strong>实验性时间轴校正</strong>
-                <small>利用共享 VAD 收紧静音边界并修正异常 gap</small>
-              </span>
-              <input
-                type="checkbox"
-                checked={value.asrTimestampNormalization}
-                disabled={disabled}
-                onChange={(event) => patch(
-                  'asrTimestampNormalization',
-                  event.target.checked,
-                )}
-              />
-              <i aria-hidden="true" />
-            </label>
-            <label className="field compact-number-field">
-              <span>Beam Size</span>
-              <input
-                type="number"
-                min={1}
-                max={20}
-                value={value.asrBeamSize}
-                disabled={disabled}
-                onChange={(event) => patch(
-                  'asrBeamSize',
-                  Math.max(1, Math.min(20, Number(event.target.value) || 1)),
-                )}
-              />
             </label>
             <label className={`field hotwords-field ${hotwordValidation.error ? 'is-invalid' : ''}`}>
               <span>专有词 / Hotwords</span>
@@ -261,6 +152,84 @@ export function SettingsPanel({
                   ?? `${hotwordValidation.hotwords.length}/${HOTWORD_MAX_ENTRIES} 条 · ${hotwordValidation.characterCount}/${HOTWORD_MAX_TOTAL_CHARACTERS} 字符 · 单条最多 ${HOTWORD_MAX_ENTRY_CHARACTERS} 字符`}
               </small>
             </label>
+
+            <details className="advanced-options">
+              <summary>
+                <ChevronDown size={15} aria-hidden="true" />
+                高级选项
+              </summary>
+              <div className="advanced-options-body">
+                <label className="switch-row">
+                  <span>
+                    <strong>语音活动检测</strong>
+                    <small>跳过长静音区域，提高识别效率</small>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={value.asrVadFilter}
+                    disabled={disabled}
+                    onChange={(event) => patch('asrVadFilter', event.target.checked)}
+                  />
+                  <i aria-hidden="true" />
+                </label>
+                <label className="switch-row">
+                  <span>
+                    <strong>动态切片边界</strong>
+                    <small>将 60 秒边界吸附到附近自然停顿</small>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={value.asrDynamicChunking}
+                    disabled={disabled}
+                    onChange={(event) => patch('asrDynamicChunking', event.target.checked)}
+                  />
+                  <i aria-hidden="true" />
+                </label>
+                <label className="switch-row">
+                  <span>
+                    <strong>低置信片段二次识别</strong>
+                    <small>只对可疑片段执行一次有界重识别</small>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={value.asrSelectiveRetry}
+                    disabled={disabled}
+                    onChange={(event) => patch('asrSelectiveRetry', event.target.checked)}
+                  />
+                  <i aria-hidden="true" />
+                </label>
+                <label className="switch-row">
+                  <span>
+                    <strong>实验性时间轴校正</strong>
+                    <small>利用共享 VAD 收紧静音边界并修正异常 gap</small>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={value.asrTimestampNormalization}
+                    disabled={disabled}
+                    onChange={(event) => patch(
+                      'asrTimestampNormalization',
+                      event.target.checked,
+                    )}
+                  />
+                  <i aria-hidden="true" />
+                </label>
+                <label className="field compact-number-field">
+                  <span>Beam Size</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={20}
+                    value={value.asrBeamSize}
+                    disabled={disabled}
+                    onChange={(event) => patch(
+                      'asrBeamSize',
+                      Math.max(1, Math.min(20, Number(event.target.value) || 1)),
+                    )}
+                  />
+                </label>
+              </div>
+            </details>
           </section>
 
           <section className="settings-section">
@@ -420,9 +389,8 @@ export function SettingsPanel({
           </section>
 
           {children}
-          </div>
         </div>
-      ) : null}
+      </div>
 
       {showStartAction ? (
         <div className="start-area">
