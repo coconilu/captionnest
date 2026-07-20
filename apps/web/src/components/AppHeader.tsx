@@ -32,7 +32,7 @@ export function AppHeader({ connected, checking, cudaAvailable, onRefresh }: App
         </button>
         <span className={`status-item ${cudaAvailable ? 'is-cuda' : ''}`}>
           <span className="status-dot" aria-hidden="true" />
-          {cudaAvailable ? 'CUDA 可用' : 'CPU 模式'}
+          {cudaAvailable ? 'GPU 加速可用' : 'GPU 加速不可用'}
         </span>
       </div>
     </header>

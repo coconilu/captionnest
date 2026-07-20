@@ -38,10 +38,12 @@ interface PipelineStepCardProps {
   index: number
   label: string
   summary: string
+  summaryTitle?: string
   artifactSummary?: string | null
   editing: boolean
   disabled: boolean
   children?: ReactNode
+  headerAction?: ReactNode
   onToggleEdit: () => void
   onRun: () => void
   onReplaceMedia?: () => void
@@ -52,21 +54,19 @@ export function PipelineStepCard({
   index,
   label,
   summary,
+  summaryTitle,
   artifactSummary,
   editing,
   disabled,
   children,
+  headerAction,
   onToggleEdit,
   onRun,
   onReplaceMedia,
 }: PipelineStepCardProps) {
   const canConfigure = step.status !== 'running' && !disabled
   const latestAttempt = step.attempts.at(-1)
-  const runLabel = step.status === 'failed'
-    ? '从此步骤重试'
-    : step.status === 'succeeded'
-      ? '从此步骤重跑'
-      : '从此步骤继续'
+  const runLabel = '从此步骤重跑'
 
   return (
     <article className={`pipeline-step-card is-${step.status} ${editing ? 'is-editing' : ''}`}>
@@ -83,7 +83,7 @@ export function PipelineStepCard({
 
       <div className="pipeline-step-body">
         <details className="pipeline-step-details">
-          <summary title={summary}>{summary}</summary>
+          <summary title={summaryTitle ?? summary}>{summary}</summary>
           <div className="pipeline-step-detail-content">
             <div className="pipeline-attempt-meta">
               <span>配置 v{step.config_revision}</span>
@@ -170,6 +170,7 @@ export function PipelineStepCard({
             <span>{step.error}</span>
           </div>
         ) : null}
+        {headerAction}
       </div>
 
       <footer className="pipeline-step-actions">

@@ -33,7 +33,7 @@ def test_task_workspace_uses_table_and_inspector_regions() -> None:
     app = source("App.tsx")
     job_list = source("components/JobListPanel.tsx")
 
-    assert "<TaskInspectorHeader job={detailJob}" in app
+    assert re.search(r"<TaskInspectorHeader[^>]*\bjob=\{detailJob\}", app)
     assert 'className="job-table-header"' in job_list
     assert all(
         label in job_list

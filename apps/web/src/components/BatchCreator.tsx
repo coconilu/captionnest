@@ -39,6 +39,7 @@ interface BatchCreatorProps {
   onBusyChange: (busy: boolean) => void
   onCreated: (result: BatchCreateResult, runtimeApiKey: string) => void
   onClose: () => void
+  onGoToModels?: () => void
 }
 
 function stagedId(): string {
@@ -57,6 +58,7 @@ export function BatchCreator({
   onBusyChange,
   onCreated,
   onClose,
+  onGoToModels,
 }: BatchCreatorProps) {
   const [sources, setSources] = useState<StagedSource[]>([])
   const [batchName, setBatchName] = useState('')
@@ -271,6 +273,11 @@ export function BatchCreator({
           <div className="inline-error" role="alert">
             <AlertCircle size={17} />
             <span>{actionError ?? configError}</span>
+            {onGoToModels && configError ? (
+              <button type="button" className="inline-error-action" onClick={onGoToModels}>
+                前往下载
+              </button>
+            ) : null}
           </div>
         ) : null}
         {resultMessage ? (

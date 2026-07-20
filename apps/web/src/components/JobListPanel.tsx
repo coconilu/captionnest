@@ -13,7 +13,7 @@ import {
 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
-import { formatDateTime } from '../lib/format'
+import { formatBatchStamp, formatDateTime, formatRelativeTime } from '../lib/format'
 import type {
   BatchRecord,
   JobBulkAction,
@@ -107,6 +107,17 @@ function JobRow({
 }) {
   const step = item.current_step ? STEP_LABELS[item.current_step] : null
   const progress = Math.max(0, Math.min(100, item.progress))
+  const stageLabel = (() => {
+    switch (item.status) {
+      case 'completed': return '已完成'
+      case 'failed': return step ?? '失败'
+      case 'running': return step ?? '处理中'
+      case 'waiting_for_input': return step ?? '等待输入'
+      case 'interrupted': return step ?? '已中断'
+      case 'cancelled': return '已取消'
+      default: return step ?? '等待开始'
+    }
+  })()
 
   return (
     <article className={`job-list-row ${selected ? 'is-selected' : ''}`}>
@@ -131,21 +142,20 @@ function JobRow({
             {item.source_kind === 'path' ? '本机视频' : '浏览器上传'}
             {item.queue_position ? ` · 队列 #${item.queue_position}` : ''}
           </small>
-          {item.error ? <em title={item.error}>{item.error}</em> : null}
         </span>
         <span className="job-row-progress-cell">
           <b>{Math.round(progress)}%</b>
           <i aria-hidden="true"><span style={{ width: `${progress}%` }} /></i>
         </span>
         <span className={`job-row-step ${item.status === 'running' ? 'is-active' : ''}`}>
-          {step ?? '等待开始'}
+          {stageLabel}
         </span>
         <span className={`job-row-status is-${item.status}`}>
           <i className={`job-status-dot is-${item.status}`} aria-hidden="true" />
           {STATUS_LABELS[item.status]}
         </span>
-        <span className="job-row-updated">
-          {formatDateTime(item.updated_at)}
+        <span className="job-row-updated" title={formatDateTime(item.updated_at)}>
+          {formatRelativeTime(item.updated_at)}
           <ChevronRight size={14} aria-hidden="true" />
         </span>
       </button>
@@ -276,8 +286,11 @@ export function JobListPanel({
         <div className="job-groups">
           {groups.map((group) => {
           const progress = groupProgress(group)
+          const batchStamp = formatBatchStamp(group.batch?.created_at ?? group.latestCreatedAt)
           const name = group.batch?.name
-            ?? (group.key === 'independent' ? '独立任务' : `批次 ${group.key.slice(0, 8)}`)
+            ?? (group.key === 'independent'
+              ? '独立任务'
+              : `批次 · ${batchStamp || group.key.slice(0, 8)}`)
             return (
               <details key={group.key} className="job-batch-group" open>
               <summary>

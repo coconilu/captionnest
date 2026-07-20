@@ -5,10 +5,9 @@ import {
   FolderOpen,
   Info,
   LoaderCircle,
-  Trash2,
 } from 'lucide-react'
 
-import { openFolder } from '../api/client'
+import { openOutputFolder } from '../lib/actions'
 import { fileNameFromPath, formatLog, formatTime } from '../lib/format'
 import type { JobView } from '../types/api'
 
@@ -17,8 +16,6 @@ interface TaskConsoleProps {
   pollError: string | null
   actionError: string | null
   onActionError: (message: string | null) => void
-  onDeleteJob: () => void
-  disabled?: boolean
 }
 
 function LogIcon({ level }: { level?: string }) {
@@ -33,8 +30,6 @@ export function TaskConsole({
   pollError,
   actionError,
   onActionError,
-  onDeleteJob,
-  disabled = false,
 }: TaskConsoleProps) {
   const logs = job?.logs?.map(formatLog) ?? []
   const progress = Math.max(0, Math.min(100, job?.progress ?? 0))
@@ -43,15 +38,7 @@ export function TaskConsole({
   const error = actionError ?? pollError ?? job?.error
   const idle = !job && !error
 
-  const handleOpen = async (path?: string | null) => {
-    if (!path) return
-    try {
-      await openFolder(path)
-      onActionError(null)
-    } catch (openError) {
-      onActionError(openError instanceof Error ? openError.message : '无法打开输出目录')
-    }
-  }
+  const handleOpen = (path?: string | null) => void openOutputFolder(path, onActionError)
 
   return (
     <section className={`console-panel ${idle ? 'is-idle' : ''}`} aria-labelledby="console-title">
@@ -63,21 +50,6 @@ export function TaskConsole({
         <div className="console-header-actions">
           {job && (job.status === 'queued' || job.status === 'running') ? (
             <span className="running-label"><LoaderCircle size={15} className="is-spinning" />正在处理</span>
-          ) : null}
-          {job && job.status !== 'queued' && job.status !== 'running' ? (
-            <button
-              type="button"
-              className="delete-job-button"
-              disabled={disabled}
-              onClick={() => {
-                if (window.confirm('删除这个任务及其中间产物？已导出的 SRT 不会删除。')) {
-                  onDeleteJob()
-                }
-              }}
-            >
-              <Trash2 size={15} />
-              删除任务
-            </button>
           ) : null}
         </div>
       </div>

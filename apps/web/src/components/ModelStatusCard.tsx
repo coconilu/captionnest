@@ -38,9 +38,13 @@ export function ModelStatusCard({
   const activeDownload = downloading || status === 'downloading'
   const progress = item?.progress == null ? null : Math.max(0, Math.min(100, item.progress))
   const canDownload = status === 'missing' || status === 'damaged'
-  const statusMessage = item?.message
-    ?? (item && status === 'ready' ? '模型已下载并可用' : fallbackMessage)
-    ?? '识别模型按需保存在本机，不随安装包重复分发。'
+  const rawMessage = item?.message ?? fallbackMessage
+  const statusLabel = status ? STATUS_LABEL[status] : null
+  const statusMessage = rawMessage && rawMessage !== statusLabel
+    ? rawMessage
+    : status === 'ready'
+      ? '模型已下载并可用'
+      : '识别模型按需保存在本机，不随安装包重复分发。'
 
   return (
     <div className={`model-status-card ${status === 'ready' ? 'is-ready' : canDownload ? 'is-warning' : ''}`}>
