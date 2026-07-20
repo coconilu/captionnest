@@ -27,6 +27,7 @@ import { useJobSummaries } from './hooks/useJobSummaries'
 import { useModelCatalog } from './hooks/useModelCatalog'
 import { usePersistedSettings } from './hooks/usePersistedSettings'
 import { useSelectedJob } from './hooks/useSelectedJob'
+import { isModelDownloadBlock, resolveConfigValidation } from './lib/configValidation'
 import { fileNameFromPath } from './lib/format'
 import { validateHotwordText } from './lib/hotwords'
 import type {
@@ -152,55 +153,42 @@ export function App() {
     settings,
   ])
 
-  const configValidationError = useMemo(() => {
-    if (hotwordValidation.error) return hotwordValidation.error
-    if (environmentChecking || modelsChecking) return '正在检测运行环境'
-    if (environmentError) return '运行环境检测失败，请刷新检测'
-    if (selectedAsrCapability && !selectedAsrCapability.installed) {
-      return `${selectedAsrCapability.label} 运行时尚未安装`
-    }
-    if (!selectedAsrCapability && environment?.asr.status !== 'ready') {
-      return environment?.asr.message ?? '语音识别组件不可用'
-    }
-    if (environment?.tools.media.status !== 'ready') {
-      return environment?.tools.media.message ?? '媒体解码组件不可用'
-    }
-    if (!selectedModelStatus) return modelsError ?? '无法获取识别模型状态，请刷新检测'
-    if (selectedModelStatus === 'missing') return '请先下载识别模型'
-    if (selectedModelStatus === 'damaged') return '识别模型已损坏，请重新下载'
-    if (selectedModelStatus === 'downloading') return '识别模型正在下载，进度会自动更新'
-    if (settings.provider === 'codex_spark' && codexStatus === 'not_installed') {
-      return '请先安装 Codex 并刷新检测'
-    }
-    if (settings.provider === 'codex_spark' && codexStatus === 'not_logged_in') {
-      return '请先完成 Codex 登录并刷新检测'
-    }
-    if (settings.provider === 'codex_spark' && codexStatus === 'check_failed') {
-      return 'Codex 状态检测失败，请刷新重试'
-    }
-    if (settings.provider === 'lmstudio' && !settings.lmstudioModel.trim()) {
-      return '请填写 LM Studio 模型 ID'
-    }
-    return null
-  }, [
-    codexStatus,
-    environment,
-    environmentChecking,
-    environmentError,
-    hotwordValidation.error,
-    modelsChecking,
-    modelsError,
-    selectedAsrCapability,
-    selectedModelStatus,
-    settings.lmstudioModel,
-    settings.provider,
-  ])
+  const configValidation = useMemo(
+    () => resolveConfigValidation({
+      hotwordError: hotwordValidation.error,
+      environmentChecking,
+      modelsChecking,
+      environmentError,
+      asrCapability: selectedAsrCapability,
+      environment,
+      selectedModelStatus,
+      modelsError,
+      provider: settings.provider,
+      codexStatus,
+      lmstudioModel: settings.lmstudioModel,
+    }),
+    [
+      codexStatus,
+      environment,
+      environmentChecking,
+      environmentError,
+      hotwordValidation.error,
+      modelsChecking,
+      modelsError,
+      selectedAsrCapability,
+      selectedModelStatus,
+      settings.lmstudioModel,
+      settings.provider,
+    ],
+  )
+  const configValidationError = configValidation?.message ?? null
   const startValidationError = configValidationError
     ?? (settings.provider === 'deepseek' && !settings.deepseekApiKey.trim()
       ? '创建并启动 DeepSeek 任务前，请填写本次运行的 API Key'
       : null)
-  const modelDownloadRequired = selectedModelStatus === 'missing'
-    || selectedModelStatus === 'damaged'
+  // 「前往下载」只绑定当前展示的错误：确为模型缺失/损坏时才出现，
+  // 避免与更高优先级的错误（如提示词非法）同时出现时给出无关动作。
+  const modelDownloadRequired = isModelDownloadBlock(configValidation)
 
   const handleGoToModels = useCallback(() => {
     setCreatorOpen(false)

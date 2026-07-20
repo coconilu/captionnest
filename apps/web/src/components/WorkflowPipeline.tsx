@@ -2,7 +2,7 @@ import { Boxes, FolderOpen, GitBranch } from 'lucide-react'
 import { useState } from 'react'
 
 import { openOutputFolder } from '../lib/actions'
-import { formatBytes } from '../lib/format'
+import { formatBytes, formatDuration, formatTokenCount } from '../lib/format'
 import type {
   AsrStepConfig,
   ExportStepConfig,
@@ -185,6 +185,37 @@ export function WorkflowPipeline({
                 : '正在处理'}
         </span>
       </div>
+
+      <details className="pipeline-metrics-disclosure">
+        <summary>任务累计指标</summary>
+        <div className="pipeline-job-metrics" aria-label="任务累计指标">
+          <div>
+            <span>自然时间跨度</span>
+            <strong>{job.wall_duration_ms === null
+              ? '尚未开始'
+              : formatDuration(job.wall_duration_ms)}</strong>
+          </div>
+          <div>
+            <span>Attempt 累计耗时</span>
+            <strong>{job.cumulative_attempt_duration_ms === null
+              ? '尚无完整记录'
+              : formatDuration(job.cumulative_attempt_duration_ms)}</strong>
+          </div>
+          <div>
+            <span>模型总 Token</span>
+            <strong>{job.total_model_usage
+              ? formatTokenCount(job.total_model_usage.total_tokens)
+              : '尚无模型调用'}</strong>
+            {job.total_model_usage ? (
+              <small>
+                {job.total_model_usage.request_count} 次请求 · {job.total_model_usage.complete
+                  ? '完整报告'
+                  : '部分报告'}
+              </small>
+            ) : null}
+          </div>
+        </div>
+      </details>
 
       <div className="pipeline-step-grid">
         {job.steps.map((step, index) => {

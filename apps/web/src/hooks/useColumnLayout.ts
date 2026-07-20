@@ -49,9 +49,18 @@ export function parseStoredRatios(text: string | null): ColumnRatios {
   }
 }
 
+export function readStoredRatios(read: () => string | null): ColumnRatios {
+  try {
+    return parseStoredRatios(read())
+  } catch {
+    // A blocked WebView store (SecurityError) must not break the first render.
+    return { ...DEFAULT_RATIOS }
+  }
+}
+
 function loadRatios(): ColumnRatios {
   if (typeof window === 'undefined') return { ...DEFAULT_RATIOS }
-  return parseStoredRatios(window.localStorage.getItem(STORAGE_KEY))
+  return readStoredRatios(() => window.localStorage.getItem(STORAGE_KEY))
 }
 
 function resolveWidths(available: number, ratios: ColumnRatios): ColumnWidths {
