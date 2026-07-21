@@ -293,6 +293,11 @@ def test_windows_ci_exercises_affected_and_exact_head_installer_lifecycle() -> N
         "current-uninstall-cancel-keep-delete",
         "Invoke-RestMethod",
         "status -ne 'ready'",
+        "ApiProcess.HasExited",
+        "last API state",
+        "RedirectStandardError",
+        "<redacted>",
+        "installed sidecar reported retained small model ready",
     ):
         assert marker in script
 

@@ -74,9 +74,24 @@ function Wait-ProcessExit {
 function Start-OwnedProcess {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
-        [string[]]$ArgumentList = @()
+        [string[]]$ArgumentList = @(),
+        [string]$WorkingDirectory,
+        [string]$RedirectStandardOutput,
+        [string]$RedirectStandardError
     )
-    $Process = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -PassThru
+    $Parameters = @{
+        FilePath = $FilePath
+        ArgumentList = $ArgumentList
+        PassThru = $true
+    }
+    if ($WorkingDirectory) { $Parameters.WorkingDirectory = $WorkingDirectory }
+    if ($RedirectStandardOutput) {
+        $Parameters.RedirectStandardOutput = $RedirectStandardOutput
+    }
+    if ($RedirectStandardError) {
+        $Parameters.RedirectStandardError = $RedirectStandardError
+    }
+    $Process = Start-Process @Parameters
     $script:OwnedProcesses += $Process
     return $Process
 }
@@ -775,7 +790,13 @@ function Assert-InstalledAppAndModelReady {
         Start-Sleep -Milliseconds 250
     } while ([DateTime]::UtcNow -lt $Deadline)
     foreach ($DesktopSidecar in $DesktopSidecars) {
-        & taskkill.exe @('/PID', $DesktopSidecar.Id.ToString(), '/T', '/F') | Out-Null
+        $DesktopSidecar.Refresh()
+        if (-not $DesktopSidecar.HasExited) {
+            & taskkill.exe @('/PID', $DesktopSidecar.Id.ToString(), '/T', '/F') | Out-Null
+            if (-not $DesktopSidecar.WaitForExit(10000)) {
+                throw "Desktop sidecar $($DesktopSidecar.Id) did not exit before API validation."
+            }
+        }
     }
 
     $PortListener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
@@ -786,26 +807,59 @@ function Assert-InstalledAppAndModelReady {
     $PreviousToken = $env:CAPTIONNEST_SESSION_TOKEN
     try {
         $env:CAPTIONNEST_SESSION_TOKEN = $Token
-        $ApiProcess = Start-OwnedProcess -FilePath $Sidecar -ArgumentList @(
-            '--host', '127.0.0.1', '--port', $Port.ToString(), '--data-dir', $AppDataRoot
-        )
+        $ApiStdout = Join-Path $EvidenceRoot "sidecar-$Port.stdout.log"
+        $ApiStderr = Join-Path $EvidenceRoot "sidecar-$Port.stderr.log"
+        $ApiProcess = Start-OwnedProcess `
+            -FilePath $Sidecar `
+            -ArgumentList @(
+                '--host', '127.0.0.1', '--port', $Port.ToString(), '--data-dir', $AppDataRoot
+            ) `
+            -WorkingDirectory (Split-Path -Parent $Sidecar) `
+            -RedirectStandardOutput $ApiStdout `
+            -RedirectStandardError $ApiStderr
         $Headers = @{ 'X-CaptionNest-Session' = $Token }
+        $Response = $null
+        $Small = @()
+        $LastApiError = '<no response>'
         $Deadline = [DateTime]::UtcNow.AddSeconds(30)
         do {
+            $ApiProcess.Refresh()
+            if ($ApiProcess.HasExited) { break }
             try {
                 $Response = Invoke-RestMethod `
                     -Uri "http://127.0.0.1:$Port/api/models" `
                     -Headers $Headers `
                     -TimeoutSec 2
-                break
+                $Small = @($Response.items | Where-Object { $_.id -eq 'small' })
+                if ($Small.Count -eq 1 -and $Small[0].status -eq 'ready') { break }
+                $LastApiError = "small statuses=$(@($Small | ForEach-Object { $_.status }) -join ',')"
             } catch {
-                Start-Sleep -Milliseconds 250
+                $LastApiError = $_.Exception.Message
             }
+            Start-Sleep -Milliseconds 250
         } while ([DateTime]::UtcNow -lt $Deadline)
-        $Small = @($Response.items | Where-Object { $_.id -eq 'small' })
         if ($Small.Count -ne 1 -or $Small[0].status -ne 'ready') {
-            throw 'Installed sidecar did not report the retained small model as ready.'
+            $ApiProcess.Refresh()
+            $ExitState = if ($ApiProcess.HasExited) {
+                "exited with $($ApiProcess.ExitCode)"
+            } else {
+                'still running'
+            }
+            $StdoutTail = if (Test-Path -LiteralPath $ApiStdout) {
+                (Get-Content -LiteralPath $ApiStdout -Tail 20 -ErrorAction SilentlyContinue) -join ' '
+            } else { '<none>' }
+            $StderrTail = if (Test-Path -LiteralPath $ApiStderr) {
+                (Get-Content -LiteralPath $ApiStderr -Tail 20 -ErrorAction SilentlyContinue) -join ' '
+            } else { '<none>' }
+            $StdoutTail = $StdoutTail.Replace($Token, '<redacted>')
+            $StderrTail = $StderrTail.Replace($Token, '<redacted>')
+            throw (
+                'Installed sidecar did not report the retained small model as ready. ' +
+                "Process=$ExitState; last API state='$LastApiError'; " +
+                "stdout='$StdoutTail'; stderr='$StderrTail'."
+            )
         }
+        Write-Host 'APP-ACTION: installed sidecar reported retained small model ready'
         & taskkill.exe @('/PID', $ApiProcess.Id.ToString(), '/T', '/F') | Out-Null
     } finally {
         $env:CAPTIONNEST_SESSION_TOKEN = $PreviousToken
