@@ -256,59 +256,90 @@ function Get-ButtonCondition {
     return [System.Windows.Automation.AndCondition]::new($TypeCondition, $IdCondition)
 }
 
+function Get-NativeControlsByType {
+    param(
+        [Parameter(Mandatory = $true)][IntPtr]$WindowHandle,
+        [Parameter(Mandatory = $true)][int[]]$ButtonTypes,
+        [int]$TimeoutSeconds = 30
+    )
+    $Deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        $Controls = @(
+            [CaptionNestNativeMethods]::EnumerateChildWindows($WindowHandle) |
+                Where-Object {
+                    $_.ClassName -eq 'Button' -and
+                    [int]($_.Style -band 0xF) -in $ButtonTypes
+                }
+        )
+        if ($Controls.Count -gt 0) { return $Controls }
+        Start-Sleep -Milliseconds 200
+    } while ([DateTime]::UtcNow -lt $Deadline)
+    throw "Timed out waiting for native NSIS controls of type $($ButtonTypes -join ',')."
+}
+
+function Invoke-NativeButton {
+    param(
+        [Parameter(Mandatory = $true)][IntPtr]$WindowHandle,
+        [Parameter(Mandatory = $true)][int]$ControlId
+    )
+    $Button = [CaptionNestNativeMethods]::GetDlgItem($WindowHandle, $ControlId)
+    if ($Button -eq [IntPtr]::Zero) {
+        throw "NSIS button $ControlId was not found."
+    }
+    [void][CaptionNestNativeMethods]::SendMessage(
+        $Button, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero
+    )
+}
+
+function Set-NativeCheckbox {
+    param(
+        [Parameter(Mandatory = $true)]$Control,
+        [Parameter(Mandatory = $true)][bool]$Checked
+    )
+    $State = if ($Checked) { 1 } else { 0 }
+    [void][CaptionNestNativeMethods]::SendMessage(
+        $Control.Handle, 0x00F1, [IntPtr]$State, [IntPtr]::Zero
+    )
+}
+
 function Complete-GuiUpgradeWithDefault {
     $Process = Start-OwnedProcess -FilePath $UpgradeInstaller
     $Window = Get-ProcessWindow -Process $Process
     $WindowHandle = [IntPtr]$Window.Current.NativeWindowHandle
-    $NextCondition = Get-ButtonCondition -AutomationId '1'
-    Invoke-UiElement (Get-UiElement -Root $Window -Condition $NextCondition)
+    Invoke-NativeButton -WindowHandle $WindowHandle -ControlId 1
 
-    $RadioCondition = [System.Windows.Automation.PropertyCondition]::new(
-        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-        [System.Windows.Automation.ControlType]::RadioButton
-    )
-    $Deadline = [DateTime]::UtcNow.AddSeconds(30)
-    do {
-        $Radios = @($Window.FindAll(
-            [System.Windows.Automation.TreeScope]::Descendants,
-            $RadioCondition
-        ))
-        if ($Radios.Count -eq 2) { break }
-        Start-Sleep -Milliseconds 200
-    } while ([DateTime]::UtcNow -lt $Deadline)
+    $Radios = @(Get-NativeControlsByType -WindowHandle $WindowHandle -ButtonTypes @(4, 9))
     if ($Radios.Count -ne 2) { throw 'The reinstall page did not expose two choices.' }
     $Selections = @($Radios | ForEach-Object {
-        $_.GetCurrentPattern(
-            [System.Windows.Automation.SelectionItemPattern]::Pattern
-        ).Current.IsSelected
+        [CaptionNestNativeMethods]::SendMessage(
+            $_.Handle, 0x00F0, [IntPtr]::Zero, [IntPtr]::Zero
+        ).ToInt64() -eq 1
     })
     if ($Selections[0] -or -not $Selections[1]) {
         throw "GUI upgrade default was not in-place: $($Selections -join ',')."
     }
-    Invoke-UiElement (Get-UiElement -Root $Window -Condition $NextCondition)
+    Invoke-NativeButton -WindowHandle $WindowHandle -ControlId 1
 
     $Deadline = [DateTime]::UtcNow.AddSeconds(180)
     while (
         [CaptionNestNativeMethods]::IsWindow($WindowHandle) -and
         [DateTime]::UtcNow -lt $Deadline
     ) {
-        $Window = [System.Windows.Automation.AutomationElement]::FromHandle($WindowHandle)
-        $CheckboxCondition = [System.Windows.Automation.PropertyCondition]::new(
-            [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-            [System.Windows.Automation.ControlType]::CheckBox
-        )
-        foreach ($Checkbox in @($Window.FindAll(
-            [System.Windows.Automation.TreeScope]::Descendants,
-            $CheckboxCondition
-        ))) {
-            Set-UiCheckbox -Checkbox $Checkbox -Checked $false
+        foreach ($Checkbox in @(
+            [CaptionNestNativeMethods]::EnumerateChildWindows($WindowHandle) |
+                Where-Object {
+                    $_.ClassName -eq 'Button' -and
+                    [int]($_.Style -band 0xF) -in @(2, 3, 5, 6)
+                }
+        )) {
+            Set-NativeCheckbox -Control $Checkbox -Checked $false
         }
-        $Next = $Window.FindFirst(
-            [System.Windows.Automation.TreeScope]::Descendants,
-            $NextCondition
-        )
-        if ($null -ne $Next -and $Next.Current.IsEnabled) {
-            Invoke-UiElement $Next
+        $Next = [CaptionNestNativeMethods]::GetDlgItem($WindowHandle, 1)
+        if (
+            $Next -ne [IntPtr]::Zero -and
+            [CaptionNestNativeMethods]::IsWindowEnabled($Next)
+        ) {
+            Invoke-NativeButton -WindowHandle $WindowHandle -ControlId 1
         }
         Start-Sleep -Milliseconds 500
     }
@@ -324,35 +355,34 @@ function Invoke-CurrentUninstallerGui {
     $Process = Start-OwnedProcess -FilePath $Uninstaller
     $Window = Get-ProcessWindow -Process $Process
     $WindowHandle = [IntPtr]$Window.Current.NativeWindowHandle
-    $CheckboxCondition = [System.Windows.Automation.PropertyCondition]::new(
-        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-        [System.Windows.Automation.ControlType]::CheckBox
+    $Checkboxes = @(
+        Get-NativeControlsByType -WindowHandle $WindowHandle -ButtonTypes @(2, 3, 5, 6)
     )
-    $Checkbox = Get-UiElement -Root $Window -Condition $CheckboxCondition
+    if ($Checkboxes.Count -ne 1) {
+        throw "Expected one uninstall data checkbox; found $($Checkboxes.Count)."
+    }
+    $Checkbox = $Checkboxes[0]
     if ($Decision -eq 'cancel') {
-        Invoke-UiElement (Get-UiElement -Root $Window -Condition (Get-ButtonCondition '2'))
+        Invoke-NativeButton -WindowHandle $WindowHandle -ControlId 2
         Wait-NativeWindowClosed -WindowHandle $WindowHandle
         if (-not $Process.HasExited) {
             Wait-ProcessExit -Process $Process -AllowedExitCodes @(0, 1)
         }
         return
     }
-    Set-UiCheckbox -Checkbox $Checkbox -Checked ($Decision -eq 'delete')
-    Invoke-UiElement (Get-UiElement -Root $Window -Condition (Get-ButtonCondition '1'))
+    Set-NativeCheckbox -Control $Checkbox -Checked ($Decision -eq 'delete')
+    Invoke-NativeButton -WindowHandle $WindowHandle -ControlId 1
     $Deadline = [DateTime]::UtcNow.AddSeconds(180)
     while (
         [CaptionNestNativeMethods]::IsWindow($WindowHandle) -and
         [DateTime]::UtcNow -lt $Deadline
     ) {
-        $Window = [System.Windows.Automation.AutomationElement]::FromHandle($WindowHandle)
-        if ($null -ne $Window) {
-            $Next = $Window.FindFirst(
-                [System.Windows.Automation.TreeScope]::Descendants,
-                (Get-ButtonCondition '1')
-            )
-            if ($null -ne $Next -and $Next.Current.IsEnabled) {
-                Invoke-UiElement $Next
-            }
+        $Next = [CaptionNestNativeMethods]::GetDlgItem($WindowHandle, 1)
+        if (
+            $Next -ne [IntPtr]::Zero -and
+            [CaptionNestNativeMethods]::IsWindowEnabled($Next)
+        ) {
+            Invoke-NativeButton -WindowHandle $WindowHandle -ControlId 1
         }
         Start-Sleep -Milliseconds 500
     }
@@ -365,13 +395,14 @@ function Invoke-AffectedUninstallerGuiConfirm {
     $Process = Start-OwnedProcess -FilePath $Uninstaller
     $Window = Get-ProcessWindow -Process $Process
     $MainWindowHandle = [IntPtr]$Window.Current.NativeWindowHandle
-    $CheckboxCondition = [System.Windows.Automation.PropertyCondition]::new(
-        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-        [System.Windows.Automation.ControlType]::CheckBox
+    $Checkboxes = @(
+        Get-NativeControlsByType -WindowHandle $MainWindowHandle -ButtonTypes @(2, 3, 5, 6)
     )
-    $Checkbox = Get-UiElement -Root $Window -Condition $CheckboxCondition
-    Set-UiCheckbox -Checkbox $Checkbox -Checked $true
-    Invoke-UiElement (Get-UiElement -Root $Window -Condition (Get-ButtonCondition '1'))
+    if ($Checkboxes.Count -ne 1) {
+        throw "Expected one affected-uninstall data checkbox; found $($Checkboxes.Count)."
+    }
+    Set-NativeCheckbox -Control $Checkboxes[0] -Checked $true
+    Invoke-NativeButton -WindowHandle $MainWindowHandle -ControlId 1
 
     $Confirmed = $false
     $Deadline = [DateTime]::UtcNow.AddSeconds(30)
@@ -546,6 +577,8 @@ public sealed class CaptionNestWindowInfo
     public string ClassName { get; set; }
     public uint ProcessId { get; set; }
     public bool Visible { get; set; }
+    public int ControlId { get; set; }
+    public long Style { get; set; }
 }
 
 public static class CaptionNestNativeMethods
@@ -554,6 +587,13 @@ public static class CaptionNestNativeMethods
 
     [DllImport("user32.dll")]
     private static extern bool EnumWindows(EnumWindowsCallback callback, IntPtr parameter);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumChildWindows(
+        IntPtr parent,
+        EnumWindowsCallback callback,
+        IntPtr parameter
+    );
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetWindowText(IntPtr window, StringBuilder text, int count);
@@ -567,6 +607,15 @@ public static class CaptionNestNativeMethods
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool IsWindowVisible(IntPtr window);
+
+    [DllImport("user32.dll")]
+    public static extern bool IsWindowEnabled(IntPtr window);
+
+    [DllImport("user32.dll")]
+    private static extern int GetDlgCtrlID(IntPtr window);
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
+    private static extern IntPtr GetWindowLongPtr(IntPtr window, int index);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -591,23 +640,41 @@ public static class CaptionNestNativeMethods
         var windows = new List<CaptionNestWindowInfo>();
         EnumWindows((window, parameter) =>
         {
-            var title = new StringBuilder(512);
-            var className = new StringBuilder(256);
-            GetWindowText(window, title, title.Capacity);
-            GetClassName(window, className, className.Capacity);
-            uint processId;
-            GetWindowThreadProcessId(window, out processId);
-            windows.Add(new CaptionNestWindowInfo
-            {
-                Handle = window,
-                Title = title.ToString().Replace("\r", " ").Replace("\n", " "),
-                ClassName = className.ToString(),
-                ProcessId = processId,
-                Visible = IsWindowVisible(window)
-            });
+            windows.Add(DescribeWindow(window));
             return true;
         }, IntPtr.Zero);
         return windows.ToArray();
+    }
+
+    public static CaptionNestWindowInfo[] EnumerateChildWindows(IntPtr parent)
+    {
+        var windows = new List<CaptionNestWindowInfo>();
+        EnumChildWindows(parent, (window, parameter) =>
+        {
+            windows.Add(DescribeWindow(window));
+            return true;
+        }, IntPtr.Zero);
+        return windows.ToArray();
+    }
+
+    private static CaptionNestWindowInfo DescribeWindow(IntPtr window)
+    {
+        var title = new StringBuilder(512);
+        var className = new StringBuilder(256);
+        GetWindowText(window, title, title.Capacity);
+        GetClassName(window, className, className.Capacity);
+        uint processId;
+        GetWindowThreadProcessId(window, out processId);
+        return new CaptionNestWindowInfo
+        {
+            Handle = window,
+            Title = title.ToString().Replace("\r", " ").Replace("\n", " "),
+            ClassName = className.ToString(),
+            ProcessId = processId,
+            Visible = IsWindowVisible(window),
+            ControlId = GetDlgCtrlID(window),
+            Style = GetWindowLongPtr(window, -16).ToInt64()
+        };
     }
 }
 '@

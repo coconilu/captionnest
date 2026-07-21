@@ -227,7 +227,7 @@ def test_windows_ci_exercises_affected_and_exact_head_installer_lifecycle() -> N
     assert "RUNNER_ENVIRONMENT -ne 'github-hosted'" in script
     assert "Affected installer SHA-256 mismatch" in script
     assert "function Invoke-AffectedUninstallerGuiConfirm" in script
-    assert "Set-UiCheckbox -Checkbox $Checkbox -Checked $true" in script
+    assert "Set-NativeCheckbox -Control $Checkboxes[0] -Checked $true" in script
     assert "GetLastActivePopup" in script
     assert "EnumerateTopLevelWindows" in script
     assert "BaselineWindowHandles" in script
@@ -235,6 +235,11 @@ def test_windows_ci_exercises_affected_and_exact_head_installer_lifecycle() -> N
     assert "Multiple CaptionNest GUI windows matched" in script
     assert "No CaptionNest GUI window appeared" in script
     assert "New top-level windows:" in script
+    assert "EnumerateChildWindows" in script
+    assert "GetDlgCtrlID" in script
+    assert "GetWindowLongPtr" in script
+    assert "0x00F1" in script
+    assert "0x00F5" in script
     assert "function Wait-NativeWindowClosed" in script
     assert "Affected uninstaller did not expose its explicit deletion confirmation" in script
     assert "function Remove-OwnedDirectoryWithRetry" in script
