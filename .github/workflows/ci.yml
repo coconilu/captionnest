@@ -51,11 +51,16 @@ jobs:
           node-version: '24'
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          python-version: '3.12'
+          enable-cache: true
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
       - run: npm ci
         working-directory: apps/web
+      - run: uv sync --project apps/sidecar --extra dev --locked
       - name: Parse PowerShell build scripts
         shell: pwsh
         run: |
@@ -86,5 +91,168 @@ jobs:
           The Windows Release workflow replaces this file with evidence generated
           from the exact PyAV/FFmpeg wheel bundled into the installer.
           '@ | Set-Content -Encoding utf8 tooling\packaging\dist\FFMPEG_BUILD_INFO.txt
+      - name: Build NSIS packaging test fixture
+        shell: pwsh
+        run: |
+          $Tauri = (Resolve-Path 'apps\web\node_modules\.bin\tauri.cmd').Path
+          $Arguments = @(
+            'build',
+            '--config', 'apps\desktop\tauri.conf.json',
+            '--target', 'x86_64-pc-windows-msvc',
+            '--bundles', 'nsis',
+            '--ci',
+            '--no-sign'
+          )
+          & $Tauri @Arguments
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to build the NSIS packaging test fixture.' }
+      - name: Test Windows NSIS packaging policies
+        shell: pwsh
+        env:
+          CAPTIONNEST_REQUIRE_NSIS_TESTS: '1'
+        run: uv run --project apps/sidecar --extra dev pytest tooling/tests/test_desktop_packaging.py
       - run: cargo fmt --manifest-path apps/desktop/Cargo.toml --check
       - run: cargo check --manifest-path apps/desktop/Cargo.toml --target x86_64-pc-windows-msvc --locked
+
+  installer-lifecycle:
+    runs-on: windows-latest
+    timeout-minutes: 180
+    env:
+      RELEASE_PYTHON_VERSION: '3.12'
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\tooling\packaging\build\vcpkg-binary-cache
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Restore LGPL media wheel cache
+        id: restore_media_wheel_cache
+        uses: actions/cache/restore@v6
+        with:
+          path: tooling/packaging/dist/media-wheel
+          key: >-
+            media-wheel-${{ runner.os }}-${{ runner.arch }}-python-${{ env.RELEASE_PYTHON_VERSION }}-${{ hashFiles('scripts/build-media-wheel.ps1', 'tooling/packaging/media-runtime/vcpkg.json') }}
+
+      - name: Check out pinned vcpkg baseline
+        if: steps.restore_media_wheel_cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v7
+        with:
+          repository: microsoft/vcpkg
+          ref: db4723bd0a99eab031f1a3dee4336dca43049c87
+          path: tooling/packaging/build/vcpkg
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          python-version: ${{ env.RELEASE_PYTHON_VERSION }}
+          enable-cache: true
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Restore vcpkg binary cache
+        if: steps.restore_media_wheel_cache.outputs.cache-hit != 'true'
+        id: restore_vcpkg_cache
+        uses: actions/cache/restore@v6
+        with:
+          path: tooling/packaging/build/vcpkg-binary-cache
+          key: vcpkg-windows-x64-${{ hashFiles('tooling/packaging/media-runtime/vcpkg.json') }}
+
+      - name: Bootstrap pinned vcpkg
+        if: steps.restore_media_wheel_cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          & .\tooling\packaging\build\vcpkg\bootstrap-vcpkg.bat '-disableMetrics'
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to bootstrap pinned vcpkg.' }
+
+      - run: npm ci
+        working-directory: apps/web
+
+      - run: uv sync --project apps/sidecar --extra asr --extra desktop --extra dev --locked
+
+      - name: Select lifecycle Python runtime
+        shell: pwsh
+        run: |
+          $Python = (Resolve-Path 'apps\sidecar\.venv\Scripts\python.exe').Path
+          "CAPTIONNEST_BUILD_PYTHON=$Python" | Add-Content -LiteralPath $env:GITHUB_ENV
+
+      - name: Build LGPL media wheel
+        if: steps.restore_media_wheel_cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          .\scripts\build-media-wheel.ps1 `
+            -VcpkgRoot 'tooling\packaging\build\vcpkg' `
+            -PythonExecutable $env:CAPTIONNEST_BUILD_PYTHON
+
+      - name: Install and verify LGPL media wheel
+        shell: pwsh
+        run: |
+          .\scripts\install-media-wheel.ps1 `
+            -PythonExecutable $env:CAPTIONNEST_BUILD_PYTHON
+
+      - name: Build exact-HEAD release-chain NSIS installer
+        shell: pwsh
+        run: |
+          .\scripts\build-desktop.ps1 -PythonExecutable $env:CAPTIONNEST_BUILD_PYTHON
+          $Exact = @(
+            Get-ChildItem `
+              -LiteralPath 'apps\desktop\target\x86_64-pc-windows-msvc\release\bundle\nsis' `
+              -Filter 'CaptionNest_0.2.8_x64-setup.exe' `
+              -File
+          )
+          if ($Exact.Count -ne 1) { throw "Expected one exact-HEAD installer; found $($Exact.Count)." }
+          $ExactCopy = Join-Path $env:RUNNER_TEMP 'CaptionNest_0.2.8_exact_HEAD_x64-setup.exe'
+          Copy-Item -LiteralPath $Exact[0].FullName -Destination $ExactCopy
+          "CAPTIONNEST_CURRENT_INSTALLER=$ExactCopy" | Add-Content -LiteralPath $env:GITHUB_ENV
+
+      - name: Build higher-version upgrade fixture from exact HEAD
+        shell: pwsh
+        run: |
+          $Tauri = (Resolve-Path 'apps\web\node_modules\.bin\tauri.cmd').Path
+          $UpgradeConfig = Join-Path $env:RUNNER_TEMP 'captionnest-upgrade-config.json'
+          @{ version = '0.2.9' } |
+            ConvertTo-Json |
+            Set-Content -LiteralPath $UpgradeConfig -Encoding utf8NoBOM
+          $Arguments = @(
+            'build',
+            '--config', 'apps\desktop\tauri.conf.json',
+            '--config', $UpgradeConfig,
+            '--target', 'x86_64-pc-windows-msvc',
+            '--bundles', 'nsis',
+            '--ci',
+            '--no-sign',
+            '--ignore-version-mismatches'
+          )
+          & $Tauri @Arguments
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to build the upgrade fixture.' }
+          $Upgrade = @(
+            Get-ChildItem `
+              -LiteralPath 'apps\desktop\target\x86_64-pc-windows-msvc\release\bundle\nsis' `
+              -Filter 'CaptionNest_0.2.9_x64-setup.exe' `
+              -File
+          )
+          if ($Upgrade.Count -ne 1) { throw "Expected one upgrade installer; found $($Upgrade.Count)." }
+          "CAPTIONNEST_UPGRADE_INSTALLER=$($Upgrade[0].FullName)" | Add-Content -LiteralPath $env:GITHUB_ENV
+
+      - name: Download and verify affected installer
+        shell: pwsh
+        run: |
+          $OldInstaller = Join-Path $env:RUNNER_TEMP 'CaptionNest_0.2.8_affected_x64-setup.exe'
+          Invoke-WebRequest `
+            -Uri 'https://github.com/coconilu/captionnest/releases/download/v0.2.8/CaptionNest_0.2.8_x64-setup.exe' `
+            -OutFile $OldInstaller
+          "CAPTIONNEST_OLD_INSTALLER=$OldInstaller" | Add-Content -LiteralPath $env:GITHUB_ENV
+
+      - name: Exercise isolated installer and model lifecycle
+        shell: pwsh
+        run: |
+          .\scripts\test-installer-model-retention.ps1 `
+            -OldInstallerPath $env:CAPTIONNEST_OLD_INSTALLER `
+            -CurrentInstallerPath $env:CAPTIONNEST_CURRENT_INSTALLER `
+            -UpgradeInstallerPath $env:CAPTIONNEST_UPGRADE_INSTALLER `
+            -ExpectedVersion '0.2.8' `
+            -UpgradeExpectedVersion '0.2.9'

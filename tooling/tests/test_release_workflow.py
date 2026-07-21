@@ -175,9 +175,137 @@ def test_javascript_actions_and_project_runtime_use_node_24() -> None:
     }
 
     assert targeted_refs == expected_refs
-    assert combined.count("# v8.3.2") == 2
-    assert re.findall(r"node-version:\s+'(\d+)'", combined) == ["24", "24", "24"]
+    assert combined.count("# v8.3.2") == 4
+    assert re.findall(r"node-version:\s+'(\d+)'", combined) == [
+        "24",
+        "24",
+        "24",
+        "24",
+    ]
     assert "node-version: '22'" not in combined
+
+
+def test_windows_ci_runs_required_nsis_packaging_regressions() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+    desktop = workflow.split("desktop-check:", 1)[1]
+
+    assert "astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990" in desktop
+    assert "uv sync --project apps/sidecar --extra dev --locked" in desktop
+    assert "Build NSIS packaging test fixture" in desktop
+    assert "Test Windows NSIS packaging policies" in desktop
+    assert "CAPTIONNEST_REQUIRE_NSIS_TESTS: '1'" in desktop
+    assert "pytest tooling/tests/test_desktop_packaging.py" in desktop
+
+
+def test_windows_ci_exercises_affected_and_exact_head_installer_lifecycle() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+    lifecycle = workflow.split("installer-lifecycle:", 1)[1]
+    script = (ROOT / "scripts" / "test-installer-model-retention.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert "timeout-minutes: 180" in lifecycle
+    assert "Restore LGPL media wheel cache" in lifecycle
+    assert "db4723bd0a99eab031f1a3dee4336dca43049c87" in lifecycle
+    assert "install-media-wheel.ps1" in lifecycle
+    assert "build-desktop.ps1" in lifecycle
+    assert "Build higher-version upgrade fixture from exact HEAD" in lifecycle
+    assert "captionnest-upgrade-config.json" in lifecycle
+    assert "@{ version = '0.2.9' }" in lifecycle
+    assert "'--config', 'apps\\desktop\\tauri.conf.json'" in lifecycle
+    assert "'--config', $UpgradeConfig" in lifecycle
+    assert "--ignore-version-mismatches" in lifecycle
+    assert "CAPTIONNEST_CURRENT_INSTALLER=$ExactCopy" in lifecycle
+    assert "CAPTIONNEST_UPGRADE_INSTALLER" in lifecycle
+    assert "releases/download/v0.2.8/CaptionNest_0.2.8_x64-setup.exe" in lifecycle
+    assert "test-installer-model-retention.ps1" in lifecycle
+    assert "-UpgradeInstallerPath $env:CAPTIONNEST_UPGRADE_INSTALLER" in lifecycle
+    assert "RUNNER_ENVIRONMENT -ne 'github-hosted'" in script
+    assert "Affected installer SHA-256 mismatch" in script
+    assert "function Invoke-AffectedUninstallerGuiConfirm" in script
+    assert "affected uninstall explicit deletion" in script
+    assert "GetLastActivePopup" in script
+    assert "EnumerateTopLevelWindows" in script
+    assert "BaselineWindowHandles" in script
+    assert "ClassName -eq '#32770'" in script
+    assert "Multiple CaptionNest GUI windows matched" in script
+    assert "No CaptionNest GUI window appeared" in script
+    assert "New top-level windows:" in script
+    assert "EnumerateChildWindows" in script
+    assert "GetDlgCtrlID" in script
+    assert "GetWindowLongPtr" in script
+    assert "0x00F1" in script
+    assert "0x0111" in script
+    assert "0x00F5" not in script
+    assert "PostMessage" in script
+    assert "GetParent" in script
+    assert "ControlId -eq $ControlId" in script
+    assert "button $ControlId was not enabled" in script
+    assert "SendMessageTimeout" in script
+    assert "0x0002" in script
+    assert "2000" in script
+    assert "[CaptionNestNativeMethods]::SendMessage(" not in script
+    assert "failed or timed out" in script
+    assert "GUI-ACTION:" in script
+    assert "upgrade choice transition observed" in script
+    assert "ControlId -eq 1201" in script
+    assert "upgrade finish retry" in script
+    assert "CompletionClickAttempts -lt 2" in script
+    assert "did not transition after one re-dispatch" in script
+    assert "completion state observed" in script
+    assert "CompletionButtonEvidence" in script
+    assert "ConfirmPageSignature" in script
+    assert "RealPageTransition" in script
+    assert "(?i)finish|close" in script
+    assert "(?i)\\b(completed|complete|finished|successful|successfully)\\b" in script
+    assert "remained open after completion command" in script
+    assert "function Get-NativeChildDiagnostics" in script
+    assert "Native child controls:" in script
+    assert "checkbox state was" in script
+    assert "UIAutomationClient" not in script
+    assert "function Get-CaptionNestInteractiveWindow" in script
+    assert "ClassName -eq 'ComboBox'" in script
+    assert "ControlId -eq 1002" in script
+    assert "language selector default OK" in script
+    assert "InitialControls.Count -gt 0" in script
+    assert "0x0146" in script
+    assert "0x0147" in script
+    assert "0x014E" in script
+    assert "NSIS language selector did not retain a valid selection" in script
+    assert "CaptionNest GUI page did not become ready" in script
+    assert "RemainingSelectors.Count -eq 0" in script
+    assert "Language selector did not advance" in script
+    assert "function Wait-NativeWindowClosed" in script
+    assert "Affected uninstaller did not expose its explicit deletion confirmation" in script
+    assert "affected uninstall finish" in script
+    assert "SawNonReadyFinish" in script
+    assert "CompletionTextChanged" in script
+    assert "did not reach a distinct enabled completion state" in script
+    assert "remained open after its completion button was clicked" in script
+    assert "function Remove-OwnedDirectoryWithRetry" in script
+    assert "[int]$TimeoutSeconds = 30" in script
+    assert "Owned CaptionNest path still exists" in script
+    assert "did not exit during cleanup" in script
+    for marker in (
+        "affected-explicit-uninstall",
+        "Test-UpgradeMode -Name 'gui-default'",
+        "@('/S')",
+        "@('/P')",
+        "@('/UPDATE', '/P')",
+        "current-uninstall-cancel-keep-delete",
+        "Invoke-RestMethod",
+        "status -ne 'ready'",
+        "ApiProcess.HasExited",
+        "last API state",
+        "RedirectStandardError",
+        "<redacted>",
+        "installed sidecar reported retained small model ready",
+    ):
+        assert marker in script
 
 
 def test_attestation_is_pinned_minimally_permitted_and_fail_closed() -> None:
