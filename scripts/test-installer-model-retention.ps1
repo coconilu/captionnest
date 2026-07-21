@@ -507,8 +507,25 @@ function Invoke-AffectedUninstallerGuiConfirm {
     if (-not $Confirmed) {
         throw 'Affected uninstaller did not expose its explicit deletion confirmation.'
     }
-    Wait-NativeWindowClosed -WindowHandle $MainWindowHandle
-    if (-not $Process.HasExited) { Wait-ProcessExit -Process $Process }
+    $Deadline = [DateTime]::UtcNow.AddSeconds(180)
+    while (
+        [CaptionNestNativeMethods]::IsWindow($MainWindowHandle) -and
+        [DateTime]::UtcNow -lt $Deadline
+    ) {
+        $Finish = [CaptionNestNativeMethods]::GetDlgItem($MainWindowHandle, 1)
+        if (
+            $Finish -ne [IntPtr]::Zero -and
+            [CaptionNestNativeMethods]::IsWindowEnabled($Finish)
+        ) {
+            Invoke-NativeButton `
+                -WindowHandle $MainWindowHandle `
+                -ControlId 1 `
+                -Description 'affected uninstall finish'
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    Wait-NativeWindowClosed -WindowHandle $MainWindowHandle -TimeoutSeconds 5
+    if (-not $Process.HasExited) { Wait-ProcessExit -Process $Process -TimeoutSeconds 5 }
     Assert-ModelAbsent
 }
 
