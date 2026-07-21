@@ -227,7 +227,7 @@ def test_windows_ci_exercises_affected_and_exact_head_installer_lifecycle() -> N
     assert "RUNNER_ENVIRONMENT -ne 'github-hosted'" in script
     assert "Affected installer SHA-256 mismatch" in script
     assert "function Invoke-AffectedUninstallerGuiConfirm" in script
-    assert "Set-NativeCheckbox -Control $Checkboxes[0] -Checked $true" in script
+    assert "affected uninstall explicit deletion" in script
     assert "GetLastActivePopup" in script
     assert "EnumerateTopLevelWindows" in script
     assert "BaselineWindowHandles" in script
@@ -240,6 +240,10 @@ def test_windows_ci_exercises_affected_and_exact_head_installer_lifecycle() -> N
     assert "GetWindowLongPtr" in script
     assert "0x00F1" in script
     assert "0x00F5" in script
+    assert "function Get-NativeChildDiagnostics" in script
+    assert "Native child controls:" in script
+    assert "checkbox state was" in script
+    assert "UIAutomationClient" not in script
     assert "function Wait-NativeWindowClosed" in script
     assert "Affected uninstaller did not expose its explicit deletion confirmation" in script
     assert "function Remove-OwnedDirectoryWithRetry" in script

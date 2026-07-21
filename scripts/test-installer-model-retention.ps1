@@ -145,24 +145,6 @@ function Assert-ModelAbsent {
     }
 }
 
-function Get-UiElement {
-    param(
-        [Parameter(Mandatory = $true)]$Root,
-        [Parameter(Mandatory = $true)]$Condition,
-        [int]$TimeoutSeconds = 30
-    )
-    $Deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
-    do {
-        $Element = $Root.FindFirst(
-            [System.Windows.Automation.TreeScope]::Descendants,
-            $Condition
-        )
-        if ($null -ne $Element) { return $Element }
-        Start-Sleep -Milliseconds 200
-    } while ([DateTime]::UtcNow -lt $Deadline)
-    throw 'Timed out waiting for an installer UI element.'
-}
-
 function Get-ProcessWindow {
     param([Parameter(Mandatory = $true)]$Process)
     $Deadline = [DateTime]::UtcNow.AddSeconds(30)
@@ -170,9 +152,7 @@ function Get-ProcessWindow {
     do {
         $Process.Refresh()
         if ($Process.MainWindowHandle -ne 0) {
-            return [System.Windows.Automation.AutomationElement]::FromHandle(
-                $Process.MainWindowHandle
-            )
+            return [IntPtr]$Process.MainWindowHandle
         }
         $LastNewWindows = @(
             [CaptionNestNativeMethods]::EnumerateTopLevelWindows() | Where-Object {
@@ -189,9 +169,7 @@ function Get-ProcessWindow {
             throw "Multiple CaptionNest GUI windows matched: $($Details -join '; ')."
         }
         if ($Candidates.Count -eq 1) {
-            return [System.Windows.Automation.AutomationElement]::FromHandle(
-                $Candidates[0].Handle
-            )
+            return $Candidates[0].Handle
         }
         Start-Sleep -Milliseconds 200
     } while ([DateTime]::UtcNow -lt $Deadline)
@@ -222,44 +200,25 @@ function Wait-NativeWindowClosed {
     }
 }
 
-function Invoke-UiElement {
-    param([Parameter(Mandatory = $true)]$Element)
-    $Pattern = $Element.GetCurrentPattern(
-        [System.Windows.Automation.InvokePattern]::Pattern
+function Get-NativeChildDiagnostics {
+    param([Parameter(Mandatory = $true)][IntPtr]$WindowHandle)
+    $Items = @(
+        [CaptionNestNativeMethods]::EnumerateChildWindows($WindowHandle) |
+            Select-Object -First 20 |
+            ForEach-Object {
+                "text='$($_.Title)' class='$($_.ClassName)' id=$($_.ControlId) " +
+                "style=0x$('{0:X}' -f $_.Style) visible=$($_.Visible)"
+            }
     )
-    $Pattern.Invoke()
-}
-
-function Set-UiCheckbox {
-    param(
-        [Parameter(Mandatory = $true)]$Checkbox,
-        [Parameter(Mandatory = $true)][bool]$Checked
-    )
-    $Pattern = $Checkbox.GetCurrentPattern(
-        [System.Windows.Automation.TogglePattern]::Pattern
-    )
-    $IsChecked = $Pattern.Current.ToggleState -eq `
-        [System.Windows.Automation.ToggleState]::On
-    if ($IsChecked -ne $Checked) { $Pattern.Toggle() }
-}
-
-function Get-ButtonCondition {
-    param([string]$AutomationId)
-    $TypeCondition = [System.Windows.Automation.PropertyCondition]::new(
-            [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-            [System.Windows.Automation.ControlType]::Button
-        )
-    $IdCondition = [System.Windows.Automation.PropertyCondition]::new(
-            [System.Windows.Automation.AutomationElement]::AutomationIdProperty,
-            $AutomationId
-        )
-    return [System.Windows.Automation.AndCondition]::new($TypeCondition, $IdCondition)
+    if ($Items.Count -eq 0) { return '<none>' }
+    return $Items -join '; '
 }
 
 function Get-NativeControlsByType {
     param(
         [Parameter(Mandatory = $true)][IntPtr]$WindowHandle,
         [Parameter(Mandatory = $true)][int[]]$ButtonTypes,
+        [Parameter(Mandatory = $true)][string]$Description,
         [int]$TimeoutSeconds = 30
     )
     $Deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
@@ -274,17 +233,23 @@ function Get-NativeControlsByType {
         if ($Controls.Count -gt 0) { return $Controls }
         Start-Sleep -Milliseconds 200
     } while ([DateTime]::UtcNow -lt $Deadline)
-    throw "Timed out waiting for native NSIS controls of type $($ButtonTypes -join ',')."
+    $Diagnostics = Get-NativeChildDiagnostics -WindowHandle $WindowHandle
+    throw (
+        "Timed out waiting for $Description (button types $($ButtonTypes -join ',')). " +
+        "Native child controls: $Diagnostics"
+    )
 }
 
 function Invoke-NativeButton {
     param(
         [Parameter(Mandatory = $true)][IntPtr]$WindowHandle,
-        [Parameter(Mandatory = $true)][int]$ControlId
+        [Parameter(Mandatory = $true)][int]$ControlId,
+        [Parameter(Mandatory = $true)][string]$Description
     )
     $Button = [CaptionNestNativeMethods]::GetDlgItem($WindowHandle, $ControlId)
     if ($Button -eq [IntPtr]::Zero) {
-        throw "NSIS button $ControlId was not found."
+        $Diagnostics = Get-NativeChildDiagnostics -WindowHandle $WindowHandle
+        throw "$Description button $ControlId was not found. Native child controls: $Diagnostics"
     }
     [void][CaptionNestNativeMethods]::SendMessage(
         $Button, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero
@@ -294,21 +259,30 @@ function Invoke-NativeButton {
 function Set-NativeCheckbox {
     param(
         [Parameter(Mandatory = $true)]$Control,
-        [Parameter(Mandatory = $true)][bool]$Checked
+        [Parameter(Mandatory = $true)][bool]$Checked,
+        [Parameter(Mandatory = $true)][string]$Description
     )
     $State = if ($Checked) { 1 } else { 0 }
     [void][CaptionNestNativeMethods]::SendMessage(
         $Control.Handle, 0x00F1, [IntPtr]$State, [IntPtr]::Zero
     )
+    $Actual = [CaptionNestNativeMethods]::SendMessage(
+        $Control.Handle, 0x00F0, [IntPtr]::Zero, [IntPtr]::Zero
+    ).ToInt64()
+    if ($Actual -ne $State) {
+        throw "$Description checkbox state was $Actual after requesting $State."
+    }
 }
 
 function Complete-GuiUpgradeWithDefault {
     $Process = Start-OwnedProcess -FilePath $UpgradeInstaller
-    $Window = Get-ProcessWindow -Process $Process
-    $WindowHandle = [IntPtr]$Window.Current.NativeWindowHandle
-    Invoke-NativeButton -WindowHandle $WindowHandle -ControlId 1
+    $WindowHandle = Get-ProcessWindow -Process $Process
+    Invoke-NativeButton -WindowHandle $WindowHandle -ControlId 1 -Description 'upgrade welcome next'
 
-    $Radios = @(Get-NativeControlsByType -WindowHandle $WindowHandle -ButtonTypes @(4, 9))
+    $Radios = @(Get-NativeControlsByType `
+        -WindowHandle $WindowHandle `
+        -ButtonTypes @(4, 9) `
+        -Description 'upgrade reinstall radio choices')
     if ($Radios.Count -ne 2) { throw 'The reinstall page did not expose two choices.' }
     $Selections = @($Radios | ForEach-Object {
         [CaptionNestNativeMethods]::SendMessage(
@@ -318,7 +292,7 @@ function Complete-GuiUpgradeWithDefault {
     if ($Selections[0] -or -not $Selections[1]) {
         throw "GUI upgrade default was not in-place: $($Selections -join ',')."
     }
-    Invoke-NativeButton -WindowHandle $WindowHandle -ControlId 1
+    Invoke-NativeButton -WindowHandle $WindowHandle -ControlId 1 -Description 'upgrade choice next'
 
     $Deadline = [DateTime]::UtcNow.AddSeconds(180)
     while (
@@ -332,14 +306,20 @@ function Complete-GuiUpgradeWithDefault {
                     [int]($_.Style -band 0xF) -in @(2, 3, 5, 6)
                 }
         )) {
-            Set-NativeCheckbox -Control $Checkbox -Checked $false
+            Set-NativeCheckbox `
+                -Control $Checkbox `
+                -Checked $false `
+                -Description 'upgrade finish option'
         }
         $Next = [CaptionNestNativeMethods]::GetDlgItem($WindowHandle, 1)
         if (
             $Next -ne [IntPtr]::Zero -and
             [CaptionNestNativeMethods]::IsWindowEnabled($Next)
         ) {
-            Invoke-NativeButton -WindowHandle $WindowHandle -ControlId 1
+            Invoke-NativeButton `
+                -WindowHandle $WindowHandle `
+                -ControlId 1 `
+                -Description 'upgrade page next'
         }
         Start-Sleep -Milliseconds 500
     }
@@ -353,25 +333,36 @@ function Invoke-CurrentUninstallerGui {
     )
     $Uninstaller = Join-Path $InstallRoot 'uninstall.exe'
     $Process = Start-OwnedProcess -FilePath $Uninstaller
-    $Window = Get-ProcessWindow -Process $Process
-    $WindowHandle = [IntPtr]$Window.Current.NativeWindowHandle
+    $WindowHandle = Get-ProcessWindow -Process $Process
     $Checkboxes = @(
-        Get-NativeControlsByType -WindowHandle $WindowHandle -ButtonTypes @(2, 3, 5, 6)
+        Get-NativeControlsByType `
+            -WindowHandle $WindowHandle `
+            -ButtonTypes @(2, 3, 5, 6) `
+            -Description 'current uninstall data checkbox'
     )
     if ($Checkboxes.Count -ne 1) {
         throw "Expected one uninstall data checkbox; found $($Checkboxes.Count)."
     }
     $Checkbox = $Checkboxes[0]
     if ($Decision -eq 'cancel') {
-        Invoke-NativeButton -WindowHandle $WindowHandle -ControlId 2
+        Invoke-NativeButton `
+            -WindowHandle $WindowHandle `
+            -ControlId 2 `
+            -Description 'current uninstall cancel'
         Wait-NativeWindowClosed -WindowHandle $WindowHandle
         if (-not $Process.HasExited) {
             Wait-ProcessExit -Process $Process -AllowedExitCodes @(0, 1)
         }
         return
     }
-    Set-NativeCheckbox -Control $Checkbox -Checked ($Decision -eq 'delete')
-    Invoke-NativeButton -WindowHandle $WindowHandle -ControlId 1
+    Set-NativeCheckbox `
+        -Control $Checkbox `
+        -Checked ($Decision -eq 'delete') `
+        -Description "current uninstall $Decision"
+    Invoke-NativeButton `
+        -WindowHandle $WindowHandle `
+        -ControlId 1 `
+        -Description "current uninstall $Decision confirm"
     $Deadline = [DateTime]::UtcNow.AddSeconds(180)
     while (
         [CaptionNestNativeMethods]::IsWindow($WindowHandle) -and
@@ -382,7 +373,10 @@ function Invoke-CurrentUninstallerGui {
             $Next -ne [IntPtr]::Zero -and
             [CaptionNestNativeMethods]::IsWindowEnabled($Next)
         ) {
-            Invoke-NativeButton -WindowHandle $WindowHandle -ControlId 1
+            Invoke-NativeButton `
+                -WindowHandle $WindowHandle `
+                -ControlId 1 `
+                -Description "current uninstall $Decision finish"
         }
         Start-Sleep -Milliseconds 500
     }
@@ -393,16 +387,24 @@ function Invoke-CurrentUninstallerGui {
 function Invoke-AffectedUninstallerGuiConfirm {
     $Uninstaller = Join-Path $InstallRoot 'uninstall.exe'
     $Process = Start-OwnedProcess -FilePath $Uninstaller
-    $Window = Get-ProcessWindow -Process $Process
-    $MainWindowHandle = [IntPtr]$Window.Current.NativeWindowHandle
+    $MainWindowHandle = Get-ProcessWindow -Process $Process
     $Checkboxes = @(
-        Get-NativeControlsByType -WindowHandle $MainWindowHandle -ButtonTypes @(2, 3, 5, 6)
+        Get-NativeControlsByType `
+            -WindowHandle $MainWindowHandle `
+            -ButtonTypes @(2, 3, 5, 6) `
+            -Description 'affected uninstall data checkbox'
     )
     if ($Checkboxes.Count -ne 1) {
         throw "Expected one affected-uninstall data checkbox; found $($Checkboxes.Count)."
     }
-    Set-NativeCheckbox -Control $Checkboxes[0] -Checked $true
-    Invoke-NativeButton -WindowHandle $MainWindowHandle -ControlId 1
+    Set-NativeCheckbox `
+        -Control $Checkboxes[0] `
+        -Checked $true `
+        -Description 'affected uninstall explicit deletion'
+    Invoke-NativeButton `
+        -WindowHandle $MainWindowHandle `
+        -ControlId 1 `
+        -Description 'affected uninstall confirm'
 
     $Confirmed = $false
     $Deadline = [DateTime]::UtcNow.AddSeconds(30)
@@ -563,7 +565,6 @@ function Test-UpgradeMode {
     Remove-OwnedCaptionNestState
 }
 
-Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
