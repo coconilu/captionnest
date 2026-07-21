@@ -368,16 +368,41 @@ function Assert-InstalledAppAndModelReady {
     }
 }
 
+function Remove-OwnedDirectoryWithRetry {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [int]$TimeoutSeconds = 30
+    )
+    $Deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        if (-not (Test-Path -LiteralPath $Path)) { return }
+        try {
+            Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+        } catch {
+            # NSIS can still be deleting children after its launcher exits.
+            # Retry the owned disposable-runner path until it is stable/absent.
+            if ([DateTime]::UtcNow -ge $Deadline) {
+                throw "Unable to remove owned CaptionNest path '$Path': $($_.Exception.Message)"
+            }
+            Start-Sleep -Milliseconds 250
+        }
+    } while ([DateTime]::UtcNow -lt $Deadline)
+    if (Test-Path -LiteralPath $Path) {
+        throw "Owned CaptionNest path still exists after $TimeoutSeconds seconds: $Path"
+    }
+}
+
 function Remove-OwnedCaptionNestState {
     foreach ($ProcessName in @('captionnest', 'captionnest-sidecar')) {
         Get-Process -Name $ProcessName -ErrorAction SilentlyContinue | ForEach-Object {
             & taskkill.exe @('/PID', $_.Id.ToString(), '/T', '/F') | Out-Null
+            if (-not $_.WaitForExit(10000)) {
+                throw "Owned process $($_.Id) did not exit during cleanup."
+            }
         }
     }
     foreach ($Path in @($InstallRoot, $AppDataRoot)) {
-        if (Test-Path -LiteralPath $Path) {
-            Remove-Item -LiteralPath $Path -Recurse -Force
-        }
+        Remove-OwnedDirectoryWithRetry -Path $Path
     }
     Remove-Item -LiteralPath $UninstallKey, $ManufacturerKey -Recurse -Force -ErrorAction SilentlyContinue
 }
