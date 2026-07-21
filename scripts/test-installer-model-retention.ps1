@@ -289,13 +289,35 @@ function Invoke-NativeButton {
         [Parameter(Mandatory = $true)][string]$Description
     )
     $Button = [CaptionNestNativeMethods]::GetDlgItem($WindowHandle, $ControlId)
-    if ($Button -eq [IntPtr]::Zero) {
+    $MatchingButtons = @(
+        [CaptionNestNativeMethods]::EnumerateChildWindows($WindowHandle) |
+            Where-Object {
+                $_.ClassName -eq 'Button' -and $_.ControlId -eq $ControlId
+            }
+    )
+    if (
+        $Button -eq [IntPtr]::Zero -or
+        $MatchingButtons.Count -ne 1 -or
+        $MatchingButtons[0].Handle -ne $Button
+    ) {
         $Diagnostics = Get-NativeChildDiagnostics -WindowHandle $WindowHandle
-        throw "$Description button $ControlId was not found. Native child controls: $Diagnostics"
+        throw "$Description button $ControlId was not uniquely identifiable. Native child controls: $Diagnostics"
+    }
+    if (-not [CaptionNestNativeMethods]::IsWindowEnabled($Button)) {
+        $Diagnostics = Get-NativeChildDiagnostics -WindowHandle $WindowHandle
+        throw "$Description button $ControlId was not enabled. Native child controls: $Diagnostics"
+    }
+    $ParentDialog = [CaptionNestNativeMethods]::GetParent($Button)
+    if ($ParentDialog -eq [IntPtr]::Zero -or -not [CaptionNestNativeMethods]::IsWindow($ParentDialog)) {
+        $Diagnostics = Get-NativeChildDiagnostics -WindowHandle $WindowHandle
+        throw "$Description button $ControlId parent dialog was unavailable. Native child controls: $Diagnostics"
     }
     Write-Host "GUI-ACTION: $Description dispatch"
     if (-not [CaptionNestNativeMethods]::PostMessage(
-        $Button, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero
+        $ParentDialog,
+        0x0111,
+        [IntPtr]($ControlId -band 0xFFFF),
+        $Button
     )) {
         $NativeError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
         $Diagnostics = Get-NativeChildDiagnostics -WindowHandle $WindowHandle
@@ -440,13 +462,36 @@ function Complete-GuiUpgradeWithDefault {
     Invoke-NativeButton -WindowHandle $WindowHandle -ControlId 1 -Description 'upgrade choice next'
 
     $ObservedChoiceTransition = $false
+    $LastClickWasCompletion = $false
+    $CompletionClickAttempts = 0
+    $LastClickAt = [DateTime]::UtcNow
     $Deadline = [DateTime]::UtcNow.AddSeconds(180)
     while (
         [CaptionNestNativeMethods]::IsWindow($WindowHandle) -and
         [DateTime]::UtcNow -lt $Deadline
     ) {
+        $Controls = @([CaptionNestNativeMethods]::EnumerateChildWindows($WindowHandle))
         $CurrentSignature = Get-NativeWindowSignature -WindowHandle $WindowHandle
         if ($CurrentSignature -eq $LastClickedSignature) {
+            if (
+                $LastClickWasCompletion -and
+                $CompletionClickAttempts -lt 2 -and
+                [DateTime]::UtcNow -ge $LastClickAt.AddSeconds(2)
+            ) {
+                Invoke-NativeButton `
+                    -WindowHandle $WindowHandle `
+                    -ControlId 1 `
+                    -Description 'upgrade finish retry'
+                $CompletionClickAttempts += 1
+                $LastClickAt = [DateTime]::UtcNow
+            } elseif (
+                $LastClickWasCompletion -and
+                $CompletionClickAttempts -eq 2 -and
+                [DateTime]::UtcNow -ge $LastClickAt.AddSeconds(5)
+            ) {
+                $Diagnostics = Get-NativeChildDiagnostics -WindowHandle $WindowHandle
+                throw "GUI upgrade finish page did not transition after one re-dispatch. Native child controls: $Diagnostics"
+            }
             Start-Sleep -Milliseconds 200
             continue
         }
@@ -455,7 +500,7 @@ function Complete-GuiUpgradeWithDefault {
             $ObservedChoiceTransition = $true
         }
         foreach ($Checkbox in @(
-            [CaptionNestNativeMethods]::EnumerateChildWindows($WindowHandle) |
+            $Controls |
                 Where-Object {
                     $_.ClassName -eq 'Button' -and
                     [int]($_.Style -band 0xF) -in @(2, 3, 5, 6)
@@ -472,11 +517,24 @@ function Complete-GuiUpgradeWithDefault {
             $Next -ne [IntPtr]::Zero -and
             [CaptionNestNativeMethods]::IsWindowEnabled($Next)
         ) {
+            $IsCompletionPage = @(
+                $Controls | Where-Object {
+                    $_.ControlId -eq 1201 -and $_.Visible
+                }
+            ).Count -eq 1
+            $ActionDescription = if ($IsCompletionPage) {
+                'upgrade finish'
+            } else {
+                'upgrade page next'
+            }
             Invoke-NativeButton `
                 -WindowHandle $WindowHandle `
                 -ControlId 1 `
-                -Description 'upgrade page next'
+                -Description $ActionDescription
             $LastClickedSignature = $CurrentSignature
+            $LastClickWasCompletion = $IsCompletionPage
+            $CompletionClickAttempts = if ($IsCompletionPage) { 1 } else { 0 }
+            $LastClickAt = [DateTime]::UtcNow
         }
         Start-Sleep -Milliseconds 200
     }
@@ -883,6 +941,9 @@ public static class CaptionNestNativeMethods
 
     [DllImport("user32.dll")]
     public static extern IntPtr GetDlgItem(IntPtr dialog, int itemId);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetParent(IntPtr window);
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

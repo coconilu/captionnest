@@ -239,8 +239,12 @@ def test_windows_ci_exercises_affected_and_exact_head_installer_lifecycle() -> N
     assert "GetDlgCtrlID" in script
     assert "GetWindowLongPtr" in script
     assert "0x00F1" in script
-    assert "0x00F5" in script
+    assert "0x0111" in script
+    assert "0x00F5" not in script
     assert "PostMessage" in script
+    assert "GetParent" in script
+    assert "ControlId -eq $ControlId" in script
+    assert "button $ControlId was not enabled" in script
     assert "SendMessageTimeout" in script
     assert "0x0002" in script
     assert "2000" in script
@@ -248,6 +252,10 @@ def test_windows_ci_exercises_affected_and_exact_head_installer_lifecycle() -> N
     assert "failed or timed out" in script
     assert "GUI-ACTION:" in script
     assert "upgrade choice transition observed" in script
+    assert "ControlId -eq 1201" in script
+    assert "upgrade finish retry" in script
+    assert "CompletionClickAttempts -lt 2" in script
+    assert "did not transition after one re-dispatch" in script
     assert "completion state observed" in script
     assert "function Get-NativeChildDiagnostics" in script
     assert "Native child controls:" in script
