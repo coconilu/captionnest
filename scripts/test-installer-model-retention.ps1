@@ -166,10 +166,7 @@ function Get-UiElement {
 function Get-ProcessWindow {
     param([Parameter(Mandatory = $true)]$Process)
     $Deadline = [DateTime]::UtcNow.AddSeconds(30)
-    $WindowCondition = [System.Windows.Automation.PropertyCondition]::new(
-        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-        [System.Windows.Automation.ControlType]::Window
-    )
+    $LastNewWindows = @()
     do {
         $Process.Refresh()
         if ($Process.MainWindowHandle -ne 0) {
@@ -177,22 +174,35 @@ function Get-ProcessWindow {
                 $Process.MainWindowHandle
             )
         }
-        $Candidates = @(
-            [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
-                [System.Windows.Automation.TreeScope]::Children,
-                $WindowCondition
-            ) | Where-Object {
-                -not $_.Current.IsOffscreen -and $_.Current.Name -like '*CaptionNest*'
+        $LastNewWindows = @(
+            [CaptionNestNativeMethods]::EnumerateTopLevelWindows() | Where-Object {
+                $_.Handle.ToInt64() -notin $script:BaselineWindowHandles
             }
         )
+        $Candidates = @($LastNewWindows | Where-Object {
+            $_.Title -like '*CaptionNest*' -or $_.ClassName -eq '#32770'
+        })
         if ($Candidates.Count -gt 1) {
-            $Names = $Candidates | ForEach-Object { $_.Current.Name }
-            throw "Multiple CaptionNest GUI windows matched: $($Names -join '; ')."
+            $Details = $Candidates | ForEach-Object {
+                "title='$($_.Title)' class='$($_.ClassName)' pid=$($_.ProcessId) visible=$($_.Visible)"
+            }
+            throw "Multiple CaptionNest GUI windows matched: $($Details -join '; ')."
         }
-        if ($Candidates.Count -eq 1) { return $Candidates[0] }
+        if ($Candidates.Count -eq 1) {
+            return [System.Windows.Automation.AutomationElement]::FromHandle(
+                $Candidates[0].Handle
+            )
+        }
         Start-Sleep -Milliseconds 200
     } while ([DateTime]::UtcNow -lt $Deadline)
-    throw "No CaptionNest GUI window appeared for launcher process $($Process.Id)."
+    $Diagnostics = @($LastNewWindows | Select-Object -First 20 | ForEach-Object {
+        "title='$($_.Title)' class='$($_.ClassName)' pid=$($_.ProcessId) visible=$($_.Visible)"
+    })
+    if ($Diagnostics.Count -eq 0) { $Diagnostics = @('<none>') }
+    throw (
+        "No CaptionNest GUI window appeared for launcher process $($Process.Id). " +
+        "New top-level windows: $($Diagnostics -join '; ')."
+    )
 }
 
 function Wait-NativeWindowClosed {
@@ -525,10 +535,39 @@ function Test-UpgradeMode {
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 Add-Type -TypeDefinition @'
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Text;
+
+public sealed class CaptionNestWindowInfo
+{
+    public IntPtr Handle { get; set; }
+    public string Title { get; set; }
+    public string ClassName { get; set; }
+    public uint ProcessId { get; set; }
+    public bool Visible { get; set; }
+}
 
 public static class CaptionNestNativeMethods
 {
+    private delegate bool EnumWindowsCallback(IntPtr window, IntPtr parameter);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumWindows(EnumWindowsCallback callback, IntPtr parameter);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetWindowText(IntPtr window, StringBuilder text, int count);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassName(IntPtr window, StringBuilder text, int count);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowVisible(IntPtr window);
+
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool IsWindow(IntPtr window);
@@ -546,8 +585,36 @@ public static class CaptionNestNativeMethods
         IntPtr wordParameter,
         IntPtr longParameter
     );
+
+    public static CaptionNestWindowInfo[] EnumerateTopLevelWindows()
+    {
+        var windows = new List<CaptionNestWindowInfo>();
+        EnumWindows((window, parameter) =>
+        {
+            var title = new StringBuilder(512);
+            var className = new StringBuilder(256);
+            GetWindowText(window, title, title.Capacity);
+            GetClassName(window, className, className.Capacity);
+            uint processId;
+            GetWindowThreadProcessId(window, out processId);
+            windows.Add(new CaptionNestWindowInfo
+            {
+                Handle = window,
+                Title = title.ToString().Replace("\r", " ").Replace("\n", " "),
+                ClassName = className.ToString(),
+                ProcessId = processId,
+                Visible = IsWindowVisible(window)
+            });
+            return true;
+        }, IntPtr.Zero);
+        return windows.ToArray();
+    }
 }
 '@
+$script:BaselineWindowHandles = @(
+    [CaptionNestNativeMethods]::EnumerateTopLevelWindows() |
+        ForEach-Object { $_.Handle.ToInt64() }
+)
 Assert-DisposableRunnerState
 Assert-OldInstallerIdentity
 New-Item -ItemType Directory -Path $EvidenceRoot -Force | Out-Null
