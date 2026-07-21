@@ -280,8 +280,23 @@ function Set-NativeCheckbox {
 function Get-CaptionNestInteractiveWindow {
     param([Parameter(Mandatory = $true)]$Process)
     $WindowHandle = Get-ProcessWindow -Process $Process
+    $Deadline = [DateTime]::UtcNow.AddSeconds(30)
+    do {
+        $InitialControls = @(
+            [CaptionNestNativeMethods]::EnumerateChildWindows($WindowHandle)
+        )
+        $PrimaryButton = [CaptionNestNativeMethods]::GetDlgItem($WindowHandle, 1)
+        if ($InitialControls.Count -gt 0 -and $PrimaryButton -ne [IntPtr]::Zero) {
+            break
+        }
+        Start-Sleep -Milliseconds 200
+    } while ([DateTime]::UtcNow -lt $Deadline)
+    if ($InitialControls.Count -eq 0 -or $PrimaryButton -eq [IntPtr]::Zero) {
+        $Diagnostics = Get-NativeChildDiagnostics -WindowHandle $WindowHandle
+        throw "CaptionNest GUI page did not become ready. Native child controls: $Diagnostics"
+    }
     $LanguageSelectors = @(
-        [CaptionNestNativeMethods]::EnumerateChildWindows($WindowHandle) |
+        $InitialControls |
             Where-Object { $_.ClassName -eq 'ComboBox' -and $_.ControlId -eq 1002 }
     )
     if ($LanguageSelectors.Count -gt 1) {
@@ -289,6 +304,31 @@ function Get-CaptionNestInteractiveWindow {
         throw "Multiple NSIS language selectors matched. Native child controls: $Diagnostics"
     }
     if ($LanguageSelectors.Count -eq 1) {
+        $LanguageSelector = $LanguageSelectors[0]
+        $LanguageCount = [CaptionNestNativeMethods]::SendMessage(
+            $LanguageSelector.Handle, 0x0146, [IntPtr]::Zero, [IntPtr]::Zero
+        ).ToInt64()
+        if ($LanguageCount -le 0) {
+            $Diagnostics = Get-NativeChildDiagnostics -WindowHandle $WindowHandle
+            throw "NSIS language selector contained $LanguageCount choices. Native child controls: $Diagnostics"
+        }
+
+        $SelectedLanguage = [CaptionNestNativeMethods]::SendMessage(
+            $LanguageSelector.Handle, 0x0147, [IntPtr]::Zero, [IntPtr]::Zero
+        ).ToInt64()
+        if ($SelectedLanguage -eq -1) {
+            [void][CaptionNestNativeMethods]::SendMessage(
+                $LanguageSelector.Handle, 0x014E, [IntPtr]::Zero, [IntPtr]::Zero
+            )
+            $SelectedLanguage = [CaptionNestNativeMethods]::SendMessage(
+                $LanguageSelector.Handle, 0x0147, [IntPtr]::Zero, [IntPtr]::Zero
+            ).ToInt64()
+        }
+        if ($SelectedLanguage -lt 0 -or $SelectedLanguage -ge $LanguageCount) {
+            $Diagnostics = Get-NativeChildDiagnostics -WindowHandle $WindowHandle
+            throw "NSIS language selector did not retain a valid selection (selected=$SelectedLanguage, count=$LanguageCount). Native child controls: $Diagnostics"
+        }
+
         Invoke-NativeButton `
             -WindowHandle $WindowHandle `
             -ControlId 1 `

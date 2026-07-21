@@ -248,6 +248,12 @@ def test_windows_ci_exercises_affected_and_exact_head_installer_lifecycle() -> N
     assert "ClassName -eq 'ComboBox'" in script
     assert "ControlId -eq 1002" in script
     assert "language selector default OK" in script
+    assert "InitialControls.Count -gt 0" in script
+    assert "0x0146" in script
+    assert "0x0147" in script
+    assert "0x014E" in script
+    assert "NSIS language selector did not retain a valid selection" in script
+    assert "CaptionNest GUI page did not become ready" in script
     assert "RemainingSelectors.Count -eq 0" in script
     assert "Language selector did not advance" in script
     assert "function Wait-NativeWindowClosed" in script
