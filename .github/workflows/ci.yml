@@ -213,11 +213,15 @@ jobs:
         shell: pwsh
         run: |
           $Tauri = (Resolve-Path 'apps\web\node_modules\.bin\tauri.cmd').Path
+          $UpgradeConfig = Join-Path $env:RUNNER_TEMP 'captionnest-upgrade-config.json'
+          @{ version = '0.2.9' } |
+            ConvertTo-Json |
+            Set-Content -LiteralPath $UpgradeConfig -Encoding utf8NoBOM
           Push-Location 'apps\desktop'
           try {
             $Arguments = @(
               'build',
-              '--config', '{"version":"0.2.9"}',
+              '--config', $UpgradeConfig,
               '--target', 'x86_64-pc-windows-msvc',
               '--bundles', 'nsis',
               '--ci',

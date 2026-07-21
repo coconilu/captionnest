@@ -214,7 +214,9 @@ def test_windows_ci_exercises_affected_and_exact_head_installer_lifecycle() -> N
     assert "install-media-wheel.ps1" in lifecycle
     assert "build-desktop.ps1" in lifecycle
     assert "Build higher-version upgrade fixture from exact HEAD" in lifecycle
-    assert "'{\"version\":\"0.2.9\"}'" in lifecycle
+    assert "captionnest-upgrade-config.json" in lifecycle
+    assert "@{ version = '0.2.9' }" in lifecycle
+    assert "'--config', $UpgradeConfig" in lifecycle
     assert "--ignore-version-mismatches" in lifecycle
     assert "CAPTIONNEST_CURRENT_INSTALLER=$ExactCopy" in lifecycle
     assert "CAPTIONNEST_UPGRADE_INSTALLER" in lifecycle
