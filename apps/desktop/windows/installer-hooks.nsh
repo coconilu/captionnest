@@ -1,9 +1,16 @@
-!macro NSIS_HOOK_PREUNINSTALL
-  MessageBox MB_ICONEXCLAMATION|MB_OKCANCEL|MB_DEFBUTTON2 "卸载 CaptionNest 将同时删除本机下载的语音识别模型。模型文件可能占用数 GB 空间，删除后无法恢复。$\r$\n$\r$\n选择“确定”继续卸载，选择“取消”保留应用和模型。" /SD IDOK IDOK continue_uninstall
-  Abort
-  continue_uninstall:
-!macroend
+!include "${__FILEDIR__}\model-retention-policy.nsh"
+
+!ifndef CAPTIONNEST_MODELS_DIR
+  !define CAPTIONNEST_MODELS_DIR "$LOCALAPPDATA\io.github.coconilu.captionnest\models"
+!endif
 
 !macro NSIS_HOOK_POSTUNINSTALL
-  RMDir /r "$LOCALAPPDATA\io.github.coconilu.captionnest\models"
+  ; Tauri's uninstall confirmation page owns the user decision. Its built-in
+  ; "delete app data" checkbox is unchecked by default and is skipped for
+  ; passive, silent, and /UPDATE runs. Mirror the same guard here so models are
+  ; never removed merely because an older program version is being replaced.
+  ${If} $DeleteAppDataCheckboxState = 1
+  ${AndIf} $UpdateMode <> 1
+    RMDir /r "${CAPTIONNEST_MODELS_DIR}"
+  ${EndIf}
 !macroend
