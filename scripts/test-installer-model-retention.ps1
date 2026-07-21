@@ -606,6 +606,7 @@ function Invoke-CurrentUninstallerGui {
         throw "Current uninstaller confirm button was not uniquely identifiable. Native child controls: $Diagnostics"
     }
     $ConfirmButtonTitle = $ConfirmButtonInfo[0].Title
+    $ConfirmPageSignature = Get-NativeWindowSignature -WindowHandle $WindowHandle
     Invoke-NativeButton `
         -WindowHandle $WindowHandle `
         -ControlId 1 `
@@ -623,17 +624,37 @@ function Invoke-CurrentUninstallerGui {
             Start-Sleep -Milliseconds 200
             continue
         }
+        $Controls = @([CaptionNestNativeMethods]::EnumerateChildWindows($WindowHandle))
         $FinishInfo = @(
-            [CaptionNestNativeMethods]::EnumerateChildWindows($WindowHandle) |
+            $Controls |
                 Where-Object { $_.Handle -eq $Finish }
         )
-        $CompletionTextChanged = (
+        $CompletionButtonEvidence = (
             $FinishInfo.Count -eq 1 -and
-            $FinishInfo[0].Title -ne $ConfirmButtonTitle
+            $FinishInfo[0].Title -match '(?i)finish|close'
         )
-        $CompletionControlChanged = $Finish -ne $ConfirmButtonHandle
-        if ($SawNonReadyFinish -or $CompletionTextChanged -or $CompletionControlChanged) {
-            Write-Host "GUI-ACTION: current uninstall $Decision completion state observed"
+        $CompletionTexts = @(
+            $Controls | Where-Object {
+                $_.Visible -and
+                $_.ClassName -eq 'Static' -and
+                $_.Title -match '(?i)\b(completed|complete|finished|successful|successfully)\b'
+            }
+        )
+        $RealPageTransition = (
+            $SawNonReadyFinish -or
+            $Finish -ne $ConfirmButtonHandle -or
+            $FinishInfo[0].Title -ne $ConfirmButtonTitle -or
+            (Get-NativeWindowSignature -WindowHandle $WindowHandle) -ne $ConfirmPageSignature
+        )
+        if (
+            $RealPageTransition -and
+            $CompletionButtonEvidence -and
+            $CompletionTexts.Count -gt 0
+        ) {
+            Write-Host (
+                "GUI-ACTION: current uninstall $Decision completion state observed " +
+                "button='$($FinishInfo[0].Title)' text='$($CompletionTexts[0].Title)'"
+            )
             Invoke-NativeButton `
                 -WindowHandle $WindowHandle `
                 -ControlId 1 `
@@ -647,7 +668,17 @@ function Invoke-CurrentUninstallerGui {
         $Diagnostics = Get-NativeChildDiagnostics -WindowHandle $WindowHandle
         throw "Current uninstaller $Decision did not reach a distinct enabled completion state. Native child controls: $Diagnostics"
     }
-    Wait-NativeWindowClosed -WindowHandle $WindowHandle -TimeoutSeconds 5
+    $Deadline = [DateTime]::UtcNow.AddSeconds(5)
+    while (
+        [CaptionNestNativeMethods]::IsWindow($WindowHandle) -and
+        [DateTime]::UtcNow -lt $Deadline
+    ) {
+        Start-Sleep -Milliseconds 200
+    }
+    if ([CaptionNestNativeMethods]::IsWindow($WindowHandle)) {
+        $Diagnostics = Get-NativeChildDiagnostics -WindowHandle $WindowHandle
+        throw "Current uninstaller $Decision remained open after completion command. Native child controls: $Diagnostics"
+    }
     if (-not $Process.HasExited) { Wait-ProcessExit -Process $Process -TimeoutSeconds 5 }
     Write-Host "GUI-ACTION: current uninstall $Decision window closed"
 }

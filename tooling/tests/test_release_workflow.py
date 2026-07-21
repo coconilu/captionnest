@@ -257,6 +257,12 @@ def test_windows_ci_exercises_affected_and_exact_head_installer_lifecycle() -> N
     assert "CompletionClickAttempts -lt 2" in script
     assert "did not transition after one re-dispatch" in script
     assert "completion state observed" in script
+    assert "CompletionButtonEvidence" in script
+    assert "ConfirmPageSignature" in script
+    assert "RealPageTransition" in script
+    assert "(?i)finish|close" in script
+    assert "(?i)\\b(completed|complete|finished|successful|successfully)\\b" in script
+    assert "remained open after completion command" in script
     assert "function Get-NativeChildDiagnostics" in script
     assert "Native child controls:" in script
     assert "checkbox state was" in script
