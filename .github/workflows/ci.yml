@@ -217,22 +217,18 @@ jobs:
           @{ version = '0.2.9' } |
             ConvertTo-Json |
             Set-Content -LiteralPath $UpgradeConfig -Encoding utf8NoBOM
-          Push-Location 'apps\desktop'
-          try {
-            $Arguments = @(
-              'build',
-              '--config', $UpgradeConfig,
-              '--target', 'x86_64-pc-windows-msvc',
-              '--bundles', 'nsis',
-              '--ci',
-              '--no-sign',
-              '--ignore-version-mismatches'
-            )
-            & $Tauri @Arguments
-            if ($LASTEXITCODE -ne 0) { throw 'Unable to build the upgrade fixture.' }
-          } finally {
-            Pop-Location
-          }
+          $Arguments = @(
+            'build',
+            '--config', 'apps\desktop\tauri.conf.json',
+            '--config', $UpgradeConfig,
+            '--target', 'x86_64-pc-windows-msvc',
+            '--bundles', 'nsis',
+            '--ci',
+            '--no-sign',
+            '--ignore-version-mismatches'
+          )
+          & $Tauri @Arguments
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to build the upgrade fixture.' }
           $Upgrade = @(
             Get-ChildItem `
               -LiteralPath 'apps\desktop\target\x86_64-pc-windows-msvc\release\bundle\nsis' `
