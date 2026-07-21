@@ -210,11 +210,50 @@ function Get-NativeChildDiagnostics {
             Select-Object -First 20 |
             ForEach-Object {
                 "text='$($_.Title)' class='$($_.ClassName)' id=$($_.ControlId) " +
-                "style=0x$('{0:X}' -f $_.Style) visible=$($_.Visible)"
+                "style=0x$('{0:X}' -f $_.Style) visible=$($_.Visible) enabled=$($_.Enabled)"
             }
     )
     if ($Items.Count -eq 0) { return '<none>' }
     return $Items -join '; '
+}
+
+function Get-NativeWindowSignature {
+    param([Parameter(Mandatory = $true)][IntPtr]$WindowHandle)
+    return (
+        @([CaptionNestNativeMethods]::EnumerateChildWindows($WindowHandle)) |
+            Sort-Object { $_.Handle.ToInt64() } |
+            ForEach-Object {
+                "$($_.Handle.ToInt64())|$($_.ClassName)|$($_.ControlId)|$($_.Title)|" +
+                "$($_.Style)|$($_.Visible)|$($_.Enabled)"
+            }
+    ) -join ';'
+}
+
+function Invoke-NativeControlMessage {
+    param(
+        [Parameter(Mandatory = $true)][IntPtr]$ControlHandle,
+        [Parameter(Mandatory = $true)][uint32]$Message,
+        [IntPtr]$WordParameter = [IntPtr]::Zero,
+        [IntPtr]$LongParameter = [IntPtr]::Zero,
+        [Parameter(Mandatory = $true)][IntPtr]$WindowHandle,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+    $Result = [IntPtr]::Zero
+    $Succeeded = [CaptionNestNativeMethods]::SendMessageTimeout(
+        $ControlHandle,
+        $Message,
+        $WordParameter,
+        $LongParameter,
+        0x0002,
+        2000,
+        [ref]$Result
+    )
+    if ($Succeeded -eq [IntPtr]::Zero) {
+        $NativeError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        $Diagnostics = Get-NativeChildDiagnostics -WindowHandle $WindowHandle
+        throw "$Description native message 0x$('{0:X}' -f $Message) failed or timed out (Win32=$NativeError). Native child controls: $Diagnostics"
+    }
+    return $Result
 }
 
 function Get-NativeControlsByType {
@@ -254,24 +293,36 @@ function Invoke-NativeButton {
         $Diagnostics = Get-NativeChildDiagnostics -WindowHandle $WindowHandle
         throw "$Description button $ControlId was not found. Native child controls: $Diagnostics"
     }
-    [void][CaptionNestNativeMethods]::SendMessage(
+    Write-Host "GUI-ACTION: $Description dispatch"
+    if (-not [CaptionNestNativeMethods]::PostMessage(
         $Button, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero
-    )
+    )) {
+        $NativeError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        $Diagnostics = Get-NativeChildDiagnostics -WindowHandle $WindowHandle
+        throw "$Description button dispatch failed (Win32=$NativeError). Native child controls: $Diagnostics"
+    }
+    Write-Host "GUI-ACTION: $Description dispatched"
 }
 
 function Set-NativeCheckbox {
     param(
         [Parameter(Mandatory = $true)]$Control,
+        [Parameter(Mandatory = $true)][IntPtr]$WindowHandle,
         [Parameter(Mandatory = $true)][bool]$Checked,
         [Parameter(Mandatory = $true)][string]$Description
     )
     $State = if ($Checked) { 1 } else { 0 }
-    [void][CaptionNestNativeMethods]::SendMessage(
-        $Control.Handle, 0x00F1, [IntPtr]$State, [IntPtr]::Zero
-    )
-    $Actual = [CaptionNestNativeMethods]::SendMessage(
-        $Control.Handle, 0x00F0, [IntPtr]::Zero, [IntPtr]::Zero
-    ).ToInt64()
+    [void](Invoke-NativeControlMessage `
+        -ControlHandle $Control.Handle `
+        -Message 0x00F1 `
+        -WordParameter ([IntPtr]$State) `
+        -WindowHandle $WindowHandle `
+        -Description "$Description checkbox set")
+    $Actual = (Invoke-NativeControlMessage `
+        -ControlHandle $Control.Handle `
+        -Message 0x00F0 `
+        -WindowHandle $WindowHandle `
+        -Description "$Description checkbox readback").ToInt64()
     if ($Actual -ne $State) {
         throw "$Description checkbox state was $Actual after requesting $State."
     }
@@ -305,24 +356,32 @@ function Get-CaptionNestInteractiveWindow {
     }
     if ($LanguageSelectors.Count -eq 1) {
         $LanguageSelector = $LanguageSelectors[0]
-        $LanguageCount = [CaptionNestNativeMethods]::SendMessage(
-            $LanguageSelector.Handle, 0x0146, [IntPtr]::Zero, [IntPtr]::Zero
-        ).ToInt64()
+        $LanguageCount = (Invoke-NativeControlMessage `
+            -ControlHandle $LanguageSelector.Handle `
+            -Message 0x0146 `
+            -WindowHandle $WindowHandle `
+            -Description 'language selector choice count').ToInt64()
         if ($LanguageCount -le 0) {
             $Diagnostics = Get-NativeChildDiagnostics -WindowHandle $WindowHandle
             throw "NSIS language selector contained $LanguageCount choices. Native child controls: $Diagnostics"
         }
 
-        $SelectedLanguage = [CaptionNestNativeMethods]::SendMessage(
-            $LanguageSelector.Handle, 0x0147, [IntPtr]::Zero, [IntPtr]::Zero
-        ).ToInt64()
+        $SelectedLanguage = (Invoke-NativeControlMessage `
+            -ControlHandle $LanguageSelector.Handle `
+            -Message 0x0147 `
+            -WindowHandle $WindowHandle `
+            -Description 'language selector current choice').ToInt64()
         if ($SelectedLanguage -eq -1) {
-            [void][CaptionNestNativeMethods]::SendMessage(
-                $LanguageSelector.Handle, 0x014E, [IntPtr]::Zero, [IntPtr]::Zero
-            )
-            $SelectedLanguage = [CaptionNestNativeMethods]::SendMessage(
-                $LanguageSelector.Handle, 0x0147, [IntPtr]::Zero, [IntPtr]::Zero
-            ).ToInt64()
+            [void](Invoke-NativeControlMessage `
+                -ControlHandle $LanguageSelector.Handle `
+                -Message 0x014E `
+                -WindowHandle $WindowHandle `
+                -Description 'language selector choose index zero')
+            $SelectedLanguage = (Invoke-NativeControlMessage `
+                -ControlHandle $LanguageSelector.Handle `
+                -Message 0x0147 `
+                -WindowHandle $WindowHandle `
+                -Description 'language selector choice readback').ToInt64()
         }
         if ($SelectedLanguage -lt 0 -or $SelectedLanguage -ge $LanguageCount) {
             $Diagnostics = Get-NativeChildDiagnostics -WindowHandle $WindowHandle
@@ -344,7 +403,10 @@ function Get-CaptionNestInteractiveWindow {
                         $_.ClassName -eq 'ComboBox' -and $_.ControlId -eq 1002
                     }
             )
-            if ($RemainingSelectors.Count -eq 0) { return $WindowHandle }
+            if ($RemainingSelectors.Count -eq 0) {
+                Write-Host 'GUI-ACTION: language selector transition observed'
+                return $WindowHandle
+            }
             Start-Sleep -Milliseconds 200
         } while ([DateTime]::UtcNow -lt $Deadline)
         $Diagnostics = Get-NativeChildDiagnostics -WindowHandle $WindowHandle
@@ -362,22 +424,36 @@ function Complete-GuiUpgradeWithDefault {
         -WindowHandle $WindowHandle `
         -ButtonTypes @(4, 9) `
         -Description 'upgrade reinstall radio choices')
+    Write-Host 'GUI-ACTION: upgrade welcome transition observed'
     if ($Radios.Count -ne 2) { throw 'The reinstall page did not expose two choices.' }
     $Selections = @($Radios | ForEach-Object {
-        [CaptionNestNativeMethods]::SendMessage(
-            $_.Handle, 0x00F0, [IntPtr]::Zero, [IntPtr]::Zero
-        ).ToInt64() -eq 1
+        (Invoke-NativeControlMessage `
+            -ControlHandle $_.Handle `
+            -Message 0x00F0 `
+            -WindowHandle $WindowHandle `
+            -Description 'upgrade reinstall radio readback').ToInt64() -eq 1
     })
     if ($Selections[0] -or -not $Selections[1]) {
         throw "GUI upgrade default was not in-place: $($Selections -join ',')."
     }
+    $LastClickedSignature = Get-NativeWindowSignature -WindowHandle $WindowHandle
     Invoke-NativeButton -WindowHandle $WindowHandle -ControlId 1 -Description 'upgrade choice next'
 
+    $ObservedChoiceTransition = $false
     $Deadline = [DateTime]::UtcNow.AddSeconds(180)
     while (
         [CaptionNestNativeMethods]::IsWindow($WindowHandle) -and
         [DateTime]::UtcNow -lt $Deadline
     ) {
+        $CurrentSignature = Get-NativeWindowSignature -WindowHandle $WindowHandle
+        if ($CurrentSignature -eq $LastClickedSignature) {
+            Start-Sleep -Milliseconds 200
+            continue
+        }
+        if (-not $ObservedChoiceTransition) {
+            Write-Host 'GUI-ACTION: upgrade choice transition observed'
+            $ObservedChoiceTransition = $true
+        }
         foreach ($Checkbox in @(
             [CaptionNestNativeMethods]::EnumerateChildWindows($WindowHandle) |
                 Where-Object {
@@ -387,6 +463,7 @@ function Complete-GuiUpgradeWithDefault {
         )) {
             Set-NativeCheckbox `
                 -Control $Checkbox `
+                -WindowHandle $WindowHandle `
                 -Checked $false `
                 -Description 'upgrade finish option'
         }
@@ -399,11 +476,17 @@ function Complete-GuiUpgradeWithDefault {
                 -WindowHandle $WindowHandle `
                 -ControlId 1 `
                 -Description 'upgrade page next'
+            $LastClickedSignature = $CurrentSignature
         }
-        Start-Sleep -Milliseconds 500
+        Start-Sleep -Milliseconds 200
+    }
+    if ([CaptionNestNativeMethods]::IsWindow($WindowHandle)) {
+        $Diagnostics = Get-NativeChildDiagnostics -WindowHandle $WindowHandle
+        throw "GUI upgrade did not close within 180 seconds. Native child controls: $Diagnostics"
     }
     Wait-NativeWindowClosed -WindowHandle $WindowHandle -TimeoutSeconds 5
     if (-not $Process.HasExited) { Wait-ProcessExit -Process $Process -TimeoutSeconds 5 }
+    Write-Host 'GUI-ACTION: GUI upgrade window closed'
 }
 
 function Invoke-CurrentUninstallerGui {
@@ -432,35 +515,68 @@ function Invoke-CurrentUninstallerGui {
         if (-not $Process.HasExited) {
             Wait-ProcessExit -Process $Process -AllowedExitCodes @(0, 1)
         }
+        Write-Host 'GUI-ACTION: current uninstall cancel window closed'
         return
     }
     Set-NativeCheckbox `
         -Control $Checkbox `
+        -WindowHandle $WindowHandle `
         -Checked ($Decision -eq 'delete') `
         -Description "current uninstall $Decision"
+    $ConfirmButtonHandle = [CaptionNestNativeMethods]::GetDlgItem($WindowHandle, 1)
+    $ConfirmButtonInfo = @(
+        [CaptionNestNativeMethods]::EnumerateChildWindows($WindowHandle) |
+            Where-Object { $_.Handle -eq $ConfirmButtonHandle }
+    )
+    if ($ConfirmButtonHandle -eq [IntPtr]::Zero -or $ConfirmButtonInfo.Count -ne 1) {
+        $Diagnostics = Get-NativeChildDiagnostics -WindowHandle $WindowHandle
+        throw "Current uninstaller confirm button was not uniquely identifiable. Native child controls: $Diagnostics"
+    }
+    $ConfirmButtonTitle = $ConfirmButtonInfo[0].Title
     Invoke-NativeButton `
         -WindowHandle $WindowHandle `
         -ControlId 1 `
         -Description "current uninstall $Decision confirm"
+    $SawNonReadyFinish = $false
+    $ClickedFinish = $false
     $Deadline = [DateTime]::UtcNow.AddSeconds(180)
     while (
         [CaptionNestNativeMethods]::IsWindow($WindowHandle) -and
         [DateTime]::UtcNow -lt $Deadline
     ) {
-        $Next = [CaptionNestNativeMethods]::GetDlgItem($WindowHandle, 1)
-        if (
-            $Next -ne [IntPtr]::Zero -and
-            [CaptionNestNativeMethods]::IsWindowEnabled($Next)
-        ) {
+        $Finish = [CaptionNestNativeMethods]::GetDlgItem($WindowHandle, 1)
+        if ($Finish -eq [IntPtr]::Zero -or -not [CaptionNestNativeMethods]::IsWindowEnabled($Finish)) {
+            $SawNonReadyFinish = $true
+            Start-Sleep -Milliseconds 200
+            continue
+        }
+        $FinishInfo = @(
+            [CaptionNestNativeMethods]::EnumerateChildWindows($WindowHandle) |
+                Where-Object { $_.Handle -eq $Finish }
+        )
+        $CompletionTextChanged = (
+            $FinishInfo.Count -eq 1 -and
+            $FinishInfo[0].Title -ne $ConfirmButtonTitle
+        )
+        $CompletionControlChanged = $Finish -ne $ConfirmButtonHandle
+        if ($SawNonReadyFinish -or $CompletionTextChanged -or $CompletionControlChanged) {
+            Write-Host "GUI-ACTION: current uninstall $Decision completion state observed"
             Invoke-NativeButton `
                 -WindowHandle $WindowHandle `
                 -ControlId 1 `
                 -Description "current uninstall $Decision finish"
+            $ClickedFinish = $true
+            break
         }
-        Start-Sleep -Milliseconds 500
+        Start-Sleep -Milliseconds 200
+    }
+    if ([CaptionNestNativeMethods]::IsWindow($WindowHandle) -and -not $ClickedFinish) {
+        $Diagnostics = Get-NativeChildDiagnostics -WindowHandle $WindowHandle
+        throw "Current uninstaller $Decision did not reach a distinct enabled completion state. Native child controls: $Diagnostics"
     }
     Wait-NativeWindowClosed -WindowHandle $WindowHandle -TimeoutSeconds 5
     if (-not $Process.HasExited) { Wait-ProcessExit -Process $Process -TimeoutSeconds 5 }
+    Write-Host "GUI-ACTION: current uninstall $Decision window closed"
 }
 
 function Invoke-AffectedUninstallerGuiConfirm {
@@ -478,6 +594,7 @@ function Invoke-AffectedUninstallerGuiConfirm {
     }
     Set-NativeCheckbox `
         -Control $Checkboxes[0] `
+        -WindowHandle $MainWindowHandle `
         -Checked $true `
         -Description 'affected uninstall explicit deletion'
     $ConfirmButtonHandle = [CaptionNestNativeMethods]::GetDlgItem($MainWindowHandle, 1)
@@ -502,12 +619,10 @@ function Invoke-AffectedUninstallerGuiConfirm {
         if ($Popup -ne [IntPtr]::Zero -and $Popup -ne $MainWindowHandle) {
             $OkButton = [CaptionNestNativeMethods]::GetDlgItem($Popup, 1)
             if ($OkButton -ne [IntPtr]::Zero) {
-                [void][CaptionNestNativeMethods]::SendMessage(
-                    $OkButton,
-                    0x00F5,
-                    [IntPtr]::Zero,
-                    [IntPtr]::Zero
-                )
+                Invoke-NativeButton `
+                    -WindowHandle $Popup `
+                    -ControlId 1 `
+                    -Description 'affected uninstall deletion confirmation OK'
                 $Confirmed = $true
                 break
             }
@@ -540,6 +655,7 @@ function Invoke-AffectedUninstallerGuiConfirm {
         )
         $CompletionControlChanged = $Finish -ne $ConfirmButtonHandle
         if ($SawNonReadyFinish -or $CompletionTextChanged -or $CompletionControlChanged) {
+            Write-Host 'GUI-ACTION: affected uninstall completion state observed'
             Invoke-NativeButton `
                 -WindowHandle $MainWindowHandle `
                 -ControlId 1 `
@@ -568,6 +684,7 @@ function Invoke-AffectedUninstallerGuiConfirm {
         throw "Affected uninstaller remained open after its completion button was clicked. Native child controls: $Diagnostics"
     }
     if (-not $Process.HasExited) { Wait-ProcessExit -Process $Process -TimeoutSeconds 5 }
+    Write-Host 'GUI-ACTION: affected uninstall window closed'
     Assert-ModelAbsent
 }
 
@@ -716,6 +833,7 @@ public sealed class CaptionNestWindowInfo
     public string ClassName { get; set; }
     public uint ProcessId { get; set; }
     public bool Visible { get; set; }
+    public bool Enabled { get; set; }
     public int ControlId { get; set; }
     public long Style { get; set; }
 }
@@ -766,12 +884,24 @@ public static class CaptionNestNativeMethods
     [DllImport("user32.dll")]
     public static extern IntPtr GetDlgItem(IntPtr dialog, int itemId);
 
-    [DllImport("user32.dll")]
-    public static extern IntPtr SendMessage(
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool PostMessage(
         IntPtr window,
         uint message,
         IntPtr wordParameter,
         IntPtr longParameter
+    );
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr SendMessageTimeout(
+        IntPtr window,
+        uint message,
+        IntPtr wordParameter,
+        IntPtr longParameter,
+        uint flags,
+        uint timeoutMilliseconds,
+        out IntPtr result
     );
 
     public static CaptionNestWindowInfo[] EnumerateTopLevelWindows()
@@ -811,6 +941,7 @@ public static class CaptionNestNativeMethods
             ClassName = className.ToString(),
             ProcessId = processId,
             Visible = IsWindowVisible(window),
+            Enabled = IsWindowEnabled(window),
             ControlId = GetDlgCtrlID(window),
             Style = GetWindowLongPtr(window, -16).ToInt64()
         };

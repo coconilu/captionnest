@@ -240,6 +240,15 @@ def test_windows_ci_exercises_affected_and_exact_head_installer_lifecycle() -> N
     assert "GetWindowLongPtr" in script
     assert "0x00F1" in script
     assert "0x00F5" in script
+    assert "PostMessage" in script
+    assert "SendMessageTimeout" in script
+    assert "0x0002" in script
+    assert "2000" in script
+    assert "[CaptionNestNativeMethods]::SendMessage(" not in script
+    assert "failed or timed out" in script
+    assert "GUI-ACTION:" in script
+    assert "upgrade choice transition observed" in script
+    assert "completion state observed" in script
     assert "function Get-NativeChildDiagnostics" in script
     assert "Native child controls:" in script
     assert "checkbox state was" in script
