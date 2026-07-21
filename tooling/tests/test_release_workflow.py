@@ -226,6 +226,10 @@ def test_windows_ci_exercises_affected_and_exact_head_installer_lifecycle() -> N
     assert "-UpgradeInstallerPath $env:CAPTIONNEST_UPGRADE_INSTALLER" in lifecycle
     assert "RUNNER_ENVIRONMENT -ne 'github-hosted'" in script
     assert "Affected installer SHA-256 mismatch" in script
+    assert "function Invoke-AffectedUninstallerGuiConfirm" in script
+    assert "Set-UiCheckbox -Checkbox $Checkbox -Checked $true" in script
+    assert "GetLastActivePopup" in script
+    assert "Affected uninstaller did not expose its explicit deletion confirmation" in script
     assert "function Remove-OwnedDirectoryWithRetry" in script
     assert "[int]$TimeoutSeconds = 30" in script
     assert "Owned CaptionNest path still exists" in script

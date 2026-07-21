@@ -135,8 +135,13 @@ function Assert-ModelPresent {
 }
 
 function Assert-ModelAbsent {
+    $Deadline = [DateTime]::UtcNow.AddSeconds(30)
+    do {
+        if (-not (Test-Path -LiteralPath $MarkerPath)) { return }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $Deadline)
     if (Test-Path -LiteralPath $MarkerPath) {
-        throw "Recognition model marker was unexpectedly retained: $MarkerPath"
+        throw "Recognition model marker was retained after explicit deletion: $MarkerPath"
     }
 }
 
@@ -302,6 +307,45 @@ function Invoke-CurrentUninstallerGui {
     Wait-ProcessExit -Process $Process -TimeoutSeconds 5
 }
 
+function Invoke-AffectedUninstallerGuiConfirm {
+    $Uninstaller = Join-Path $InstallRoot 'uninstall.exe'
+    $Process = Start-OwnedProcess -FilePath $Uninstaller
+    $Window = Get-ProcessWindow -Process $Process
+    $MainWindowHandle = $Process.MainWindowHandle
+    $CheckboxCondition = [System.Windows.Automation.PropertyCondition]::new(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [System.Windows.Automation.ControlType]::CheckBox
+    )
+    $Checkbox = Get-UiElement -Root $Window -Condition $CheckboxCondition
+    Set-UiCheckbox -Checkbox $Checkbox -Checked $true
+    Invoke-UiElement (Get-UiElement -Root $Window -Condition (Get-ButtonCondition '1'))
+
+    $Confirmed = $false
+    $Deadline = [DateTime]::UtcNow.AddSeconds(30)
+    do {
+        $Popup = [CaptionNestNativeMethods]::GetLastActivePopup($MainWindowHandle)
+        if ($Popup -ne [IntPtr]::Zero -and $Popup -ne $MainWindowHandle) {
+            $OkButton = [CaptionNestNativeMethods]::GetDlgItem($Popup, 1)
+            if ($OkButton -ne [IntPtr]::Zero) {
+                [void][CaptionNestNativeMethods]::SendMessage(
+                    $OkButton,
+                    0x00F5,
+                    [IntPtr]::Zero,
+                    [IntPtr]::Zero
+                )
+                $Confirmed = $true
+                break
+            }
+        }
+        Start-Sleep -Milliseconds 200
+    } while ([DateTime]::UtcNow -lt $Deadline)
+    if (-not $Confirmed) {
+        throw 'Affected uninstaller did not expose its explicit deletion confirmation.'
+    }
+    Wait-ProcessExit -Process $Process
+    Assert-ModelAbsent
+}
+
 function Assert-InstalledAppAndModelReady {
     $App = Join-Path $InstallRoot 'captionnest.exe'
     $Sidecar = Join-Path $InstallRoot 'captionnest-sidecar.exe'
@@ -435,6 +479,27 @@ function Test-UpgradeMode {
 }
 
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class CaptionNestNativeMethods
+{
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetLastActivePopup(IntPtr window);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetDlgItem(IntPtr dialog, int itemId);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr SendMessage(
+        IntPtr window,
+        uint message,
+        IntPtr wordParameter,
+        IntPtr longParameter
+    );
+}
+'@
 Assert-DisposableRunnerState
 Assert-OldInstallerIdentity
 New-Item -ItemType Directory -Path $EvidenceRoot -Force | Out-Null
@@ -442,8 +507,7 @@ New-Item -ItemType Directory -Path $EvidenceRoot -Force | Out-Null
 try {
     Write-Host 'LIFECYCLE: affected-explicit-uninstall'
     Install-AffectedVersionWithModel
-    Invoke-Installer -Path (Join-Path $InstallRoot 'uninstall.exe') -Arguments @('/S')
-    Assert-ModelAbsent
+    Invoke-AffectedUninstallerGuiConfirm
     Remove-OwnedCaptionNestState
 
     Test-UpgradeMode -Name 'gui-default' -Gui
