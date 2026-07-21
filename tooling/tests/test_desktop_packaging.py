@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -9,6 +10,81 @@ from pathlib import Path
 import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+TAURI_CLI_VERSION = "2.11.4"
+TAURI_INSTALLER_BASELINE_SHA256 = (
+    "20f4ecc730defb71f1342eaeaec4021df13be3d843abba0effe88ea5835fa079"
+)
+
+CAPTIONNEST_TEMPLATE_HEADER = """; Based on Tauri CLI 2.11.4's official installer template:
+; https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.11.4/crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi
+; CaptionNest customization: upgrades default to an in-place install so a
+; vulnerable older uninstaller cannot delete app-managed recognition models.
+
+"""
+
+CAPTIONNEST_UPGRADE_DEFAULT = (
+    "    ; An in-place install is the safe default for upgrades. In particular, "
+    "the\n"
+    "    ; first fixed installer must not execute an older uninstaller whose "
+    "custom\n"
+    "    ; hook deleted recognition models unconditionally.\n"
+    "    !insertmacro CAPTIONNEST_SET_REINSTALL_DEFAULT $R0 "
+    "$ReinstallPageCheck\n"
+    "    ${If} $ReinstallPageCheck = 2\n"
+    "      SendMessage $R3 ${BM_SETCHECK} ${BST_CHECKED} 0\n"
+    "      ${NSD_SetFocus} $R3\n"
+    "    ${Else}\n"
+    "      SendMessage $R2 ${BM_SETCHECK} ${BST_CHECKED} 0\n"
+    "      ${NSD_SetFocus} $R2\n"
+    "    ${EndIf}\n\n"
+)
+
+TAURI_UPGRADE_DEFAULT = """    ; Check the first radio button if this the first time
+    ; we enter this page or if the second button wasn't
+    ; selected the last time we were on this page
+    ${If} $ReinstallPageCheck <> 2
+      SendMessage $R2 ${BM_SETCHECK} ${BST_CHECKED} 0
+    ${Else}
+      SendMessage $R3 ${BM_SETCHECK} ${BST_CHECKED} 0
+    ${EndIf}
+
+    ${NSD_SetFocus} $R2
+"""
+
+CAPTIONNEST_UNATTENDED_UPGRADE = (
+    "  ; Silent and passive installs cannot collect an explicit data-deletion\n"
+    "  ; decision, so they always install in place and preserve existing models.\n"
+    "  !insertmacro CAPTIONNEST_SKIP_UNINSTALL_FOR_UNATTENDED $PassiveMode "
+    "reinst_done\n\n"
+)
+
+CAPTIONNEST_REINSTALL_STATE_ORDER = """Function PageLeaveReinstall
+  ; If migrating from Wix, always uninstall
+  ${If} $WixMode = 1
+    Goto reinst_uninstall
+  ${EndIf}
+
+  ; In update mode, always proceeds without uninstalling
+  ${If} $UpdateMode = 1
+    Goto reinst_done
+  ${EndIf}
+
+  ${NSD_GetState} $R2 $R1
+"""
+
+TAURI_REINSTALL_STATE_ORDER = """Function PageLeaveReinstall
+  ${NSD_GetState} $R2 $R1
+
+  ; If migrating from Wix, always uninstall
+  ${If} $WixMode = 1
+    Goto reinst_uninstall
+  ${EndIf}
+
+  ; In update mode, always proceeds without uninstalling
+  ${If} $UpdateMode = 1
+    Goto reinst_done
+  ${EndIf}
+"""
 
 
 def _installer_hooks() -> tuple[str, str]:
@@ -69,6 +145,8 @@ def _run_uninstall_policy_harness(
 ) -> bool:
     makensis = _makensis_path()
     if os.name != "nt" or makensis is None:
+        if os.environ.get("CAPTIONNEST_REQUIRE_NSIS_TESTS") == "1":
+            pytest.fail("required Windows NSIS lifecycle harness is unavailable")
         pytest.skip("NSIS lifecycle harness requires Windows and makensis")
 
     models_dir = tmp_path / "models"
@@ -131,6 +209,8 @@ def _run_upgrade_policy_harness(
 ) -> bool:
     makensis = _makensis_path()
     if os.name != "nt" or makensis is None:
+        if os.environ.get("CAPTIONNEST_REQUIRE_NSIS_TESTS") == "1":
+            pytest.fail("required Windows NSIS lifecycle harness is unavailable")
         pytest.skip("NSIS lifecycle harness requires Windows and makensis")
 
     models_dir = tmp_path / "models"
@@ -249,6 +329,43 @@ def test_nsis_upgrade_defaults_preserve_models_before_old_uninstaller_runs() -> 
     assert "IfSilent 0 +2" in policy
     assert "CAPTIONNEST_SKIP_UNINSTALL_FOR_MODE" in policy
     assert "${If} ${PassiveMode} = 1" in policy
+
+
+def test_custom_nsis_template_matches_offline_tauri_baseline() -> None:
+    template = _installer_template()
+    assert template.count(CAPTIONNEST_TEMPLATE_HEADER) == 1
+    assert template.count(CAPTIONNEST_UPGRADE_DEFAULT) == 1
+    assert template.count(CAPTIONNEST_UNATTENDED_UPGRADE) == 1
+
+    normalized = template.replace(CAPTIONNEST_TEMPLATE_HEADER, "", 1)
+    normalized = normalized.replace(
+        CAPTIONNEST_UPGRADE_DEFAULT,
+        TAURI_UPGRADE_DEFAULT,
+        1,
+    )
+    normalized = normalized.replace(CAPTIONNEST_UNATTENDED_UPGRADE, "", 1)
+    assert normalized.count(CAPTIONNEST_REINSTALL_STATE_ORDER) == 1
+    normalized = normalized.replace(
+        CAPTIONNEST_REINSTALL_STATE_ORDER,
+        TAURI_REINSTALL_STATE_ORDER,
+        1,
+    )
+    assert (
+        hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        == TAURI_INSTALLER_BASELINE_SHA256
+    )
+
+    lock = json.loads(
+        (PROJECT_ROOT / "apps" / "web" / "package-lock.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    packages = lock["packages"]
+    assert packages["node_modules/@tauri-apps/cli"]["version"] == TAURI_CLI_VERSION
+    assert (
+        packages["node_modules/@tauri-apps/cli-win32-x64-msvc"]["version"]
+        == TAURI_CLI_VERSION
+    )
 
 
 @pytest.mark.parametrize(

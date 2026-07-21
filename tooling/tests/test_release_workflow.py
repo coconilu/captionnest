@@ -175,9 +175,65 @@ def test_javascript_actions_and_project_runtime_use_node_24() -> None:
     }
 
     assert targeted_refs == expected_refs
-    assert combined.count("# v8.3.2") == 2
-    assert re.findall(r"node-version:\s+'(\d+)'", combined) == ["24", "24", "24"]
+    assert combined.count("# v8.3.2") == 4
+    assert re.findall(r"node-version:\s+'(\d+)'", combined) == [
+        "24",
+        "24",
+        "24",
+        "24",
+    ]
     assert "node-version: '22'" not in combined
+
+
+def test_windows_ci_runs_required_nsis_packaging_regressions() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+    desktop = workflow.split("desktop-check:", 1)[1]
+
+    assert "astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990" in desktop
+    assert "uv sync --project apps/sidecar --extra dev --locked" in desktop
+    assert "Build NSIS packaging test fixture" in desktop
+    assert "Test Windows NSIS packaging policies" in desktop
+    assert "CAPTIONNEST_REQUIRE_NSIS_TESTS: '1'" in desktop
+    assert "pytest tooling/tests/test_desktop_packaging.py" in desktop
+
+
+def test_windows_ci_exercises_affected_and_exact_head_installer_lifecycle() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+    lifecycle = workflow.split("installer-lifecycle:", 1)[1]
+    script = (ROOT / "scripts" / "test-installer-model-retention.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert "timeout-minutes: 180" in lifecycle
+    assert "Restore LGPL media wheel cache" in lifecycle
+    assert "db4723bd0a99eab031f1a3dee4336dca43049c87" in lifecycle
+    assert "install-media-wheel.ps1" in lifecycle
+    assert "build-desktop.ps1" in lifecycle
+    assert "Build higher-version upgrade fixture from exact HEAD" in lifecycle
+    assert "'{\"version\":\"0.2.9\"}'" in lifecycle
+    assert "--ignore-version-mismatches" in lifecycle
+    assert "CAPTIONNEST_CURRENT_INSTALLER=$ExactCopy" in lifecycle
+    assert "CAPTIONNEST_UPGRADE_INSTALLER" in lifecycle
+    assert "releases/download/v0.2.8/CaptionNest_0.2.8_x64-setup.exe" in lifecycle
+    assert "test-installer-model-retention.ps1" in lifecycle
+    assert "-UpgradeInstallerPath $env:CAPTIONNEST_UPGRADE_INSTALLER" in lifecycle
+    assert "RUNNER_ENVIRONMENT -ne 'github-hosted'" in script
+    assert "Affected installer SHA-256 mismatch" in script
+    for marker in (
+        "affected-explicit-uninstall",
+        "Test-UpgradeMode -Name 'gui-default'",
+        "@('/S')",
+        "@('/P')",
+        "@('/UPDATE', '/P')",
+        "current-uninstall-cancel-keep-delete",
+        "Invoke-RestMethod",
+        "status -ne 'ready'",
+    ):
+        assert marker in script
 
 
 def test_attestation_is_pinned_minimally_permitted_and_fail_closed() -> None:
