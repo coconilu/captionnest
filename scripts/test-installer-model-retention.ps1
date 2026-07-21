@@ -166,6 +166,10 @@ function Get-UiElement {
 function Get-ProcessWindow {
     param([Parameter(Mandatory = $true)]$Process)
     $Deadline = [DateTime]::UtcNow.AddSeconds(30)
+    $WindowCondition = [System.Windows.Automation.PropertyCondition]::new(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [System.Windows.Automation.ControlType]::Window
+    )
     do {
         $Process.Refresh()
         if ($Process.MainWindowHandle -ne 0) {
@@ -173,9 +177,39 @@ function Get-ProcessWindow {
                 $Process.MainWindowHandle
             )
         }
+        $Candidates = @(
+            [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
+                [System.Windows.Automation.TreeScope]::Children,
+                $WindowCondition
+            ) | Where-Object {
+                -not $_.Current.IsOffscreen -and $_.Current.Name -like '*CaptionNest*'
+            }
+        )
+        if ($Candidates.Count -gt 1) {
+            $Names = $Candidates | ForEach-Object { $_.Current.Name }
+            throw "Multiple CaptionNest GUI windows matched: $($Names -join '; ')."
+        }
+        if ($Candidates.Count -eq 1) { return $Candidates[0] }
         Start-Sleep -Milliseconds 200
     } while ([DateTime]::UtcNow -lt $Deadline)
-    throw "Process $($Process.Id) did not expose an interactive window."
+    throw "No CaptionNest GUI window appeared for launcher process $($Process.Id)."
+}
+
+function Wait-NativeWindowClosed {
+    param(
+        [Parameter(Mandatory = $true)][IntPtr]$WindowHandle,
+        [int]$TimeoutSeconds = 180
+    )
+    $Deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    while (
+        [CaptionNestNativeMethods]::IsWindow($WindowHandle) -and
+        [DateTime]::UtcNow -lt $Deadline
+    ) {
+        Start-Sleep -Milliseconds 250
+    }
+    if ([CaptionNestNativeMethods]::IsWindow($WindowHandle)) {
+        throw "CaptionNest GUI window did not close within $TimeoutSeconds seconds."
+    }
 }
 
 function Invoke-UiElement {
@@ -215,6 +249,7 @@ function Get-ButtonCondition {
 function Complete-GuiUpgradeWithDefault {
     $Process = Start-OwnedProcess -FilePath $UpgradeInstaller
     $Window = Get-ProcessWindow -Process $Process
+    $WindowHandle = [IntPtr]$Window.Current.NativeWindowHandle
     $NextCondition = Get-ButtonCondition -AutomationId '1'
     Invoke-UiElement (Get-UiElement -Root $Window -Condition $NextCondition)
 
@@ -243,8 +278,11 @@ function Complete-GuiUpgradeWithDefault {
     Invoke-UiElement (Get-UiElement -Root $Window -Condition $NextCondition)
 
     $Deadline = [DateTime]::UtcNow.AddSeconds(180)
-    while (-not $Process.HasExited -and [DateTime]::UtcNow -lt $Deadline) {
-        $Window = Get-ProcessWindow -Process $Process
+    while (
+        [CaptionNestNativeMethods]::IsWindow($WindowHandle) -and
+        [DateTime]::UtcNow -lt $Deadline
+    ) {
+        $Window = [System.Windows.Automation.AutomationElement]::FromHandle($WindowHandle)
         $CheckboxCondition = [System.Windows.Automation.PropertyCondition]::new(
             [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
             [System.Windows.Automation.ControlType]::CheckBox
@@ -263,9 +301,9 @@ function Complete-GuiUpgradeWithDefault {
             Invoke-UiElement $Next
         }
         Start-Sleep -Milliseconds 500
-        $Process.Refresh()
     }
-    Wait-ProcessExit -Process $Process -TimeoutSeconds 5
+    Wait-NativeWindowClosed -WindowHandle $WindowHandle -TimeoutSeconds 5
+    if (-not $Process.HasExited) { Wait-ProcessExit -Process $Process -TimeoutSeconds 5 }
 }
 
 function Invoke-CurrentUninstallerGui {
@@ -275,6 +313,7 @@ function Invoke-CurrentUninstallerGui {
     $Uninstaller = Join-Path $InstallRoot 'uninstall.exe'
     $Process = Start-OwnedProcess -FilePath $Uninstaller
     $Window = Get-ProcessWindow -Process $Process
+    $WindowHandle = [IntPtr]$Window.Current.NativeWindowHandle
     $CheckboxCondition = [System.Windows.Automation.PropertyCondition]::new(
         [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
         [System.Windows.Automation.ControlType]::CheckBox
@@ -282,18 +321,21 @@ function Invoke-CurrentUninstallerGui {
     $Checkbox = Get-UiElement -Root $Window -Condition $CheckboxCondition
     if ($Decision -eq 'cancel') {
         Invoke-UiElement (Get-UiElement -Root $Window -Condition (Get-ButtonCondition '2'))
-        Wait-ProcessExit -Process $Process -AllowedExitCodes @(0, 1)
+        Wait-NativeWindowClosed -WindowHandle $WindowHandle
+        if (-not $Process.HasExited) {
+            Wait-ProcessExit -Process $Process -AllowedExitCodes @(0, 1)
+        }
         return
     }
     Set-UiCheckbox -Checkbox $Checkbox -Checked ($Decision -eq 'delete')
     Invoke-UiElement (Get-UiElement -Root $Window -Condition (Get-ButtonCondition '1'))
     $Deadline = [DateTime]::UtcNow.AddSeconds(180)
-    while (-not $Process.HasExited -and [DateTime]::UtcNow -lt $Deadline) {
-        $Process.Refresh()
-        if ($Process.MainWindowHandle -ne 0) {
-            $Window = [System.Windows.Automation.AutomationElement]::FromHandle(
-                $Process.MainWindowHandle
-            )
+    while (
+        [CaptionNestNativeMethods]::IsWindow($WindowHandle) -and
+        [DateTime]::UtcNow -lt $Deadline
+    ) {
+        $Window = [System.Windows.Automation.AutomationElement]::FromHandle($WindowHandle)
+        if ($null -ne $Window) {
             $Next = $Window.FindFirst(
                 [System.Windows.Automation.TreeScope]::Descendants,
                 (Get-ButtonCondition '1')
@@ -304,14 +346,15 @@ function Invoke-CurrentUninstallerGui {
         }
         Start-Sleep -Milliseconds 500
     }
-    Wait-ProcessExit -Process $Process -TimeoutSeconds 5
+    Wait-NativeWindowClosed -WindowHandle $WindowHandle -TimeoutSeconds 5
+    if (-not $Process.HasExited) { Wait-ProcessExit -Process $Process -TimeoutSeconds 5 }
 }
 
 function Invoke-AffectedUninstallerGuiConfirm {
     $Uninstaller = Join-Path $InstallRoot 'uninstall.exe'
     $Process = Start-OwnedProcess -FilePath $Uninstaller
     $Window = Get-ProcessWindow -Process $Process
-    $MainWindowHandle = $Process.MainWindowHandle
+    $MainWindowHandle = [IntPtr]$Window.Current.NativeWindowHandle
     $CheckboxCondition = [System.Windows.Automation.PropertyCondition]::new(
         [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
         [System.Windows.Automation.ControlType]::CheckBox
@@ -342,7 +385,8 @@ function Invoke-AffectedUninstallerGuiConfirm {
     if (-not $Confirmed) {
         throw 'Affected uninstaller did not expose its explicit deletion confirmation.'
     }
-    Wait-ProcessExit -Process $Process
+    Wait-NativeWindowClosed -WindowHandle $MainWindowHandle
+    if (-not $Process.HasExited) { Wait-ProcessExit -Process $Process }
     Assert-ModelAbsent
 }
 
@@ -485,6 +529,10 @@ using System.Runtime.InteropServices;
 
 public static class CaptionNestNativeMethods
 {
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsWindow(IntPtr window);
+
     [DllImport("user32.dll")]
     public static extern IntPtr GetLastActivePopup(IntPtr window);
 

@@ -229,6 +229,10 @@ def test_windows_ci_exercises_affected_and_exact_head_installer_lifecycle() -> N
     assert "function Invoke-AffectedUninstallerGuiConfirm" in script
     assert "Set-UiCheckbox -Checkbox $Checkbox -Checked $true" in script
     assert "GetLastActivePopup" in script
+    assert "AutomationElement]::RootElement.FindAll" in script
+    assert "Multiple CaptionNest GUI windows matched" in script
+    assert "No CaptionNest GUI window appeared" in script
+    assert "function Wait-NativeWindowClosed" in script
     assert "Affected uninstaller did not expose its explicit deletion confirmation" in script
     assert "function Remove-OwnedDirectoryWithRetry" in script
     assert "[int]$TimeoutSeconds = 30" in script
