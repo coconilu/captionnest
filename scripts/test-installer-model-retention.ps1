@@ -151,7 +151,10 @@ function Get-ProcessWindow {
     $LastNewWindows = @()
     do {
         $Process.Refresh()
-        if ($Process.MainWindowHandle -ne 0) {
+        if (
+            $Process.MainWindowHandle -ne 0 -and
+            [CaptionNestNativeMethods]::IsWindow([IntPtr]$Process.MainWindowHandle)
+        ) {
             return [IntPtr]$Process.MainWindowHandle
         }
         $LastNewWindows = @(
@@ -274,9 +277,45 @@ function Set-NativeCheckbox {
     }
 }
 
+function Get-CaptionNestInteractiveWindow {
+    param([Parameter(Mandatory = $true)]$Process)
+    $WindowHandle = Get-ProcessWindow -Process $Process
+    $LanguageSelectors = @(
+        [CaptionNestNativeMethods]::EnumerateChildWindows($WindowHandle) |
+            Where-Object { $_.ClassName -eq 'ComboBox' -and $_.ControlId -eq 1002 }
+    )
+    if ($LanguageSelectors.Count -gt 1) {
+        $Diagnostics = Get-NativeChildDiagnostics -WindowHandle $WindowHandle
+        throw "Multiple NSIS language selectors matched. Native child controls: $Diagnostics"
+    }
+    if ($LanguageSelectors.Count -eq 1) {
+        Invoke-NativeButton `
+            -WindowHandle $WindowHandle `
+            -ControlId 1 `
+            -Description 'language selector default OK'
+        $Deadline = [DateTime]::UtcNow.AddSeconds(30)
+        do {
+            if (-not [CaptionNestNativeMethods]::IsWindow($WindowHandle)) {
+                return Get-ProcessWindow -Process $Process
+            }
+            $RemainingSelectors = @(
+                [CaptionNestNativeMethods]::EnumerateChildWindows($WindowHandle) |
+                    Where-Object {
+                        $_.ClassName -eq 'ComboBox' -and $_.ControlId -eq 1002
+                    }
+            )
+            if ($RemainingSelectors.Count -eq 0) { return $WindowHandle }
+            Start-Sleep -Milliseconds 200
+        } while ([DateTime]::UtcNow -lt $Deadline)
+        $Diagnostics = Get-NativeChildDiagnostics -WindowHandle $WindowHandle
+        throw "Language selector did not advance. Native child controls: $Diagnostics"
+    }
+    return $WindowHandle
+}
+
 function Complete-GuiUpgradeWithDefault {
     $Process = Start-OwnedProcess -FilePath $UpgradeInstaller
-    $WindowHandle = Get-ProcessWindow -Process $Process
+    $WindowHandle = Get-CaptionNestInteractiveWindow -Process $Process
     Invoke-NativeButton -WindowHandle $WindowHandle -ControlId 1 -Description 'upgrade welcome next'
 
     $Radios = @(Get-NativeControlsByType `
@@ -333,7 +372,7 @@ function Invoke-CurrentUninstallerGui {
     )
     $Uninstaller = Join-Path $InstallRoot 'uninstall.exe'
     $Process = Start-OwnedProcess -FilePath $Uninstaller
-    $WindowHandle = Get-ProcessWindow -Process $Process
+    $WindowHandle = Get-CaptionNestInteractiveWindow -Process $Process
     $Checkboxes = @(
         Get-NativeControlsByType `
             -WindowHandle $WindowHandle `
@@ -387,7 +426,7 @@ function Invoke-CurrentUninstallerGui {
 function Invoke-AffectedUninstallerGuiConfirm {
     $Uninstaller = Join-Path $InstallRoot 'uninstall.exe'
     $Process = Start-OwnedProcess -FilePath $Uninstaller
-    $MainWindowHandle = Get-ProcessWindow -Process $Process
+    $MainWindowHandle = Get-CaptionNestInteractiveWindow -Process $Process
     $Checkboxes = @(
         Get-NativeControlsByType `
             -WindowHandle $MainWindowHandle `

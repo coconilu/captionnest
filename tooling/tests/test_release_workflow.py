@@ -244,6 +244,12 @@ def test_windows_ci_exercises_affected_and_exact_head_installer_lifecycle() -> N
     assert "Native child controls:" in script
     assert "checkbox state was" in script
     assert "UIAutomationClient" not in script
+    assert "function Get-CaptionNestInteractiveWindow" in script
+    assert "ClassName -eq 'ComboBox'" in script
+    assert "ControlId -eq 1002" in script
+    assert "language selector default OK" in script
+    assert "RemainingSelectors.Count -eq 0" in script
+    assert "Language selector did not advance" in script
     assert "function Wait-NativeWindowClosed" in script
     assert "Affected uninstaller did not expose its explicit deletion confirmation" in script
     assert "function Remove-OwnedDirectoryWithRetry" in script
