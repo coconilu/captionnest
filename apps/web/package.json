@@ -1,7 +1,7 @@
 {
   "name": "captionnest-web",
   "private": true,
-  "version": "0.2.7",
+  "version": "0.2.8",
   "type": "module",
   "scripts": {
     "predev": "powershell -NoProfile -ExecutionPolicy Bypass -File ../../scripts/stop-local-services.ps1 -Scope Web",
