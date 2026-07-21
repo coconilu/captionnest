@@ -480,6 +480,16 @@ function Invoke-AffectedUninstallerGuiConfirm {
         -Control $Checkboxes[0] `
         -Checked $true `
         -Description 'affected uninstall explicit deletion'
+    $ConfirmButtonHandle = [CaptionNestNativeMethods]::GetDlgItem($MainWindowHandle, 1)
+    $ConfirmButtonInfo = @(
+        [CaptionNestNativeMethods]::EnumerateChildWindows($MainWindowHandle) |
+            Where-Object { $_.Handle -eq $ConfirmButtonHandle }
+    )
+    if ($ConfirmButtonHandle -eq [IntPtr]::Zero -or $ConfirmButtonInfo.Count -ne 1) {
+        $Diagnostics = Get-NativeChildDiagnostics -WindowHandle $MainWindowHandle
+        throw "Affected uninstaller confirm button was not uniquely identifiable. Native child controls: $Diagnostics"
+    }
+    $ConfirmButtonTitle = $ConfirmButtonInfo[0].Title
     Invoke-NativeButton `
         -WindowHandle $MainWindowHandle `
         -ControlId 1 `
@@ -507,24 +517,56 @@ function Invoke-AffectedUninstallerGuiConfirm {
     if (-not $Confirmed) {
         throw 'Affected uninstaller did not expose its explicit deletion confirmation.'
     }
+    $SawNonReadyFinish = $false
+    $ClickedFinish = $false
     $Deadline = [DateTime]::UtcNow.AddSeconds(180)
     while (
         [CaptionNestNativeMethods]::IsWindow($MainWindowHandle) -and
         [DateTime]::UtcNow -lt $Deadline
     ) {
         $Finish = [CaptionNestNativeMethods]::GetDlgItem($MainWindowHandle, 1)
-        if (
-            $Finish -ne [IntPtr]::Zero -and
-            [CaptionNestNativeMethods]::IsWindowEnabled($Finish)
-        ) {
+        if ($Finish -eq [IntPtr]::Zero -or -not [CaptionNestNativeMethods]::IsWindowEnabled($Finish)) {
+            $SawNonReadyFinish = $true
+            Start-Sleep -Milliseconds 200
+            continue
+        }
+        $FinishInfo = @(
+            [CaptionNestNativeMethods]::EnumerateChildWindows($MainWindowHandle) |
+                Where-Object { $_.Handle -eq $Finish }
+        )
+        $CompletionTextChanged = (
+            $FinishInfo.Count -eq 1 -and
+            $FinishInfo[0].Title -ne $ConfirmButtonTitle
+        )
+        $CompletionControlChanged = $Finish -ne $ConfirmButtonHandle
+        if ($SawNonReadyFinish -or $CompletionTextChanged -or $CompletionControlChanged) {
             Invoke-NativeButton `
                 -WindowHandle $MainWindowHandle `
                 -ControlId 1 `
                 -Description 'affected uninstall finish'
+            $ClickedFinish = $true
+            break
         }
-        Start-Sleep -Milliseconds 500
+        Start-Sleep -Milliseconds 200
     }
-    Wait-NativeWindowClosed -WindowHandle $MainWindowHandle -TimeoutSeconds 5
+    if (
+        [CaptionNestNativeMethods]::IsWindow($MainWindowHandle) -and
+        -not $ClickedFinish
+    ) {
+        $Diagnostics = Get-NativeChildDiagnostics -WindowHandle $MainWindowHandle
+        throw "Affected uninstaller did not reach a distinct enabled completion state. Native child controls: $Diagnostics"
+    }
+    $Deadline = [DateTime]::UtcNow.AddSeconds(5)
+    while (
+        [CaptionNestNativeMethods]::IsWindow($MainWindowHandle) -and
+        [DateTime]::UtcNow -lt $Deadline
+    ) {
+        Start-Sleep -Milliseconds 200
+    }
+    if ([CaptionNestNativeMethods]::IsWindow($MainWindowHandle)) {
+        $Diagnostics = Get-NativeChildDiagnostics -WindowHandle $MainWindowHandle
+        throw "Affected uninstaller remained open after its completion button was clicked. Native child controls: $Diagnostics"
+    }
     if (-not $Process.HasExited) { Wait-ProcessExit -Process $Process -TimeoutSeconds 5 }
     Assert-ModelAbsent
 }

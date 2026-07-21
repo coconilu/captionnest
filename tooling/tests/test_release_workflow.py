@@ -259,6 +259,10 @@ def test_windows_ci_exercises_affected_and_exact_head_installer_lifecycle() -> N
     assert "function Wait-NativeWindowClosed" in script
     assert "Affected uninstaller did not expose its explicit deletion confirmation" in script
     assert "affected uninstall finish" in script
+    assert "SawNonReadyFinish" in script
+    assert "CompletionTextChanged" in script
+    assert "did not reach a distinct enabled completion state" in script
+    assert "remained open after its completion button was clicked" in script
     assert "function Remove-OwnedDirectoryWithRetry" in script
     assert "[int]$TimeoutSeconds = 30" in script
     assert "Owned CaptionNest path still exists" in script
